@@ -1,0 +1,191 @@
+#!/bin/bash
+#
+# Starts the local model infrastructure: Ollama + MLX-OpenAI-Server.
+# Auto-detects system RAM and picks the appropriate MLX config.
+# On laptops, checks if the desktop model server is reachable first —
+# if so, skips starting local servers (Claude will use the desktop via MCP).
+#
+# Usage:
+#   start-local-models            Start all services (or detect desktop)
+#   start-local-models --local    Force local servers even if desktop is reachable
+#   start-local-models --stop     Stop all services
+#   start-local-models --status   Show what's running
+
+set -euo pipefail
+
+MLX_CONFIG_DIR="$HOME/.config/mlx-server"
+NETWORK_CONF="$HOME/.config/local-models/network.conf"
+MLX_PID_FILE="/tmp/mlx-openai-server.pid"
+OLLAMA_PID_FILE="/tmp/ollama-serve.pid"
+
+# Load network config
+MODEL_SERVER_HOST=""
+OLLAMA_PORT=11434
+MLX_PORT=8000
+PROBE_TIMEOUT=2
+
+if [ -f "$NETWORK_CONF" ]; then
+    # shellcheck source=/dev/null
+    source "$NETWORK_CONF"
+fi
+
+get_ram_gb() {
+    sysctl -n hw.memsize | awk '{printf "%d", $1 / 1073741824}'
+}
+
+is_desktop() {
+    [ "$(get_ram_gb)" -ge 256 ]
+}
+
+desktop_is_reachable() {
+    [ -n "$MODEL_SERVER_HOST" ] && \
+    curl -sf --connect-timeout "$PROBE_TIMEOUT" \
+        "http://${MODEL_SERVER_HOST}:${OLLAMA_PORT}/api/version" > /dev/null 2>&1
+}
+
+pick_mlx_config() {
+    local ram_gb
+    ram_gb=$(get_ram_gb)
+
+    if [ "$ram_gb" -ge 256 ]; then
+        echo "$MLX_CONFIG_DIR/config.yaml"
+        echo "  Detected ${ram_gb}GB RAM — using desktop config (all models)." >&2
+    elif [ "$ram_gb" -ge 48 ]; then
+        echo "$MLX_CONFIG_DIR/config-laptop.yaml"
+        echo "  Detected ${ram_gb}GB RAM — using laptop config (lighter models)." >&2
+    else
+        echo ""
+        echo "  Detected ${ram_gb}GB RAM — too little for MLX server, skipping." >&2
+    fi
+}
+
+stop_services() {
+    echo "Stopping local model services..."
+
+    if [ -f "$MLX_PID_FILE" ]; then
+        kill "$(cat "$MLX_PID_FILE")" 2>/dev/null && echo "  MLX-OpenAI-Server stopped." || true
+        rm -f "$MLX_PID_FILE"
+    fi
+
+    if [ -f "$OLLAMA_PID_FILE" ]; then
+        kill "$(cat "$OLLAMA_PID_FILE")" 2>/dev/null && echo "  Ollama stopped." || true
+        rm -f "$OLLAMA_PID_FILE"
+    fi
+
+    echo "Done."
+    exit 0
+}
+
+show_status() {
+    local ram_gb
+    ram_gb=$(get_ram_gb)
+
+    echo "Machine: ${ram_gb}GB RAM ($(is_desktop && echo 'desktop' || echo 'laptop'))"
+    echo ""
+
+    # Check desktop reachability (for laptops)
+    if ! is_desktop && [ -n "$MODEL_SERVER_HOST" ]; then
+        if desktop_is_reachable; then
+            echo "Desktop ($MODEL_SERVER_HOST): reachable"
+            echo "  Ollama:       http://${MODEL_SERVER_HOST}:${OLLAMA_PORT}"
+            echo "  MLX-OpenAI:   http://${MODEL_SERVER_HOST}:${MLX_PORT}"
+            echo ""
+        else
+            echo "Desktop ($MODEL_SERVER_HOST): not reachable"
+            echo ""
+        fi
+    fi
+
+    echo "Local services:"
+    if pgrep -x ollama > /dev/null; then
+        echo "  Ollama:            running (http://localhost:11434)"
+        ollama list 2>/dev/null | sed 's/^/    /' || true
+    else
+        echo "  Ollama:            not running"
+    fi
+
+    if curl -sf http://localhost:8000/v1/models > /dev/null 2>&1; then
+        echo "  MLX-OpenAI-Server: running (http://localhost:8000)"
+        curl -sf http://localhost:8000/v1/models \
+            | python3 -c "import sys,json; [print(f'    {m[\"id\"]}') for m in json.load(sys.stdin).get('data',[])]" \
+            || true
+    else
+        echo "  MLX-OpenAI-Server: not running"
+    fi
+    exit 0
+}
+
+FORCE_LOCAL=false
+
+case "${1:-}" in
+    --stop)   stop_services ;;
+    --status) show_status ;;
+    --local)  FORCE_LOCAL=true ;;
+esac
+
+echo "Starting local model infrastructure..."
+echo ""
+
+# --- Desktop detection (laptops only) ---
+if ! is_desktop && [ "$FORCE_LOCAL" = false ] && desktop_is_reachable; then
+    echo "Desktop model server detected at $MODEL_SERVER_HOST"
+    echo "  Ollama:     http://${MODEL_SERVER_HOST}:${OLLAMA_PORT}"
+    echo "  MLX-OpenAI: http://${MODEL_SERVER_HOST}:${MLX_PORT}"
+    echo ""
+    echo "Skipping local server startup — Claude will use the desktop via MCP."
+    echo "Use 'start-local-models --local' to force local servers anyway."
+    exit 0
+fi
+
+# --- Ollama ---
+if is_desktop; then
+    # Desktop: bind to all interfaces so laptops on the LAN can reach us
+    export OLLAMA_HOST="0.0.0.0:11434"
+fi
+
+if pgrep -x ollama > /dev/null; then
+    echo "Ollama already running."
+else
+    echo "Starting Ollama..."
+    ollama serve &
+    echo $! > "$OLLAMA_PID_FILE"
+    sleep 2
+fi
+
+# --- MLX-OpenAI-Server ---
+mlx_config=$(pick_mlx_config)
+
+if [ -z "$mlx_config" ]; then
+    echo "  Skipping MLX-OpenAI-Server."
+elif [ ! -f "$mlx_config" ]; then
+    echo "Error: MLX config not found at $mlx_config"
+    echo "Run install.sh to symlink config files."
+    exit 1
+elif curl -sf http://localhost:8000/v1/models > /dev/null 2>&1; then
+    echo "MLX-OpenAI-Server already running."
+else
+    echo "Starting MLX-OpenAI-Server with $(basename "$mlx_config")..."
+    mlx-openai-server launch --config "$mlx_config" &
+    echo $! > "$MLX_PID_FILE"
+    sleep 3
+fi
+
+# --- Summary ---
+echo ""
+if is_desktop; then
+    echo "Desktop model server running (LAN-accessible):"
+    echo "  Ollama:       http://0.0.0.0:${OLLAMA_PORT}"
+    echo "  MLX-OpenAI:   http://0.0.0.0:${MLX_PORT}"
+    echo ""
+    echo "Other machines on the LAN can reach this at:"
+    echo "  http://$(scutil --get LocalHostName 2>/dev/null || hostname -s).local:${OLLAMA_PORT}"
+    echo "  http://$(scutil --get LocalHostName 2>/dev/null || hostname -s).local:${MLX_PORT}"
+else
+    echo "Local models ready (fallback mode):"
+    echo "  Ollama:       http://localhost:${OLLAMA_PORT}"
+    echo "  MLX-OpenAI:   http://localhost:${MLX_PORT}"
+fi
+echo ""
+echo "Commands:"
+echo "  start-local-models --status   Show running models"
+echo "  start-local-models --stop     Stop all services"

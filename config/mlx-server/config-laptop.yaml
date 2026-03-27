@@ -1,0 +1,42 @@
+# MLX-OpenAI-Server configuration (laptop — 64GB RAM)
+# Same API surface as the desktop config, but with models sized for 64GB.
+# The served_model_name values match the desktop config so Claude's MCP
+# tools work identically on both machines.
+#
+# Install:  uv pip install mlx-openai-server
+# Run:      mlx-openai-server launch --config ~/.config/mlx-server/config-laptop.yaml
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+  log_level: INFO
+
+models:
+  # Fast general-purpose MoE — always loaded (~2GB active)
+  - model_path: mlx-community/Qwen3.5-35B-A3B-4bit
+    model_type: lm
+    served_model_name: qwen3.5-fast
+    context_length: 32768
+    prompt_cache_size: 5
+
+  # Code specialist — on demand (32GB is a lot for a 64GB machine)
+  - model_path: mlx-community/Qwen2.5-Coder-32B-Instruct-4bit
+    model_type: lm
+    served_model_name: qwen-coder
+    context_length: 16384
+    on_demand: true
+    on_demand_idle_timeout: 120
+
+  # Small model for quick subtasks — always loaded
+  - model_path: mlx-community/Qwen3.5-9B-4bit
+    model_type: lm
+    served_model_name: qwen3.5-small
+    context_length: 32768
+
+  # Agentic reasoning (hybrid Mamba-Transformer) — on demand (~51GB)
+  - model_path: MoringLabs/Nemotron-3-Super-120B-A12B-MLX-3.6bit
+    model_type: lm
+    served_model_name: nemotron-super
+    context_length: 32768
+    on_demand: true
+    on_demand_idle_timeout: 120

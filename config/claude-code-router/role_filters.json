@@ -1,0 +1,58 @@
+{
+  "_comment": "Filters that determine which models appear in each routing role's menu. Edit these to control your choices.",
+
+  "default": {
+    "description": "Routine code edits, completions, file modifications",
+    "providers": ["ollama", "mlx"],
+    "min_active_params_b": 0,
+    "max_active_params_b": null,
+    "min_context": 0,
+    "requires_vision": false
+  },
+
+  "think": {
+    "description": "Architecture decisions, complex debugging, multi-step planning",
+    "providers": ["anthropic", "ollama", "mlx"],
+    "min_active_params_b": 10,
+    "max_active_params_b": null,
+    "min_context": 0,
+    "requires_vision": false
+  },
+
+  "background": {
+    "description": "Boilerplate, simple file reads, formatting — speed over quality",
+    "providers": ["ollama", "mlx"],
+    "min_active_params_b": 0,
+    "max_active_params_b": 10,
+    "min_context": 0,
+    "requires_vision": false
+  },
+
+  "longContext": {
+    "description": "Analyzing large files or codebases (threshold from CCR config)",
+    "providers": ["anthropic", "ollama", "mlx"],
+    "min_active_params_b": 0,
+    "max_active_params_b": null,
+    "min_context_from_ccr_threshold": true,
+    "min_context": 60000,
+    "requires_vision": false
+  },
+
+  "image": {
+    "description": "Screenshots, diagrams, UI verification — must support vision",
+    "providers": ["anthropic", "ollama", "mlx"],
+    "min_active_params_b": 0,
+    "max_active_params_b": null,
+    "min_context": 0,
+    "requires_vision": true
+  },
+
+  "webSearch": {
+    "description": "Queries needing current information — needs tool-calling support",
+    "providers": ["anthropic", "ollama", "mlx"],
+    "min_active_params_b": 3,
+    "max_active_params_b": null,
+    "min_context": 0,
+    "requires_vision": false
+  }
+}

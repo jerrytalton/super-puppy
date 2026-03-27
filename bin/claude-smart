@@ -1,0 +1,259 @@
+#!/bin/bash
+#
+# Smart Claude Code launcher.
+#
+# Dynamically builds the CCR config from what's actually installed,
+# detects the environment, checks model capabilities against role
+# requirements, and routes accordingly.
+#
+# Usage:
+#   claude-smart [args]        Launch Claude with smart routing
+#   claude-smart --check       Show what's available and what's missing
+
+set -euo pipefail
+
+CONF="$HOME/.config/local-models/network.conf"
+PREFS="$HOME/.config/local-models/model_preferences.json"
+BASE_CONFIG="$HOME/.config/claude-code-router/config.json"
+FILTERS="$HOME/.config/claude-code-router/role_filters.json"
+CCR_CONFIG_DIR="$HOME/.claude-code-router"
+RUNTIME_CONFIG="$CCR_CONFIG_DIR/config.json"
+
+export LOCAL_OLLAMA_URL="http://localhost:11434"
+export LOCAL_MLX_URL="http://localhost:8000"
+export DESKTOP_REACHABLE=false
+
+if [ -f "$CONF" ]; then
+    # shellcheck source=/dev/null
+    source "$CONF"
+    if [ -n "${MODEL_SERVER_HOST:-}" ]; then
+        if curl -sf --connect-timeout "${PROBE_TIMEOUT:-2}" \
+             "http://${MODEL_SERVER_HOST}:${OLLAMA_PORT:-11434}/api/version" > /dev/null 2>&1; then
+            export LOCAL_OLLAMA_URL="http://${MODEL_SERVER_HOST}:${OLLAMA_PORT:-11434}"
+            DESKTOP_REACHABLE=true
+            echo "Using desktop Ollama at ${MODEL_SERVER_HOST}" >&2
+        fi
+        if curl -sf --connect-timeout "${PROBE_TIMEOUT:-2}" \
+             "http://${MODEL_SERVER_HOST}:${MLX_PORT:-8000}/v1/models" > /dev/null 2>&1; then
+            export LOCAL_MLX_URL="http://${MODEL_SERVER_HOST}:${MLX_PORT:-8000}"
+            echo "Using desktop MLX at ${MODEL_SERVER_HOST}" >&2
+        fi
+    fi
+fi
+
+export RAM_GB=$(sysctl -n hw.memsize | awk '{printf "%d", $1 / 1073741824}')
+export IS_DESKTOP=false
+[ "$RAM_GB" -ge 256 ] && IS_DESKTOP=true
+
+export CHECK_ONLY=false
+[ "${1:-}" = "--check" ] && CHECK_ONLY=true && shift
+
+mkdir -p "$CCR_CONFIG_DIR"
+
+python3 << 'PYEOF'
+import json, os, sys, urllib.request
+
+def env(k, default=""): return os.environ.get(k, default)
+def envb(k): return env(k) == "true"
+
+ollama_url = env("LOCAL_OLLAMA_URL", "http://localhost:11434")
+mlx_url = env("LOCAL_MLX_URL", "http://localhost:8000")
+is_desktop = envb("IS_DESKTOP")
+desktop_reachable = envb("DESKTOP_REACHABLE")
+check_only = envb("CHECK_ONLY")
+ram_gb = int(env("RAM_GB", "0"))
+
+base_config = os.path.expanduser("~/.config/claude-code-router/config.json")
+prefs_file = os.path.expanduser("~/.config/local-models/model_preferences.json")
+filters_file = os.path.expanduser("~/.config/claude-code-router/role_filters.json")
+out_file = os.path.expanduser("~/.claude-code-router/config.json")
+
+with open(base_config) as f:
+    config = json.load(f)
+
+filters = {}
+if os.path.exists(filters_file):
+    with open(filters_file) as f:
+        filters = json.load(f)
+
+# ── Query what's actually installed ──────────────────────────────────
+
+def http_json(url, timeout=3, method="GET", body=None):
+    try:
+        req = urllib.request.Request(url)
+        if body:
+            req = urllib.request.Request(url, data=json.dumps(body).encode(),
+                                         headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read())
+    except Exception:
+        return None
+
+def query_ollama_models():
+    """Get all installed Ollama models with capabilities."""
+    models = {}
+    tags = http_json(f"{ollama_url}/api/tags")
+    if not tags:
+        return models
+    for m in tags.get("models", []):
+        name = m["name"]
+        details = m.get("details", {})
+        total_b = 0
+        try: total_b = float(details.get("parameter_size", "0").rstrip("B"))
+        except: pass
+
+        show = http_json(f"{ollama_url}/api/show", timeout=5,
+                         body={"name": name})
+        ctx, expert_count, expert_used, has_vision = 0, None, None, False
+        if show:
+            mi = show.get("model_info", {})
+            has_vision = any("vision" in k for k in mi)
+            for k, v in mi.items():
+                if "context_length" in k: ctx = int(v)
+                elif k.endswith(".expert_count"): expert_count = int(v)
+                elif k.endswith(".expert_used_count"): expert_used = int(v)
+
+        active_b = total_b
+        if expert_count and expert_used and expert_count > 1:
+            active_b = round(total_b * expert_used / expert_count, 1)
+
+        models[name] = {"total_b": total_b, "active_b": active_b,
+                        "ctx": ctx, "has_vision": has_vision}
+        base = name.split(":")[0]
+        if base not in models or total_b > models[base]["total_b"]:
+            models[base] = models[name]
+    return models
+
+def query_mlx_models():
+    """Get models served by MLX-OpenAI-Server."""
+    models = set()
+    data = http_json(f"{mlx_url}/v1/models")
+    if data:
+        for m in data.get("data", []):
+            models.add(m["id"])
+    return models
+
+ollama_models = query_ollama_models()
+mlx_models = query_mlx_models()
+
+if is_desktop or desktop_reachable:
+    mode = "Desktop" if is_desktop else "Laptop at home"
+else:
+    mode = f"Laptop away ({ram_gb}GB)"
+print(f"{mode} — {len(ollama_models)} Ollama models, {len(mlx_models)} MLX models", flush=True)
+
+# ── Dynamically build provider model lists ───────────────────────────
+
+# Replace static model lists with what's actually available
+for provider in config.get("Providers", []):
+    if provider["name"] == "ollama":
+        provider["models"] = sorted(ollama_models.keys())
+    elif provider["name"] == "mlx":
+        provider["models"] = sorted(mlx_models)
+    # anthropic stays static (cloud models don't need discovery)
+
+# ── Apply routing preferences ────────────────────────────────────────
+
+if os.path.exists(prefs_file):
+    with open(prefs_file) as f:
+        overrides = json.load(f)
+    for role, value in overrides.items():
+        if role in config.get("Router", {}):
+            config["Router"][role] = value
+
+# ── Check route availability & capability ────────────────────────────
+
+def model_info(provider, model):
+    if provider == "anthropic":
+        return {"total_b": 2000 if "opus" in model else 800,
+                "active_b": 2000 if "opus" in model else 800,
+                "ctx": 1_000_000, "has_vision": True}
+    if provider == "ollama":
+        return ollama_models.get(model, ollama_models.get(model.split(":")[0]))
+    if provider == "mlx" and model in mlx_models:
+        return {"total_b": 0, "active_b": 0, "ctx": 0, "has_vision": False}
+    return None
+
+def meets_filter(role, provider, info):
+    if not info: return False
+    f = filters.get(role, {})
+    providers = f.get("providers")
+    if providers and provider not in providers: return False
+    min_a = f.get("min_active_params_b") or 0
+    max_a = f.get("max_active_params_b")
+    if info["active_b"] > 0 and info["active_b"] < min_a: return False
+    if max_a is not None and info["active_b"] > max_a: return False
+    min_ctx = f.get("min_context") or 0
+    if info["ctx"] > 0 and min_ctx > 0 and info["ctx"] < min_ctx: return False
+    if f.get("requires_vision") and not info.get("has_vision"): return False
+    return True
+
+router = config.get("Router", {})
+cloud_opus = "anthropic,claude-opus-4-6"
+cloud_sonnet = "anthropic,claude-sonnet-4-6"
+recommendations = []
+
+for role in list(router.keys()):
+    if role == "longContextThreshold": continue
+    current = router[role]
+    prov, mod = current.split(",", 1)
+    mod = mod.strip()
+    info = model_info(prov, mod)
+
+    if info and meets_filter(role, prov, info):
+        print(f"  {role}: {current} ✓", flush=True)
+    else:
+        fallback = cloud_opus if role in ("think", "longContext", "image") else cloud_sonnet
+        router[role] = fallback
+        if not info:
+            print(f"  {role}: {current} not available → {fallback}", flush=True)
+            prov_name = current.split(",")[0]
+            mod_name = current.split(",")[1].strip()
+            if prov_name == "ollama":
+                recommendations.append(f"  `ollama pull {mod_name}` → covers '{role}' locally")
+        else:
+            print(f"  {role}: {current} not capable enough → {fallback}", flush=True)
+
+# ── Suggest better local models for cloud-routed roles ───────────────
+
+for role in list(router.keys()):
+    if role == "longContextThreshold": continue
+    current = router[role]
+    if not current.startswith("anthropic,"): continue
+
+    # Check if any local model could handle this role
+    for name, info in sorted(ollama_models.items(),
+                              key=lambda x: -x[1]["total_b"]):
+        if meets_filter(role, "ollama", info):
+            recommendations.append(
+                f"  Local model '{name}' ({info['total_b']}B) could handle '{role}' instead of cloud")
+            break
+
+if recommendations and not (is_desktop or desktop_reachable):
+    print("\nTo reduce cloud usage:", flush=True)
+    for r in recommendations:
+        print(r, flush=True)
+
+# ── Services status ──────────────────────────────────────────────────
+
+if check_only:
+    print("\nServices:", flush=True)
+    # Whisper
+    if "whisper-v3" in mlx_models:
+        print(f"  Whisper v3: available at {mlx_url}/v1/audio/transcriptions", flush=True)
+    # Web search MCP
+    print(f"  Web Search: open-webSearch MCP (Bing, DuckDuckGo, Brave)", flush=True)
+    print(f"\nRouting config: {out_file}", flush=True)
+
+# ── Write config ─────────────────────────────────────────────────────
+
+with open(out_file, "w") as f:
+    json.dump(config, f, indent=2)
+
+if check_only:
+    sys.exit(0)
+PYEOF
+
+[ "$CHECK_ONLY" = true ] && exit 0
+
+exec ccr code "$@"

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+  Sets OLLAMA_HOST for all GUI apps (including Ollama.app) at login.
+  Only needed on the desktop (the model server). On laptops, Ollama
+  can stay on localhost — the pal-mcp-detect wrapper handles routing.
+
+  Installed by install.sh to ~/Library/LaunchAgents/
+  Activate without reboot:  launchctl load ~/Library/LaunchAgents/setenv.OLLAMA_HOST.plist
+-->
+<dict>
+    <key>Label</key>
+    <string>setenv.OLLAMA_HOST</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/launchctl</string>
+        <string>setenv</string>
+        <string>OLLAMA_HOST</string>
+        <string>0.0.0.0:11434</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>

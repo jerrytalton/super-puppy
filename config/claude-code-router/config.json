@@ -1,0 +1,47 @@
+{
+  "LOG": false,
+  "HOST": "127.0.0.1",
+  "Providers": [
+    {
+      "name": "anthropic",
+      "api_base_url": "https://api.anthropic.com/v1/messages",
+      "api_key": "$ANTHROPIC_API_KEY",
+      "models": ["claude-opus-4-6", "claude-sonnet-4-6"]
+    },
+    {
+      "name": "ollama",
+      "api_base_url": "$LOCAL_OLLAMA_URL/v1/chat/completions",
+      "api_key": "ollama",
+      "models": [
+        "qwen3.5",
+        "qwen3.5:35b-a3b",
+        "glm-4.7-flash",
+        "nemotron-3-super",
+        "qwen2.5-coder:32b",
+        "qwen3-vl"
+      ]
+    },
+    {
+      "name": "mlx",
+      "api_base_url": "$LOCAL_MLX_URL/v1/chat/completions",
+      "api_key": "local",
+      "models": [
+        "qwen3.5-fast",
+        "qwen-coder",
+        "qwen3.5-small",
+        "nemotron-super",
+        "qwen3.5-large",
+        "llama-3b"
+      ]
+    }
+  ],
+  "Router": {
+    "default":    "ollama,qwen3.5",
+    "think":      "anthropic,claude-opus-4-6",
+    "background": "mlx,llama-3b",
+    "longContext": "anthropic,claude-opus-4-6",
+    "longContextThreshold": 60000,
+    "image":      "anthropic,claude-opus-4-6",
+    "webSearch":  "ollama,qwen3.5"
+  }
+}

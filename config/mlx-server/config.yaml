@@ -1,0 +1,72 @@
+# MLX-OpenAI-Server configuration
+# Serves MLX-optimized models via an OpenAI-compatible API on port 8000.
+# Each model runs in an isolated subprocess (no Metal/GPU semaphore leaks).
+#
+# This config is for the desktop (512GB RAM). For the laptop (64GB),
+# use config-laptop.yaml instead. The start-local-models script
+# auto-selects based on system memory.
+#
+# Install:  uv pip install mlx-openai-server
+# Run:      mlx-openai-server launch --config ~/.config/mlx-server/config.yaml
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+  log_level: INFO
+
+models:
+  # Tiny model to verify server works — always loaded (1.7GB, CACHED)
+  - model_path: mlx-community/Llama-3.2-3B-Instruct-4bit
+    model_type: lm
+    served_model_name: llama-3b
+    context_length: 8192
+
+  # Fast general-purpose MoE — on demand (downloading)
+  - model_path: mlx-community/Qwen3.5-35B-A3B-4bit
+    model_type: lm
+    served_model_name: qwen3.5-fast
+    context_length: 65536
+    prompt_cache_size: 10
+    on_demand: true
+    on_demand_idle_timeout: 300
+
+  # Code specialist — on demand (downloads on first use)
+  - model_path: mlx-community/Qwen2.5-Coder-32B-Instruct-4bit
+    model_type: lm
+    served_model_name: qwen-coder
+    context_length: 32768
+    prompt_cache_size: 10
+    on_demand: true
+    on_demand_idle_timeout: 300
+
+  # Small model for quick subtasks — on demand (downloads on first use)
+  - model_path: mlx-community/Qwen3.5-9B-4bit
+    model_type: lm
+    served_model_name: qwen3.5-small
+    context_length: 32768
+    on_demand: true
+    on_demand_idle_timeout: 300
+
+  # Agentic reasoning — on demand (downloads on first use, ~51GB)
+  - model_path: MoringLabs/Nemotron-3-Super-120B-A12B-MLX-3.6bit
+    model_type: lm
+    served_model_name: nemotron-super
+    context_length: 65536
+    prompt_cache_size: 10
+    on_demand: true
+    on_demand_idle_timeout: 300
+
+  # Flagship reasoning — on demand (CACHED)
+  - model_path: mlx-community/Qwen3.5-397B-A17B-4bit
+    model_type: lm
+    served_model_name: qwen3.5-large
+    context_length: 65536
+    on_demand: true
+    on_demand_idle_timeout: 120
+
+  # Speech-to-text — on demand (CACHED)
+  - model_path: mlx-community/whisper-large-v3-mlx
+    model_type: whisper
+    served_model_name: whisper-v3
+    on_demand: true
+    on_demand_idle_timeout: 120
