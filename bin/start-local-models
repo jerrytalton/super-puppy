@@ -60,12 +60,12 @@ pick_mlx_config() {
 }
 
 stop_services() {
-    echo "Stopping local model services..."
+    echo "Stopping Super Puppy services..."
 
     pkill -f "mlx-openai-server" 2>/dev/null && echo "  MLX-OpenAI-Server stopped." || echo "  MLX-OpenAI-Server not running."
     rm -f "$MLX_PID_FILE"
 
-    pkill -x "ollama" 2>/dev/null && echo "  Ollama stopped." || echo "  Ollama not running."
+    echo "  Ollama left running (system service, not Super Puppy's to stop)."
     rm -f "$OLLAMA_PID_FILE"
 
     echo "Done."
