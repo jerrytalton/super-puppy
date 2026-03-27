@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+  Launches the Local Models menu bar app at login.
+  Works on both desktop and laptop — the app auto-detects its role.
+
+  Installed by install.sh to ~/Library/LaunchAgents/
+  Manual control:
+    launchctl load   ~/Library/LaunchAgents/com.local-models.menubar.plist
+    launchctl unload ~/Library/LaunchAgents/com.local-models.menubar.plist
+-->
+<dict>
+    <key>Label</key>
+    <string>com.local-models.menubar</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>bash</string>
+        <string>-l</string>
+        <string>-c</string>
+        <string>exec "$HOME/bin/local-models-menubar"</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/local-models-menubar.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/local-models-menubar.log</string>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+</dict>
+</plist>

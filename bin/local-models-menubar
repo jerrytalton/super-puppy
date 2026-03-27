@@ -1,0 +1,4 @@
+#!/bin/bash
+# Launcher for the Local Models menu bar app.
+# Pins to Python 3.12 because pyobjc-core doesn't build on 3.14+.
+exec uv run --python 3.12 "$HOME/super-puppy/app/menubar.py"
