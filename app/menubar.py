@@ -817,7 +817,7 @@ class LocalModelsApp(rumps.App):
         self.menu_new_models_header = rumps.MenuItem("New Models Available")
         self.menu_check_now = rumps.MenuItem("Check for New Models", callback=self.check_models_now)
         self.menu_separator4 = rumps.separator
-        self.menu_action = rumps.MenuItem("Start Services", callback=self.toggle_services)
+        self.menu_action = rumps.MenuItem("Start MLX Server", callback=self.toggle_services)
         self.menu_quit = rumps.MenuItem("Quit", callback=self.quit_app)
 
         self.menu = [
@@ -1157,9 +1157,9 @@ class LocalModelsApp(rumps.App):
 
         # Action button
         if self.mode == "stopped":
-            self.menu_action.title = "Start Services"
+            self.menu_action.title = "Start MLX Server"
         else:
-            self.menu_action.title = "Stop Services"
+            self.menu_action.title = "Stop MLX Server"
 
     # -------------------------------------------------------------------
     # Route selection (pick one model per task type)
