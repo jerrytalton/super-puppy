@@ -1,4 +1,6 @@
 #!/bin/bash
-# Launcher for the Local Models menu bar app.
-# Pins to Python 3.12 because pyobjc-core doesn't build on 3.14+.
-exec uv run --python 3.12 "$HOME/super-puppy/app/menubar.py"
+# Launcher for the Super Puppy menu bar app.
+# Finds the repo by resolving this script's symlink back to source.
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0" || echo "$0")")" && pwd)"
+REPO_DIR="$(dirname "$SCRIPT_DIR")"
+exec uv run --python 3.12 "$REPO_DIR/app/menubar.py"
