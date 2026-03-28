@@ -3,4 +3,5 @@
 # Finds the repo by resolving this script's symlink back to source.
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0" || echo "$0")")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
-exec uv run --python 3.12 "$REPO_DIR/app/menubar.py"
+UV="${HOME}/.local/bin/uv"
+exec "$UV" run --python 3.12 "$REPO_DIR/app/menubar.py"
