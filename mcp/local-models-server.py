@@ -144,12 +144,43 @@ async def discover_models():
 
 
 DEFAULT_PREFERENCES = {
-    "code": ["qwen3-coder", "qwen2.5-coder:32b", "qwen2.5-coder", "qwen-coder", "qwen3.5"],
-    "general": ["qwen3.5", "qwen3.5-fast", "qwen3.5-large"],
-    "translation": ["cogito-2.1", "qwen3.5", "qwen3.5-large"],
-    "reasoning": ["qwen3.5-large", "nemotron-super", "DeepSeek-R1", "qwen3.5"],
-    "vision": ["qwen3-vl"],
-    "long_context": ["qwen3.5", "qwen3.5-large"],
+    "code": [
+        "qwen3-coder:480b",    # full-size coding MoE (35B active) — best quality
+        "qwen3-coder",         # 30B MoE (3B active) — fast, good default
+        "qwen2.5-coder:32b",   # dense 32B — solid fallback
+        "glm-4.7-flash",       # 30B MoE all-rounder with strong code
+        "qwen3.5",             # general-purpose fallback
+    ],
+    "general": [
+        "qwen3.5",             # 122B MoE (10B active), 256K ctx, 201 languages
+        "glm-4.7-flash",       # 30B MoE, 200K ctx, fast
+        "nemotron-3-super",    # 120B MoE (12B active), 256K ctx
+        "qwen3.5-fast",        # MLX variant
+    ],
+    "translation": [
+        "cogito-2.1",          # 671B MoE (37B active), 30+ languages, hybrid reasoning
+        "qwen3.5",             # 201 languages natively
+        "glm-4.7-flash",       # multilingual
+    ],
+    "reasoning": [
+        "deepseek-r1:671b",    # gold standard reasoning, explicit chain-of-thought
+        "cogito-2.1",          # 671B hybrid reasoning, fewer tokens than R1
+        "nemotron-3-super",    # 120B MoE, strong agentic reasoning, fast
+        "qwen3.5-large",       # 397B MoE (17B active), MLX
+        "qwen3.5",             # thinking mode available
+        "glm-4.7-flash",       # thinking mode, fast
+    ],
+    "vision": [
+        "qwen3-vl",            # best open vision model
+        "qwen3.5",             # native multimodal (built-in vision)
+    ],
+    "long_context": [
+        "qwen3.5",             # 256K native
+        "nemotron-3-super",    # 256K native
+        "glm-4.7-flash",       # 200K
+        "deepseek-r1:671b",    # 164K
+        "qwen3.5-large",       # 64K (MLX limit)
+    ],
 }
 
 

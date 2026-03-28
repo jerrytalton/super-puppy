@@ -155,11 +155,11 @@ MCP_TASK_LABELS = {
 }
 
 MCP_DEFAULT_PREFS = {
-    "code": ["qwen3-coder", "qwen2.5-coder:32b", "qwen2.5-coder", "qwen-coder", "qwen3.5"],
-    "general": ["qwen3.5", "qwen3.5-fast", "qwen3.5-large"],
-    "translation": ["cogito-2.1", "qwen3.5", "qwen3.5-large"],
-    "reasoning": ["qwen3.5-large", "nemotron-super", "DeepSeek-R1", "qwen3.5"],
-    "long_context": ["qwen3.5", "qwen3.5-large"],
+    "code": ["qwen3-coder:480b", "qwen3-coder", "qwen2.5-coder:32b", "glm-4.7-flash", "qwen3.5"],
+    "general": ["qwen3.5", "glm-4.7-flash", "nemotron-3-super", "qwen3.5-fast"],
+    "translation": ["cogito-2.1", "qwen3.5", "glm-4.7-flash"],
+    "reasoning": ["deepseek-r1:671b", "cogito-2.1", "nemotron-3-super", "qwen3.5-large", "qwen3.5", "glm-4.7-flash"],
+    "long_context": ["qwen3.5", "nemotron-3-super", "glm-4.7-flash", "deepseek-r1:671b"],
 }
 
 # Filters: include/exclude patterns and numeric thresholds.
