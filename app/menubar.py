@@ -655,6 +655,7 @@ class ModelInfoCache:
         self._raw = {}          # "provider:model" -> {total, active, ctx, has_vision}
         self._available = set() # set of "provider:model" keys that are actually usable
         self._ollama_models = None  # lazily fetched
+        self._ollama_url = None     # URL used to fetch _ollama_models
         self._ollama_vision = set() # ollama models with vision capability
         self._role_filters = load_role_filters()
 
@@ -663,9 +664,11 @@ class ModelInfoCache:
 
         mlx_live_models: list of model IDs currently served by MLX-OpenAI-Server.
         """
-        # Fetch all Ollama models in one call
-        if self._ollama_models is None:
+        # Re-fetch if the Ollama URL changed (e.g. switched from local to remote)
+        if self._ollama_models is None or self._ollama_url != ollama_url:
             self._ollama_models = query_ollama_all_models(ollama_url)
+            self._ollama_url = ollama_url
+            self._available.clear()
 
         for provider, model in ccr_models:
             key = f"{provider}:{model}"
