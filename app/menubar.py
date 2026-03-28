@@ -19,6 +19,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 import urllib.request
@@ -1616,5 +1617,26 @@ class LocalModelsApp(rumps.App):
         rumps.quit_application()
 
 
+PID_FILE = os.path.expanduser("~/.config/local-models/menubar.pid")
+
+
+def acquire_lock():
+    """Ensure only one instance runs. Exit if another is alive."""
+    os.makedirs(os.path.dirname(PID_FILE), exist_ok=True)
+    if os.path.exists(PID_FILE):
+        try:
+            old_pid = int(open(PID_FILE).read().strip())
+            os.kill(old_pid, 0)  # check if alive
+            print(f"Already running (PID {old_pid}). Exiting.", file=sys.stderr)
+            sys.exit(0)
+        except (ProcessLookupError, ValueError):
+            pass  # stale PID file
+    with open(PID_FILE, "w") as f:
+        f.write(str(os.getpid()))
+    import atexit
+    atexit.register(lambda: os.remove(PID_FILE) if os.path.exists(PID_FILE) else None)
+
+
 if __name__ == "__main__":
+    acquire_lock()
     LocalModelsApp().run()
