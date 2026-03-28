@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["rumps", "pyyaml"]
+# dependencies = ["rumps", "pyyaml", "pyobjc-framework-WebKit"]
 # ///
 """
 Local Models — macOS menu bar app.
@@ -25,7 +25,29 @@ import time
 import urllib.request
 import urllib.error
 
+import objc
 import rumps
+from AppKit import NSCommandKeyMask, NSObject, NSWindow
+
+
+class _ProfileWindow(NSWindow):
+    """NSWindow subclass that handles Cmd+W in a menu-bar app."""
+
+    def performKeyEquivalent_(self, event):
+        if (event.modifierFlags() & NSCommandKeyMask
+                and event.charactersIgnoringModifiers() == "w"):
+            self.performClose_(None)
+            return True
+        return NSWindow.performKeyEquivalent_(self, event)
+
+
+class _ProfileWindowDelegate(NSObject):
+    """Clears the app's window reference on close."""
+    callback = None
+
+    def windowWillClose_(self, notification):
+        if self.callback:
+            self.callback()
 
 
 # ---------------------------------------------------------------------------
@@ -312,6 +334,19 @@ def load_mcp_prefs():
         except Exception:
             pass
     return {}
+
+
+PROFILES_FILE = os.path.expanduser("~/.config/local-models/profiles.json")
+
+
+def load_profiles():
+    if os.path.exists(PROFILES_FILE):
+        try:
+            with open(PROFILES_FILE) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"active": None, "profiles": {}}
 
 
 def save_mcp_prefs(prefs):
@@ -985,6 +1020,12 @@ class LocalModelsApp(rumps.App):
         self.update_summary = ""
         self.app_ready = False         # set True once run loop starts
 
+        # Profile viewer state
+        self.profile_server = None
+        self.profile_port = None
+        self.profile_window = None
+        self._win_delegate = None
+
         # Menu items
         self.menu_mode = rumps.MenuItem("Mode: detecting...")
         self.menu_separator1 = rumps.separator
@@ -992,13 +1033,8 @@ class LocalModelsApp(rumps.App):
         self.menu_mlx = rumps.MenuItem("MLX Server: ...")
         self.menu_mcp_status = rumps.MenuItem("MCP: checking...")
         self.menu_separator2 = rumps.separator
-        # One submenu per task type (populated in _update_menu)
-        self.menu_tasks = {task: rumps.MenuItem(label)
-                           for task, label in MCP_TASK_LABELS.items()}
-        self.menu_separator_caps = rumps.separator
-        # Specialized task submenus (vision, image gen, transcription)
-        self.menu_special = {key: rumps.MenuItem(info["label"])
-                             for key, info in MCP_SPECIAL_TASKS.items()}
+        self.menu_profile = rumps.MenuItem("Profile: (none)")
+        self.menu_open_profiles = rumps.MenuItem("Model Profiles...", callback=self.open_profiles)
         self.menu_separator3 = rumps.separator
         self.menu_new_models_header = rumps.MenuItem("New Models Available")
         self.menu_check_now = rumps.MenuItem("Check for New Models", callback=self.check_models_now)
@@ -1015,9 +1051,8 @@ class LocalModelsApp(rumps.App):
             self.menu_mlx,
             self.menu_mcp_status,
             self.menu_separator2,
-            *self.menu_tasks.values(),
-            self.menu_separator_caps,
-            *self.menu_special.values(),
+            self.menu_profile,
+            self.menu_open_profiles,
             self.menu_separator3,
             self.menu_new_models_header,
             self.menu_check_now,
@@ -1199,9 +1234,8 @@ class LocalModelsApp(rumps.App):
             self.menu_ollama.title = f"Ollama: {ollama_status}"
             self.menu_mlx.title = f"MLX Server: {mlx_status}"
 
-        # MCP status line
+        # MCP + profile status
         self.mcp_configured = is_mcp_configured()
-        self.mcp_prefs = load_mcp_prefs()
         parts = []
         if self.ollama_models:
             parts.append(f"{len(self.ollama_models)} Ollama")
@@ -1213,178 +1247,21 @@ class LocalModelsApp(rumps.App):
         else:
             self.menu_mcp_status.title = f"MCP: not configured ({summary})"
 
-        # Build model info for all local models
-        ollama_url = (self.ollama_remote if self.mode == "client"
-                      else OLLAMA_LOCAL)
-        mlx_live = set(self.mlx_models)
-        all_local = (
-            [("ollama", m) for m in self.ollama_models]
-            + [("mlx", m) for m in self.mlx_models]
-        )
-        self.model_info_cache.populate(
-            all_local, ollama_url, self.mlx_config_info, mlx_live)
-
-        from AppKit import (NSImage, NSSize, NSFont,
-                            NSMutableParagraphStyle,
-                            NSMutableAttributedString,
-                            NSAttributedString,
-                            NSParagraphStyleAttributeName,
-                            NSFontAttributeName,
-                            NSForegroundColorAttributeName,
-                            NSColor)
-        from Foundation import NSTextTab
-
-        para = NSMutableParagraphStyle.alloc().init()
-        para.setTabStops_([])
-        para.addTabStop_(NSTextTab.alloc().initWithType_location_(1, 280))
-        menu_font = NSFont.menuFontOfSize_(13)
-        detail_font = NSFont.menuFontOfSize_(11)
-        badge_font = NSFont.menuFontOfSize_(9)
-
-        # Find the recommended model for each task (first available from defaults)
-        all_model_names = self.ollama_models + self.mlx_models
-        recommended = {}
-        for task, pref_list in MCP_DEFAULT_PREFS.items():
-            for pref in pref_list:
-                if pref in all_model_names:
-                    recommended[task] = pref
-                    break
-                for m in all_model_names:
-                    if m.startswith(pref):
-                        recommended[task] = m
-                        break
-                if task in recommended:
-                    break
-
-        # Task→model submenus (top level)
-        for task, label in MCP_TASK_LABELS.items():
-            submenu = self.menu_tasks[task]
-            try:
-                submenu.clear()
-            except AttributeError:
-                pass
-
-            current_pref = self.mcp_prefs.get(task)
-            rec_model = recommended.get(task)
-            task_filter = MCP_TASK_FILTERS.get(task, {})
-
-            for provider, model in sorted(all_local,
-                                           key=self.model_info_cache.sort_key):
-                if not self.model_info_cache.is_available(provider, model):
-                    continue
-                raw = self.model_info_cache._raw.get(f"{provider}:{model}", {})
-                if not _model_matches_filter(model, raw, task_filter):
-                    continue
-                name, detail = self.model_info_cache.get_label(provider, model)
-                is_recommended = (model == rec_model)
-
-                astr = NSMutableAttributedString.alloc().initWithString_attributes_(
-                    name, {
-                        NSParagraphStyleAttributeName: para,
-                        NSFontAttributeName: menu_font,
-                    })
-                if is_recommended:
-                    badge = NSAttributedString.alloc().initWithString_attributes_(
-                        "  DEFAULT", {
-                            NSFontAttributeName: badge_font,
-                            NSForegroundColorAttributeName: NSColor.secondaryLabelColor(),
-                            NSParagraphStyleAttributeName: para,
-                        })
-                    astr.appendAttributedString_(badge)
-                if detail:
-                    detail_str = NSAttributedString.alloc().initWithString_attributes_(
-                        f"\t{detail}", {
-                            NSFontAttributeName: detail_font,
-                            NSForegroundColorAttributeName: NSColor.secondaryLabelColor(),
-                            NSParagraphStyleAttributeName: para,
-                        })
-                    astr.appendAttributedString_(detail_str)
-
-                item = rumps.MenuItem(name,
-                                     callback=self._make_mcp_pref_callback(task, model))
-                item._menuitem.setAttributedTitle_(astr)
-
-                # Selected: explicit pref, or recommended if no pref set
-                if current_pref:
-                    item.state = 1 if model == current_pref else 0
-                else:
-                    item.state = 1 if is_recommended else 0
-
-                icon_path = PROVIDER_ICON_PATH.get(provider, "")
-                if icon_path and os.path.exists(icon_path):
-                    ns_image = NSImage.alloc().initWithContentsOfFile_(icon_path)
-                    if ns_image:
-                        ns_image.setTemplate_(False)
-                        ns_image.setSize_(NSSize(16, 16))
-                        item._menuitem.setImage_(ns_image)
-
-                submenu.add(item)
-
-        # Specialized task submenus (matched by prefix)
-        for spec_key, spec_info in MCP_SPECIAL_TASKS.items():
-            submenu = self.menu_special[spec_key]
-            try:
-                submenu.clear()
-            except AttributeError:
-                pass
-
-            current_pref = self.mcp_prefs.get(spec_key)
-            matching = []
-            for m in all_model_names:
-                if any(m.startswith(p) for p in spec_info["prefixes"]):
-                    matching.append(m)
-
-            if not matching:
-                submenu.title = f"{spec_info['label']}: not installed"
-                submenu.add(rumps.MenuItem("  (no models available)"))
-            else:
-                submenu.title = spec_info["label"]
-                first = True
-                for model in matching:
-                    # Find provider
-                    provider = "ollama" if model in self.ollama_models else "mlx"
-                    name, detail = self.model_info_cache.get_label(provider, model)
-
-                    astr = NSMutableAttributedString.alloc().initWithString_attributes_(
-                        name, {
-                            NSParagraphStyleAttributeName: para,
-                            NSFontAttributeName: menu_font,
-                        })
-                    if first and not current_pref:
-                        badge = NSAttributedString.alloc().initWithString_attributes_(
-                            "  DEFAULT", {
-                                NSFontAttributeName: badge_font,
-                                NSForegroundColorAttributeName: NSColor.secondaryLabelColor(),
-                                NSParagraphStyleAttributeName: para,
-                            })
-                        astr.appendAttributedString_(badge)
-                    if detail:
-                        detail_str = NSAttributedString.alloc().initWithString_attributes_(
-                            f"\t{detail}", {
-                                NSFontAttributeName: detail_font,
-                                NSForegroundColorAttributeName: NSColor.secondaryLabelColor(),
-                                NSParagraphStyleAttributeName: para,
-                            })
-                        astr.appendAttributedString_(detail_str)
-
-                    item = rumps.MenuItem(name,
-                                         callback=self._make_mcp_pref_callback(spec_key, model))
-                    item._menuitem.setAttributedTitle_(astr)
-                    if current_pref:
-                        item.state = 1 if model == current_pref else 0
-                    else:
-                        item.state = 1 if first else 0
-
-                    icon_path = PROVIDER_ICON_PATH.get(provider, "")
-                    if icon_path and os.path.exists(icon_path):
-                        ns_image = NSImage.alloc().initWithContentsOfFile_(icon_path)
-                        if ns_image:
-                            ns_image.setTemplate_(False)
-                            ns_image.setSize_(NSSize(16, 16))
-                            item._menuitem.setImage_(ns_image)
-
-                    submenu.add(item)
-                    first = False
+        # Active profile
+        profiles_data = load_profiles()
+        active = profiles_data.get("active")
+        if active and active in profiles_data.get("profiles", {}):
+            label = profiles_data["profiles"][active].get("label", active)
+            # Estimate memory from loaded models
+            ps = http_get_json(f"{OLLAMA_LOCAL}/api/ps", timeout=2)
+            loaded_mem = 0
+            if ps:
+                for m in ps.get("models", []):
+                    loaded_mem += m.get("size_vram", 0)
+            mem_str = f"{loaded_mem / 1e9:.0f}GB" if loaded_mem else "?"
+            self.menu_profile.title = f"Profile: {label} ({mem_str} / {self.ram_gb}GB)"
+        else:
+            self.menu_profile.title = "Profile: (none)"
 
         # New models submenu
         try:
@@ -1423,23 +1300,86 @@ class LocalModelsApp(rumps.App):
             self.menu_action.title = "Stop MLX Server"
 
     # -------------------------------------------------------------------
-    # MCP preference selection
+    # Profile viewer (native WKWebView window)
     # -------------------------------------------------------------------
 
-    def _make_mcp_pref_callback(self, task, model_name):
-        """Create a callback that sets the preferred model for a task."""
-        def callback(sender):
-            if model_name is None:
-                self.mcp_prefs.pop(task, None)
-            else:
-                self.mcp_prefs[task] = model_name
-            save_mcp_prefs(self.mcp_prefs)
-            # Update radio states
-            if sender.parent:
-                for sibling in sender.parent.values():
-                    sibling.state = 0
-            sender.state = 1
-        return callback
+    def open_profiles(self, _):
+        """Launch profile server as subprocess and open native webview window."""
+        if self.profile_window is not None:
+            self.profile_window.makeKeyAndOrderFront_(None)
+            from AppKit import NSApp
+            NSApp.activateIgnoringOtherApps_(True)
+            return
+
+        # Start Flask server as separate uv run subprocess (has its own deps)
+        if self.profile_server is None or self.profile_server.poll() is not None:
+            import socket
+            s = socket.socket()
+            s.bind(("127.0.0.1", 0))
+            self.profile_port = s.getsockname()[1]
+            s.close()
+
+            env = os.environ.copy()
+            env["PROFILE_SERVER_PORT"] = str(self.profile_port)
+            env["OLLAMA_URL"] = (
+                self.ollama_remote if self.mode == "client" else OLLAMA_LOCAL)
+            env["MLX_URL"] = (
+                self.mlx_remote if self.mode == "client" else MLX_LOCAL)
+
+            self.profile_server = subprocess.Popen(
+                ["uv", "run", "--python", "3.12",
+                 os.path.join(SCRIPT_DIR, "profile-server.py")],
+                env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            # Wait for server to be ready
+            import urllib.request
+            for _ in range(20):
+                time.sleep(0.5)
+                try:
+                    urllib.request.urlopen(
+                        f"http://127.0.0.1:{self.profile_port}/api/system",
+                        timeout=1)
+                    break
+                except Exception:
+                    continue
+
+        # Open native WKWebView window
+        from AppKit import (NSRect, NSBackingStoreBuffered,
+                            NSWindowStyleMaskTitled, NSWindowStyleMaskClosable,
+                            NSApplicationActivationPolicyRegular,
+                            NSApplicationActivationPolicyAccessory,
+                            NSApp)
+        from WebKit import WKWebView
+        from Foundation import NSURL, NSURLRequest
+
+        frame = NSRect((200, 200), (960, 700))
+        style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+        window = _ProfileWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            frame, style, NSBackingStoreBuffered, False)
+        window.setTitle_("Model Profiles")
+        window.center()
+        window.setReleasedWhenClosed_(False)
+
+        delegate = _ProfileWindowDelegate.alloc().init()
+        def _on_close():
+            self.profile_window = None
+            NSApp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+        delegate.callback = _on_close
+        self._win_delegate = delegate
+        window.setDelegate_(delegate)
+
+        webview = WKWebView.alloc().initWithFrame_(window.contentView().bounds())
+        webview.setAutoresizingMask_(0x12)  # flexible width + height
+        url = NSURL.URLWithString_(f"http://127.0.0.1:{self.profile_port}")
+        webview.loadRequest_(NSURLRequest.requestWithURL_(url))
+        window.contentView().addSubview_(webview)
+
+        # Become a "real" app so key equivalents (Cmd+W) dispatch properly
+        NSApp.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+        NSApp.activateIgnoringOtherApps_(True)
+        window.makeKeyAndOrderFront_(None)
+
+        self.profile_window = window
 
     # -------------------------------------------------------------------
     # Model discovery
@@ -1612,29 +1552,28 @@ class LocalModelsApp(rumps.App):
     # -------------------------------------------------------------------
 
     def quit_app(self, _):
+        if self.profile_server and self.profile_server.poll() is None:
+            self.profile_server.terminate()
         if self.servers_started and self.mode != "client":
             self.stop_services()
         rumps.quit_application()
 
 
-PID_FILE = os.path.expanduser("~/.config/local-models/menubar.pid")
+LOCK_FILE = os.path.expanduser("~/.config/local-models/menubar.lock")
+_lock_fd = None
 
 
 def acquire_lock():
-    """Ensure only one instance runs. Exit if another is alive."""
-    os.makedirs(os.path.dirname(PID_FILE), exist_ok=True)
-    if os.path.exists(PID_FILE):
-        try:
-            old_pid = int(open(PID_FILE).read().strip())
-            os.kill(old_pid, 0)  # check if alive
-            print(f"Already running (PID {old_pid}). Exiting.", file=sys.stderr)
-            sys.exit(0)
-        except (ProcessLookupError, ValueError):
-            pass  # stale PID file
-    with open(PID_FILE, "w") as f:
-        f.write(str(os.getpid()))
-    import atexit
-    atexit.register(lambda: os.remove(PID_FILE) if os.path.exists(PID_FILE) else None)
+    """Ensure only one instance runs using flock. Exits if another holds the lock."""
+    import fcntl
+    global _lock_fd
+    os.makedirs(os.path.dirname(LOCK_FILE), exist_ok=True)
+    _lock_fd = open(LOCK_FILE, "w")
+    try:
+        fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("Already running. Exiting.", file=sys.stderr)
+        sys.exit(0)
 
 
 if __name__ == "__main__":
