@@ -70,7 +70,7 @@ async def discover_models():
                     has_vision = any("vision" in k for k in mi)
                     expert_ffn, embed_len, block_count = 0, 0, 0
                     for k, v in mi.items():
-                        if "context_length" in k:
+                        if k.endswith(".context_length"):
                             ctx = int(v)
                         elif k.endswith(".expert_count"):
                             expert_count = int(v)
