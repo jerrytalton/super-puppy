@@ -41,6 +41,10 @@ body {
 .prof-btn.go {
   margin-left: auto; background: var(--green); color: #fff; border-color: var(--green); font-weight: 600;
 }
+.prof-btn.warm {
+  background: var(--surface); color: var(--amber); border-color: var(--amber); font-weight: 600;
+}
+.prof-btn.warm:hover { background: var(--amber); color: #fff; }
 .prof-btn.go:hover { opacity: 0.85; }
 .prof-btn:disabled { opacity: 0.4; pointer-events: none; }
 
@@ -96,8 +100,6 @@ body {
 }
 .card:hover { border-color: var(--accent); }
 .card.selected { border-color: var(--accent); background: rgba(0,122,255,0.06); }
-.card .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--text3); }
-.card.loaded .dot { background: var(--green); }
 .card-body { flex: 1; min-width: 0; }
 .card-name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card-meta { font-size: 11px; color: var(--text2); margin-top: 1px; }
@@ -132,10 +134,9 @@ const TC = {
   long_context:'#5ac8fa', translation:'#ff9f0a',
   vision:'#ff2d55', image_gen:'#ffd60a', transcription:'#ac8e68',
 };
-// Canonical task order — memory bar follows this
 const TASK_ORDER = ['code','general','reasoning','long_context','translation','vision','image_gen','transcription'];
 
-let S = { sys:null, models:[], loaded:[], tasks:{}, profiles:{active:null,profiles:{}},
+let S = { sys:null, models:[], tasks:{}, profiles:{active:null,profiles:{}},
            sel:null, picks:{}, openTasks:new Set() };
 
 const fmt = b => b>=1e12?(b/1e12).toFixed(1)+'TB':b>=1e9?Math.round(b/1e9)+'GB':b>=1e6?Math.round(b/1e6)+'MB':b+'B';
@@ -144,14 +145,13 @@ const fmtC = c => c>=1e6?Math.round(c/1e6)+'M':c>=1024?Math.floor(c/1024)+'K':c>
 const findModel = name => S.models.find(m => m.name === name) || S.models.find(m => m.name.startsWith(name + ':'));
 
 async function init() {
-  const [sys,models,loaded,tasks,profiles] = await Promise.all([
+  const [sys,models,tasks,profiles] = await Promise.all([
     fetch('/api/system').then(r=>r.json()),
     fetch('/api/models').then(r=>r.json()),
-    fetch('/api/models/loaded').then(r=>r.json()),
     fetch('/api/tasks').then(r=>r.json()),
     fetch('/api/profiles').then(r=>r.json()),
   ]);
-  Object.assign(S, {sys,models,loaded,tasks,profiles});
+  Object.assign(S, {sys,models,tasks,profiles});
   S.sel = profiles.active || Object.keys(profiles.profiles)[0] || null;
   if (S.sel && S.profiles.profiles[S.sel]?.tasks)
     S.picks = {...S.profiles.profiles[S.sel].tasks};
@@ -174,8 +174,6 @@ function fillDefaults() {
   }
 }
 
-function loadedSet() { return new Set(S.loaded.map(m=>m.name)); }
-
 function render() {
   document.getElementById('subtitle').textContent =
     S.sys ? `${S.sys.total_ram_gb}GB unified memory · ${S.models.length} models` : '';
@@ -196,11 +194,20 @@ function renderProfiles() {
     b.onclick = () => { S.sel = name; S.picks = {...(p.tasks||{})}; fillDefaults(); render(); };
     el.appendChild(b);
   }
-  if (S.sel && S.sel !== S.profiles.active) {
+  const isActive = S.sel === S.profiles.active;
+  if (S.sel && !isActive) {
     const b = document.createElement('button');
     b.className = 'prof-btn go';
     b.textContent = 'Activate';
     b.onclick = () => activate(S.sel);
+    el.appendChild(b);
+  }
+  if (S.sel && isActive) {
+    const b = document.createElement('button');
+    b.className = 'prof-btn warm';
+    b.textContent = 'Pre-warm';
+    b.title = 'Load preferred models into server memory';
+    b.onclick = () => warm(S.sel);
     el.appendChild(b);
   }
 }
@@ -213,7 +220,6 @@ function renderMemory() {
 
   const ram = S.sys?.total_ram_bytes || 512*(1<<30);
 
-  // Unique models from picks, ordered by TASK_ORDER
   const seen = new Set();
   const segs = [];
   for (const task of TASK_ORDER) {
@@ -223,8 +229,7 @@ function renderMemory() {
     if (!m || seen.has(m.name)) continue;
     seen.add(m.name);
     segs.push({ name: m.name, bytes: m.vram_bytes || m.disk_bytes,
-                color: TC[task] || '#888', task,
-                loaded: loadedSet().has(m.name) });
+                color: TC[task] || '#888', task });
   }
 
   const totalUsed = segs.reduce((s,x) => s + x.bytes, 0);
@@ -250,7 +255,6 @@ function renderMemory() {
     legend.appendChild(li);
   });
 
-  // Free space or overflow marker
   if (overflows) {
     const limit = document.createElement('div');
     limit.className = 'mem-bar-limit';
@@ -274,7 +278,6 @@ function renderMemory() {
 function renderTasks() {
   const el = document.getElementById('tasks');
   el.innerHTML = '';
-  const ls = loadedSet();
 
   for (const key of TASK_ORDER) {
     const info = S.tasks[key];
@@ -282,10 +285,9 @@ function renderTasks() {
     const color = TC[key] || '#888';
     const picked = S.picks[key];
 
-    // Find default
     let def = null;
     for (const pref of (info.defaults||[])) {
-      const f = S.models.find(m => m.name===pref || m.name.startsWith(pref));
+      const f = findModel(pref);
       if (f) { def = f.name; break; }
     }
     if (!def && info.prefixes) {
@@ -299,7 +301,6 @@ function renderTasks() {
       .sort((a,b) => b.total_params_b - a.total_params_b);
 
     const selectedName = picked || def;
-    const selectedModel = S.models.find(m => m.name === selectedName);
     const selectedLabel = selectedName ? selectedName.split(':')[0] : 'none';
 
     const row = document.createElement('div');
@@ -330,7 +331,7 @@ function renderTasks() {
       const tooLarge = (m.vram_bytes || m.disk_bytes) > ram;
 
       const card = document.createElement('div');
-      card.className = 'card' + (isSelected?' selected':'') + (ls.has(m.name)?' loaded':'') + (tooLarge?' too-large':'');
+      card.className = 'card' + (isSelected?' selected':'') + (tooLarge?' too-large':'');
 
       if (!tooLarge) {
         card.onclick = () => { S.picks[key] = m.name; render(); };
@@ -348,7 +349,6 @@ function renderTasks() {
       if (tooLarge) meta.push('exceeds RAM');
 
       card.innerHTML = `
-        <div class="dot"></div>
         <div class="card-body">
           <div class="card-name">${m.name}</div>
           <div class="card-meta">${meta.join(' · ')}</div>
@@ -374,21 +374,24 @@ async function activate(name) {
     });
     await fetch(`/api/profiles/${name}/activate`, {method:'POST'});
     S.profiles.active = name;
-    S.loaded = await fetch('/api/models/loaded').then(r=>r.json());
-    for (const m of S.models) m.is_loaded = S.loaded.some(l=>l.name===m.name);
     render();
   } catch(e) { alert('Failed: '+e.message); }
 }
 
-init();
-setInterval(async () => {
+async function warm(name) {
+  const btn = document.querySelector('.prof-btn.warm');
+  if (btn) { btn.disabled = true; btn.textContent = 'Warming...'; }
   try {
-    S.loaded = await fetch('/api/models/loaded').then(r=>r.json());
-    const ls = new Set(S.loaded.map(m=>m.name));
-    for (const m of S.models) m.is_loaded = ls.has(m.name);
-    renderMemory();
-  } catch(e) {}
-}, 5000);
+    const resp = await fetch(`/api/profiles/${name}/warm`, {method:'POST'});
+    const data = await resp.json();
+    if (btn) {
+      btn.textContent = data.loaded?.length ? `Loaded ${data.loaded.length}` : 'Already warm';
+      setTimeout(() => render(), 1500);
+    }
+  } catch(e) { alert('Failed: '+e.message); }
+}
+
+init();
 </script>
 </body>
 </html>

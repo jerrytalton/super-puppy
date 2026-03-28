@@ -1027,38 +1027,24 @@ class LocalModelsApp(rumps.App):
         self._win_delegate = None
 
         # Menu items
-        self.menu_mode = rumps.MenuItem("Mode: detecting...")
-        self.menu_separator1 = rumps.separator
-        self.menu_ollama = rumps.MenuItem("Ollama: ...")
-        self.menu_mlx = rumps.MenuItem("MLX Server: ...")
-        self.menu_mcp_status = rumps.MenuItem("MCP: checking...")
-        self.menu_separator2 = rumps.separator
-        self.menu_profile = rumps.MenuItem("Profile: (none)")
-        self.menu_open_profiles = rumps.MenuItem("Model Profiles...", callback=self.open_profiles)
-        self.menu_separator3 = rumps.separator
-        self.menu_new_models_header = rumps.MenuItem("New Models Available")
-        self.menu_check_now = rumps.MenuItem("Check for New Models", callback=self.check_models_now)
-        self.menu_separator4 = rumps.separator
-        self.menu_update = rumps.MenuItem("Up to date")
-        self.menu_separator5 = rumps.separator
-        self.menu_action = rumps.MenuItem("Start MLX Server", callback=self.toggle_services)
+        self.menu_status = rumps.MenuItem("Starting...")
+        self.menu_health = rumps.MenuItem("")
+        self.menu_profiles = rumps.MenuItem("Model Profiles...",
+                                           callback=self.open_profiles)
+        self.menu_new_models = rumps.MenuItem("New Models")
+        self.menu_update = rumps.MenuItem("Update Available")
+        self.menu_action = rumps.MenuItem("Stop Services",
+                                         callback=self.toggle_services)
         self.menu_quit = rumps.MenuItem("Quit", callback=self.quit_app)
 
         self.menu = [
-            self.menu_mode,
-            self.menu_separator1,
-            self.menu_ollama,
-            self.menu_mlx,
-            self.menu_mcp_status,
-            self.menu_separator2,
-            self.menu_profile,
-            self.menu_open_profiles,
-            self.menu_separator3,
-            self.menu_new_models_header,
-            self.menu_check_now,
-            self.menu_separator4,
+            self.menu_status,
+            self.menu_health,
+            None,
+            self.menu_profiles,
+            self.menu_new_models,
+            None,
             self.menu_update,
-            self.menu_separator5,
             self.menu_action,
             None,
             self.menu_quit,
@@ -1201,103 +1187,87 @@ class LocalModelsApp(rumps.App):
 
         self.title = None
 
-        # Mode label
-        mode_labels = {
-            "server": "Server Mode (LAN)",
-            "client": f"Client → {self.desktop_host}",
-            "offline": "Offline (local fallback)",
-            "stopped": "Stopped",
-        }
-        self.menu_mode.title = mode_labels.get(self.mode, "Unknown")
-
-        # Service status
-        def _status(ok, loading):
-            if ok:
-                return "Running"
-            elif loading:
-                return "Loading..."
-            else:
-                return "Down"
-
-        ollama_status = _status(self.ollama_ok, self.ollama_loading)
-        mlx_status = _status(self.mlx_ok, self.mlx_loading)
-
-        if self.mode == "client":
-            ollama_status = "Connected" if self.ollama_ok else "Down"
-            mlx_status = "Connected" if self.mlx_ok else "Down"
-            self.menu_ollama.title = f"Ollama: {ollama_status} ({self.desktop_host})"
-            self.menu_mlx.title = f"MLX Server: {mlx_status} ({self.desktop_host})"
-        elif self.mode == "server":
-            self.menu_ollama.title = f"Ollama: {ollama_status} (0.0.0.0:{self.ollama_port})"
-            self.menu_mlx.title = f"MLX Server: {mlx_status} (0.0.0.0:{self.mlx_port})"
-        else:
-            self.menu_ollama.title = f"Ollama: {ollama_status}"
-            self.menu_mlx.title = f"MLX Server: {mlx_status}"
-
-        # MCP + profile status
-        self.mcp_configured = is_mcp_configured()
-        parts = []
-        if self.ollama_models:
-            parts.append(f"{len(self.ollama_models)} Ollama")
-        if self.mlx_models:
-            parts.append(f"{len(self.mlx_models)} MLX")
-        summary = " + ".join(parts) if parts else "none"
-        if self.mcp_configured:
-            self.menu_mcp_status.title = f"MCP: ready ({summary})"
-        else:
-            self.menu_mcp_status.title = f"MCP: not configured ({summary})"
-
-        # Active profile
+        # ── Top line: profile + model count ──
+        model_count = len(self.ollama_models) + len(self.mlx_models)
         profiles_data = load_profiles()
         active = profiles_data.get("active")
         if active and active in profiles_data.get("profiles", {}):
             label = profiles_data["profiles"][active].get("label", active)
-            # Estimate memory from loaded models
-            ps = http_get_json(f"{OLLAMA_LOCAL}/api/ps", timeout=2)
-            loaded_mem = 0
-            if ps:
-                for m in ps.get("models", []):
-                    loaded_mem += m.get("size_vram", 0)
-            mem_str = f"{loaded_mem / 1e9:.0f}GB" if loaded_mem else "?"
-            self.menu_profile.title = f"Profile: {label} ({mem_str} / {self.ram_gb}GB)"
         else:
-            self.menu_profile.title = "Profile: (none)"
+            label = "No Profile"
+        self.menu_status.title = (
+            f"{label} — {model_count} models" if model_count
+            else label)
 
-        # New models submenu
+        # ── Health line: compact service status ──
+        def _check(ok):
+            return "\u2713" if ok else "\u2717"
+
+        self.mcp_configured = is_mcp_configured()
+        if self.mode == "stopped":
+            self.menu_health.title = "Stopped"
+        else:
+            self.menu_health.title = (
+                f"Ollama {_check(self.ollama_ok)}  "
+                f"MLX {_check(self.mlx_ok)}  "
+                f"MCP {_check(self.mcp_configured)}")
+
+        # ── New models submenu ──
         try:
-            self.menu_new_models_header.clear()
+            self.menu_new_models.clear()
         except AttributeError:
             pass
         if self.new_models:
             count = len(self.new_models)
-            self.menu_new_models_header.title = f"New Models Available ({count})"
+            self.menu_new_models.title = (
+                f"{count} New Model{'s' if count != 1 else ''}")
             for m in self.new_models:
                 size_str = f" ~{m['size_gb']:.0f}GB" if m["size_gb"] else ""
                 downloads = m["downloads"]
                 if downloads >= 1_000_000:
-                    dl_str = f"{downloads / 1_000_000:.1f}M"
+                    dl_str = f"{downloads / 1_000_000:.1f}M dl"
                 elif downloads >= 1_000:
-                    dl_str = f"{downloads / 1_000:.0f}K"
+                    dl_str = f"{downloads / 1_000:.0f}K dl"
                 else:
-                    dl_str = str(downloads)
-                label = f"  {m['id'].split('/')[-1]}{size_str} ({dl_str} downloads)"
-                item = rumps.MenuItem(label, callback=self._make_install_callback(m))
-                self.menu_new_models_header.add(item)
-
-            # Dismiss all option
-            self.menu_new_models_header.add(rumps.separator)
-            self.menu_new_models_header.add(
-                rumps.MenuItem("  Dismiss All", callback=self.dismiss_all_new_models)
-            )
+                    dl_str = f"{downloads} dl"
+                item_label = (
+                    f"{m['id'].split('/')[-1]}{size_str} ({dl_str})")
+                item = rumps.MenuItem(
+                    item_label, callback=self._make_install_callback(m))
+                self.menu_new_models.add(item)
+            self.menu_new_models.add(rumps.separator)
+            self.menu_new_models.add(
+                rumps.MenuItem("Check Now",
+                              callback=self.check_models_now))
+            self.menu_new_models.add(
+                rumps.MenuItem("Dismiss All",
+                              callback=self.dismiss_all_new_models))
         else:
-            self.menu_new_models_header.title = "New Models Available"
-            self.menu_new_models_header.add(rumps.MenuItem("  (none found)"))
+            self.menu_new_models.title = "New Models"
+            self.menu_new_models.add(
+                rumps.MenuItem("Check Now",
+                              callback=self.check_models_now))
 
-        # Action button
-        if self.mode == "stopped":
-            self.menu_action.title = "Start MLX Server"
+        # ── Update (only actionable when available) ──
+        if self.update_available > 0:
+            n = self.update_available
+            self.menu_update.title = (
+                f"Update Available ({n} commit{'s' if n != 1 else ''})")
+            self.menu_update.set_callback(self._update_now)
         else:
-            self.menu_action.title = "Stop MLX Server"
+            self.menu_update.title = "Up to date"
+            self.menu_update.set_callback(None)
+
+        # ── Services action (hidden in client mode) ──
+        if self.mode in ("server", "offline"):
+            self.menu_action.title = "Stop Services"
+            self.menu_action.set_callback(self.toggle_services)
+        elif self.mode == "stopped":
+            self.menu_action.title = "Start Services"
+            self.menu_action.set_callback(self.toggle_services)
+        else:
+            self.menu_action.title = ""
+            self.menu_action.set_callback(None)
 
     # -------------------------------------------------------------------
     # Profile viewer (native WKWebView window)
@@ -1416,13 +1386,7 @@ class LocalModelsApp(rumps.App):
 
     def check_models_now(self, _):
         """Manual trigger for model check."""
-        self.menu_check_now.title = "Checking..."
         self._schedule_model_check()
-        # Reset title after a delay
-        threading.Timer(5.0, self._reset_check_title).start()
-
-    def _reset_check_title(self):
-        self.menu_check_now.title = "Check for New Models"
 
     def _make_install_callback(self, model_info):
         """Create a callback for installing a specific model."""

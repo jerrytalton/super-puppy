@@ -80,16 +80,15 @@ TASK_FILTERS = {
     },
 }
 
-DEFAULT_PREFS = {
-    "code": ["qwen3-coder:480b", "qwen3-coder", "qwen2.5-coder:32b", "glm-4.7-flash", "qwen3.5"],
-    "general": ["qwen3.5", "glm-4.7-flash", "nemotron-3-super", "qwen3.5-fast"],
-    "reasoning": ["deepseek-r1:671b", "cogito-2.1", "nemotron-3-super", "qwen3.5-large", "qwen3.5", "glm-4.7-flash"],
-    "long_context": ["qwen3.5", "nemotron-3-super", "glm-4.7-flash", "deepseek-r1:671b"],
-    "translation": ["cogito-2.1", "qwen3.5", "glm-4.7-flash"],
-    "vision": ["qwen3-vl", "llava", "moondream"],
-    "image_gen": ["x/flux2", "x/z-image", "flux", "stable-diffusion"],
-    "transcription": ["whisper"],
-}
+def load_default_prefs() -> dict[str, list[str]]:
+    """Load ranked model preferences from config file."""
+    if MCP_PREFS_FILE.exists():
+        try:
+            prefs = json.loads(MCP_PREFS_FILE.read_text())
+            return {k: (v if isinstance(v, list) else [v]) for k, v in prefs.items()}
+        except Exception:
+            pass
+    return {}
 
 # ── Idle shutdown ────────────────────────────────────────────────────
 
@@ -381,26 +380,14 @@ def api_models():
     return jsonify(list(models.values()))
 
 
-@app.route("/api/models/loaded")
-def api_models_loaded():
-    ps = ollama_get("/api/ps") or {}
-    loaded = []
-    for m in ps.get("models", []):
-        loaded.append({
-            "name": m["name"],
-            "vram_bytes": m.get("size_vram", 0),
-            "expires_at": m.get("expires_at"),
-        })
-    return jsonify(loaded)
-
-
 @app.route("/api/tasks")
 def api_tasks():
+    prefs = load_default_prefs()
     all_tasks = {}
     for key, label in TASK_LABELS.items():
-        all_tasks[key] = {"label": label, "defaults": DEFAULT_PREFS.get(key, [])}
+        all_tasks[key] = {"label": label, "defaults": prefs.get(key, [])}
     for key, spec in SPECIAL_TASKS.items():
-        all_tasks[key] = {"label": spec["label"], "defaults": DEFAULT_PREFS.get(key, []), "prefixes": spec["prefixes"]}
+        all_tasks[key] = {"label": spec["label"], "defaults": prefs.get(key, []), "prefixes": spec["prefixes"]}
     return jsonify(all_tasks)
 
 
@@ -438,41 +425,53 @@ def api_profiles_delete(name):
 
 @app.route("/api/profiles/<name>/activate", methods=["POST"])
 def api_profiles_activate(name):
+    """Save preferences only. Does not touch running models."""
     data = load_profiles()
     profile = data["profiles"].get(name)
     if not profile:
         return jsonify({"error": f"Profile '{name}' not found"}), 404
 
-    keep = set(profile.get("keep_loaded", []))
+    if profile.get("tasks"):
+        current = load_default_prefs()
+        for task, pick in profile["tasks"].items():
+            existing = current.get(task, [])
+            current[task] = [pick] + [m for m in existing if m != pick]
+        save_mcp_prefs(current)
 
-    # Get currently loaded
+    data["active"] = name
+    save_profiles(data)
+
+    return jsonify({"ok": True})
+
+
+@app.route("/api/profiles/<name>/warm", methods=["POST"])
+def api_profiles_warm(name):
+    """Pre-load the preferred models into server memory."""
+    data = load_profiles()
+    profile = data["profiles"].get(name)
+    if not profile:
+        return jsonify({"error": f"Profile '{name}' not found"}), 404
+
+    tasks = profile.get("tasks", {})
+    if not tasks:
+        return jsonify({"ok": True, "loaded": []})
+
+    # Unique models to load
+    to_load = list(dict.fromkeys(tasks.values()))
+
     ps = ollama_get("/api/ps") or {}
-    currently_loaded = {m["name"] for m in ps.get("models", [])}
+    already = {m["name"] for m in ps.get("models", [])}
+    to_load = [m for m in to_load if m not in already]
 
-    # Unload models not in the profile
-    to_unload = currently_loaded - keep
-    for model in to_unload:
-        requests.post(f"{OLLAMA_URL}/api/generate",
-                      json={"model": model, "keep_alive": 0}, timeout=5)
-
-    # Preload models in the profile
-    to_load = keep - currently_loaded
     for model in to_load:
         try:
             requests.post(f"{OLLAMA_URL}/api/generate",
                           json={"model": model, "prompt": "", "keep_alive": "10m"},
                           timeout=300)
         except Exception:
-            pass  # model may take a while
+            pass
 
-    # Write MCP preferences
-    if profile.get("tasks"):
-        save_mcp_prefs(profile["tasks"])
-
-    data["active"] = name
-    save_profiles(data)
-
-    return jsonify({"ok": True, "unloaded": list(to_unload), "loaded": list(to_load)})
+    return jsonify({"ok": True, "loaded": to_load})
 
 
 # ── Main ─────────────────────────────────────────────────────────────
