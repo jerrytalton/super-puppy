@@ -440,7 +440,7 @@ async def local_image(
         import time as _time
         output_path = f"/tmp/local_image_{int(_time.time())}.png"
 
-    _log("→ generate image", f"{selected}: {prompt[:50]}")
+    print(f"  → generate image {selected}: {prompt[:50]}", file=sys.stderr, flush=True)
 
     async with httpx.AsyncClient(timeout=300) as client:
         resp = await client.post(
