@@ -81,15 +81,9 @@ start-local-models        # start Ollama + MLX
 start-local-models --stop
 ```
 
-### Setting up `claude-local`
+### `claude-local`
 
-Add to your `~/.zshrc`:
-
-```bash
-alias claude-local='ANTHROPIC_AUTH_TOKEN=ollama ANTHROPIC_BASE_URL=http://localhost:11434 ANTHROPIC_API_KEY="" claude --model qwen3.5:122b'
-```
-
-Use `curl -s http://localhost:11434/v1/models | python3 -c "import sys,json; [print(m['id']) for m in json.loads(sys.stdin.read())['data']]"` to see available model names. The model name must match exactly (including the tag).
+Installed by `install.sh`. Reads the preferred "General Text" model from the menu bar preferences. Auto-detects the desktop on LAN. Falls back to the first available qwen3.5 variant if no preference is set.
 
 ## Structure
 

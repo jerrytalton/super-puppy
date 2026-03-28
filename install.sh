@@ -28,6 +28,7 @@ link() {
 echo "Installing Super Puppy..."
 
 # Scripts
+link bin/claude-local              ~/bin/claude-local
 link bin/start-local-models        ~/bin/start-local-models
 link bin/local-models-menubar      ~/bin/local-models-menubar
 link bin/local-models-mcp-detect   ~/bin/local-models-mcp-detect
