@@ -4,15 +4,20 @@ Local AI model infrastructure for Claude Code. Exposes Ollama and MLX models as 
 
 ## How It Works
 
+Two ways to use Claude Code with local models:
+
+**`claude`** — Claude Max does the reasoning. Local models are available as MCP tools for bulk work, vision, transcription, translation, and image generation. Best of both worlds.
+
+**`claude-local`** — Entirely local. All requests go to Ollama (e.g. qwen3.5). No Anthropic, no internet required. Great for offline work, sensitive code, or when you just want to use the hardware you paid for.
+
 ```
-Claude Code (Max subscription, Anthropic handles reasoning)
-    │
-    └── MCP tool calls ──> local-models-server.py
-                               ├── Ollama (:11434) — 30+ models
-                               └── MLX (:8000) — 7 models, Whisper v3
+claude ──> Anthropic (reasoning) + MCP tools ──> Ollama / MLX (local heavy lifting)
+claude-local ──> Ollama only (fully local, no cloud)
 ```
 
-Claude does the thinking. Local models do the heavy lifting:
+### MCP Tools
+
+When using `claude` with Max, these tools let Claude delegate to local models:
 
 | Tool | What | Default Model |
 |------|-------|---------------|
@@ -69,12 +74,22 @@ A puppy icon in the menu bar provides:
 ## Commands
 
 ```bash
-claude                    # Claude Code with local model tools
+claude                    # Claude Max + local model MCP tools
 claude-local              # fully local (Ollama only, no Anthropic)
 
 start-local-models        # start Ollama + MLX
 start-local-models --stop
 ```
+
+### Setting up `claude-local`
+
+Add to your `~/.zshrc`:
+
+```bash
+alias claude-local='ANTHROPIC_AUTH_TOKEN=ollama ANTHROPIC_BASE_URL=http://localhost:11434 ANTHROPIC_API_KEY="" claude --model qwen3.5'
+```
+
+Change the model to whatever you prefer. Any model Ollama serves works.
 
 ## Structure
 
