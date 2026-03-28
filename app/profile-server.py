@@ -86,6 +86,9 @@ DEFAULT_PREFS = {
     "reasoning": ["deepseek-r1:671b", "cogito-2.1", "nemotron-3-super", "qwen3.5-large", "qwen3.5", "glm-4.7-flash"],
     "long_context": ["qwen3.5", "nemotron-3-super", "glm-4.7-flash", "deepseek-r1:671b"],
     "translation": ["cogito-2.1", "qwen3.5", "glm-4.7-flash"],
+    "vision": ["qwen3-vl", "llava", "moondream"],
+    "image_gen": ["x/flux2", "x/z-image", "flux", "stable-diffusion"],
+    "transcription": ["whisper"],
 }
 
 # ── Idle shutdown ────────────────────────────────────────────────────
@@ -120,7 +123,7 @@ def ollama_post(path, body, timeout=10):
 def get_system_info():
     try:
         raw = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"]).strip())
-        return {"total_ram_bytes": raw, "total_ram_gb": round(raw / 1e9)}
+        return {"total_ram_bytes": raw, "total_ram_gb": raw >> 30}  # GiB
     except Exception:
         return {"total_ram_bytes": 0, "total_ram_gb": 0}
 
@@ -182,7 +185,11 @@ def get_all_models():
         disk_bytes = m.get("size", 0)
         total_b = 0.0
         try:
-            total_b = float(details.get("parameter_size", "0").rstrip("B"))
+            ps = details.get("parameter_size", "0")
+            if ps.upper().endswith("M"):
+                total_b = float(ps[:-1]) / 1000
+            else:
+                total_b = float(ps.rstrip("B"))
         except (ValueError, AttributeError):
             pass
 
@@ -208,8 +215,8 @@ def get_all_models():
             "backend": "ollama",
             "disk_bytes": disk_bytes,
             "vram_bytes": disk_bytes,  # estimate; overridden if loaded
-            "total_params_b": round(total_b),
-            "active_params_b": round(active_b),
+            "total_params_b": round(total_b, 1),
+            "active_params_b": round(active_b, 1),
             "context": ctx,
             "has_vision": has_vision,
             "family": family,
@@ -393,7 +400,7 @@ def api_tasks():
     for key, label in TASK_LABELS.items():
         all_tasks[key] = {"label": label, "defaults": DEFAULT_PREFS.get(key, [])}
     for key, spec in SPECIAL_TASKS.items():
-        all_tasks[key] = {"label": spec["label"], "defaults": [], "prefixes": spec["prefixes"]}
+        all_tasks[key] = {"label": spec["label"], "defaults": DEFAULT_PREFS.get(key, []), "prefixes": spec["prefixes"]}
     return jsonify(all_tasks)
 
 

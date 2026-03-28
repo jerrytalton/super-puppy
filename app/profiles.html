@@ -26,11 +26,8 @@ body {
   padding: 24px 32px; max-width: 960px; margin: 0 auto;
   -webkit-font-smoothing: antialiased;
 }
-
-/* Header */
 .header { margin-bottom: 24px; }
-.header h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.5px; }
-.header p { color: var(--text2); margin-top: 4px; }
+.header p { color: var(--text2); }
 
 /* Profiles */
 .profiles { display: flex; gap: 8px; margin-bottom: 24px; flex-wrap: wrap; align-items: center; }
@@ -42,8 +39,7 @@ body {
 .prof-btn:hover { border-color: var(--accent); color: var(--accent); }
 .prof-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 .prof-btn.go {
-  margin-left: auto; background: var(--green); color: #fff; border-color: var(--green);
-  font-weight: 600;
+  margin-left: auto; background: var(--green); color: #fff; border-color: var(--green); font-weight: 600;
 }
 .prof-btn.go:hover { opacity: 0.85; }
 .prof-btn:disabled { opacity: 0.4; pointer-events: none; }
@@ -58,118 +54,94 @@ body {
 .mem-top span { font-size: 13px; color: var(--text2); }
 .mem-bar {
   height: 32px; background: var(--surface2); border-radius: 8px;
-  display: flex; position: relative;
-}
-.mem-bar-limit {
-  position: absolute; right: 0; top: -2px; bottom: -2px; width: 2px;
-  background: var(--red); z-index: 2; display: none;
-}
-.mem-bar-limit::after {
-  content: 'RAM'; position: absolute; top: -16px; right: -12px;
-  font-size: 9px; color: var(--red); font-weight: 700;
+  display: flex; position: relative; overflow: hidden;
 }
 .mem-seg {
   height: 100%; display: flex; align-items: center; justify-content: center;
   font-size: 11px; font-weight: 500; color: #fff; min-width: 3px;
-  transition: width 0.4s ease; position: relative; overflow: hidden;
+  transition: width 0.4s ease; overflow: hidden;
 }
 .mem-seg span { white-space: nowrap; padding: 0 6px; }
+.mem-bar-limit {
+  position: absolute; top: 0; bottom: 0; width: 2px;
+  background: var(--red); z-index: 2; display: none;
+}
 .mem-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; }
 .mem-legend-item { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text2); }
-.mem-dot { width: 10px; height: 10px; border-radius: 3px; }
-.mem-warn {
-  margin-top: 10px; padding: 8px 12px; border-radius: var(--rs);
-  background: rgba(255,59,48,0.08); color: var(--red); font-size: 13px;
-  font-weight: 500; display: none;
-}
+.mem-dot { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
 
-/* Tasks */
-.tasks { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-@media (max-width: 700px) { .tasks { grid-template-columns: 1fr; } }
-.task {
+/* Task rows (collapsible) */
+.task-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 24px; }
+.task-row {
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--r);
-  padding: 14px 16px;
+  overflow: hidden;
 }
-.task-head {
-  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px;
-  color: var(--text2); margin-bottom: 10px;
+.task-header {
+  display: flex; align-items: center; padding: 10px 14px; cursor: pointer;
+  user-select: none; gap: 10px;
 }
+.task-header:hover { background: var(--surface2); }
+.task-color { width: 4px; height: 24px; border-radius: 2px; flex-shrink: 0; }
+.task-label { font-size: 13px; font-weight: 600; flex: 1; }
+.task-selected { font-size: 12px; color: var(--text2); }
+.task-chevron { font-size: 10px; color: var(--text3); transition: transform 0.2s; }
+.task-row.open .task-chevron { transform: rotate(90deg); }
+.task-body { display: none; padding: 4px 14px 10px; }
+.task-row.open .task-body { display: block; }
 .card {
   display: flex; align-items: center; gap: 10px;
-  padding: 8px 10px; border-radius: var(--rs); margin-bottom: 6px;
+  padding: 7px 10px; border-radius: var(--rs); margin-bottom: 4px;
   border: 1.5px solid transparent; cursor: pointer; transition: all 0.12s;
   background: var(--surface2);
 }
 .card:hover { border-color: var(--accent); }
 .card.selected { border-color: var(--accent); background: rgba(0,122,255,0.06); }
-.card .dot {
-  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
-  background: var(--text3);
-}
+.card .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--text3); }
 .card.loaded .dot { background: var(--green); }
-.card.projected .dot { background: var(--amber); }
 .card-body { flex: 1; min-width: 0; }
-.card-name {
-  font-size: 13px; font-weight: 500;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
+.card-name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card-meta { font-size: 11px; color: var(--text2); margin-top: 1px; }
 .badge {
   font-size: 9px; font-weight: 700; padding: 2px 5px; border-radius: 4px;
   flex-shrink: 0; text-transform: uppercase; letter-spacing: 0.3px;
 }
 .badge.default { background: rgba(52,199,89,0.12); color: var(--green); }
-.badge.selected-badge { background: rgba(0,122,255,0.12); color: var(--accent); }
-
+.badge.active-badge { background: rgba(0,122,255,0.12); color: var(--accent); }
 .card.too-large { opacity: 0.35; cursor: not-allowed; }
 .card.too-large:hover { border-color: transparent; }
-.no-models { font-size: 12px; color: var(--text3); font-style: italic; padding: 4px 0; }
-
-/* Footer */
 .footer { text-align: center; color: var(--text3); font-size: 11px; margin-top: 24px; }
 </style>
 </head>
 <body>
 
 <div class="header">
-  <h1>Model Profiles</h1>
   <p id="subtitle">Loading...</p>
 </div>
-
 <div class="profiles" id="profiles"></div>
-
 <div class="mem-box">
-  <div class="mem-top">
-    <h2>Memory</h2>
-    <span id="mem-usage"></span>
-  </div>
+  <div class="mem-top"><h2>Memory</h2><span id="mem-usage"></span></div>
   <div class="mem-bar" id="mem-bar"></div>
   <div class="mem-legend" id="mem-legend"></div>
-  <div class="mem-warn" id="mem-warn">Exceeds RAM — models will swap to disk (slower inference)</div>
 </div>
-
-<div class="tasks" id="tasks"></div>
+<div class="task-list" id="tasks"></div>
 <div class="footer" id="footer"></div>
 
 <script>
-// One color per task type
-const TASK_COLORS = {
-  code: '#007aff',
-  general: '#34c759',
-  reasoning: '#af52de',
-  long_context: '#5ac8fa',
-  translation: '#ff9f0a',
-  vision: '#ff2d55',
-  image_gen: '#ffd60a',
-  transcription: '#ac8e68',
+const TC = {
+  code:'#007aff', general:'#34c759', reasoning:'#af52de',
+  long_context:'#5ac8fa', translation:'#ff9f0a',
+  vision:'#ff2d55', image_gen:'#ffd60a', transcription:'#ac8e68',
 };
+// Canonical task order — memory bar follows this
+const TASK_ORDER = ['code','general','reasoning','long_context','translation','vision','image_gen','transcription'];
 
-let S = { sys: null, models: [], loaded: [], tasks: {}, profiles: {active:null, profiles:{}},
-          sel: null, picks: {} };
+let S = { sys:null, models:[], loaded:[], tasks:{}, profiles:{active:null,profiles:{}},
+           sel:null, picks:{}, openTasks:new Set() };
 
 const fmt = b => b>=1e12?(b/1e12).toFixed(1)+'TB':b>=1e9?Math.round(b/1e9)+'GB':b>=1e6?Math.round(b/1e6)+'MB':b+'B';
 const fmtP = (t,a) => t===a||!a ? t+'B' : t+'B/'+a+'B';
 const fmtC = c => c>=1e6?Math.round(c/1e6)+'M':c>=1024?Math.floor(c/1024)+'K':c>0?''+c:'';
+const findModel = name => S.models.find(m => m.name === name) || S.models.find(m => m.name.startsWith(name + ':'));
 
 async function init() {
   const [sys,models,loaded,tasks,profiles] = await Promise.all([
@@ -181,34 +153,36 @@ async function init() {
   ]);
   Object.assign(S, {sys,models,loaded,tasks,profiles});
   S.sel = profiles.active || Object.keys(profiles.profiles)[0] || null;
-  // Initialize picks from active profile
-  if (S.sel && S.profiles.profiles[S.sel]?.tasks) {
+  if (S.sel && S.profiles.profiles[S.sel]?.tasks)
     S.picks = {...S.profiles.profiles[S.sel].tasks};
-  }
+  fillDefaults();
   render();
+}
+
+function fillDefaults() {
+  for (const [key, info] of Object.entries(S.tasks)) {
+    if (S.picks[key]) continue;
+    for (const pref of (info.defaults||[])) {
+      const found = findModel(pref);
+      if (found) { S.picks[key] = found.name; break; }
+    }
+    if (!S.picks[key] && info.prefixes) {
+      for (const m of S.models) {
+        if (info.prefixes.some(p => m.name.startsWith(p))) { S.picks[key] = m.name; break; }
+      }
+    }
+  }
 }
 
 function loadedSet() { return new Set(S.loaded.map(m=>m.name)); }
 
-function profileKeep() {
-  if (!S.sel) return new Set();
-  const p = S.profiles.profiles[S.sel];
-  return new Set(p?.keep_loaded || []);
-}
-
-// What WOULD be loaded if this profile were activated
-function projectedSet() {
-  return profileKeep();
-}
-
 function render() {
   document.getElementById('subtitle').textContent =
-    S.sys ? `${S.sys.total_ram_gb}GB unified memory · ${S.models.length} models installed` : '';
+    S.sys ? `${S.sys.total_ram_gb}GB unified memory · ${S.models.length} models` : '';
   renderProfiles();
   renderMemory();
   renderTasks();
-  document.getElementById('footer').textContent =
-    `Updated ${new Date().toLocaleTimeString()}`;
+  document.getElementById('footer').textContent = `Updated ${new Date().toLocaleTimeString()}`;
 }
 
 function renderProfiles() {
@@ -219,11 +193,7 @@ function renderProfiles() {
     b.className = 'prof-btn' + (S.sel===name?' active':'');
     b.textContent = p.label || name;
     b.title = p.description || '';
-    b.onclick = () => {
-      S.sel = name;
-      S.picks = {...(p.tasks || {})};
-      render();
-    };
+    b.onclick = () => { S.sel = name; S.picks = {...(p.tasks||{})}; fillDefaults(); render(); };
     el.appendChild(b);
   }
   if (S.sel && S.sel !== S.profiles.active) {
@@ -239,76 +209,56 @@ function renderMemory() {
   const bar = document.getElementById('mem-bar');
   const legend = document.getElementById('mem-legend');
   const usage = document.getElementById('mem-usage');
-  const warn = document.getElementById('mem-warn');
   bar.innerHTML = ''; legend.innerHTML = '';
 
-  const ram = S.sys?.total_ram_bytes || 512e9;
+  const ram = S.sys?.total_ram_bytes || 512*(1<<30);
 
-  // Build unique set of selected models across all tasks, track which tasks use each
-  const modelTasks = {}; // model name -> [task keys]
-  for (const [task, model] of Object.entries(S.picks)) {
-    if (!model) continue;
-    if (!modelTasks[model]) modelTasks[model] = [];
-    modelTasks[model].push(task);
+  // Unique models from picks, ordered by TASK_ORDER
+  const seen = new Set();
+  const segs = [];
+  for (const task of TASK_ORDER) {
+    const pick = S.picks[task];
+    if (!pick) continue;
+    const m = findModel(pick);
+    if (!m || seen.has(m.name)) continue;
+    seen.add(m.name);
+    segs.push({ name: m.name, bytes: m.vram_bytes || m.disk_bytes,
+                color: TC[task] || '#888', task,
+                loaded: loadedSet().has(m.name) });
   }
 
-  // Build segments from unique selected models
-  let segs = [];
-  for (const [name, tasks] of Object.entries(modelTasks)) {
-    const m = S.models.find(x => x.name === name);
-    if (!m) continue;
-    const color = TASK_COLORS[tasks[0]] || '#888';
-    segs.push({
-      name, bytes: m.vram_bytes || m.disk_bytes,
-      tasks, color,
-      loaded: loadedSet().has(name),
-    });
-  }
-  segs.sort((a,b) => b.bytes - a.bytes);
-
-  const totalUsed = segs.reduce((s,m) => s + m.bytes, 0);
+  const totalUsed = segs.reduce((s,x) => s + x.bytes, 0);
   const overflows = totalUsed > ram;
   const barMax = overflows ? totalUsed : ram;
-  const ramPct = (ram / barMax) * 100;
-  usage.textContent = fmt(totalUsed) + ' / ' + fmt(ram) + (overflows ? ` (${fmt(totalUsed - ram)} swap)` : '');
 
-  // Remove old limit marker
-  bar.querySelector('.mem-bar-limit')?.remove();
+  usage.textContent = fmt(totalUsed) + ' / ' + fmt(ram) +
+    (overflows ? ` (${fmt(totalUsed - ram)} swap)` : '');
 
   segs.forEach(seg => {
     const pct = (seg.bytes / barMax) * 100;
-    const ramBoundary = ram; // where does this segment cross from RAM to swap?
     const d = document.createElement('div');
     d.className = 'mem-seg';
     d.style.width = Math.max(pct, 0.8) + '%';
     d.style.background = seg.color;
     d.innerHTML = pct > 5 ? `<span>${seg.name.split(':')[0]}</span>` : '';
-    const taskLabels = seg.tasks.map(t => S.tasks[t]?.label || t).join(', ');
-    d.title = `${seg.name}: ${fmt(seg.bytes)}\nUsed by: ${taskLabels}`;
+    d.title = `${seg.name}: ${fmt(seg.bytes)}`;
     bar.appendChild(d);
+
+    const li = document.createElement('span');
+    li.className = 'mem-legend-item';
+    li.innerHTML = `<span class="mem-dot" style="background:${seg.color}"></span>${seg.name.split(':')[0]} · ${fmt(seg.bytes)}`;
+    legend.appendChild(li);
   });
 
+  // Free space or overflow marker
   if (overflows) {
-    // Show the RAM boundary as a red line within the bar
     const limit = document.createElement('div');
     limit.className = 'mem-bar-limit';
     limit.style.display = 'block';
-    limit.style.left = ramPct + '%';
-    limit.style.right = 'auto';
+    limit.style.left = ((ram / barMax) * 100) + '%';
     bar.appendChild(limit);
-
-    // Stripe the overflow portion
-    bar.style.background = `repeating-linear-gradient(
-      -45deg, var(--surface2), var(--surface2) 4px,
-      rgba(255,59,48,0.08) 4px, rgba(255,59,48,0.08) 8px)`;
-    bar.style.borderRadius = '8px';
-    bar.style.overflow = 'hidden';
   } else {
-    bar.style.background = '';
-    bar.style.overflow = '';
-
-    // Free space
-    const freePct = ((ram - totalUsed) / ram) * 100;
+    const freePct = ((ram - totalUsed) / barMax) * 100;
     if (freePct > 0.5) {
       const free = document.createElement('div');
       free.className = 'mem-seg';
@@ -319,77 +269,76 @@ function renderMemory() {
       bar.appendChild(free);
     }
   }
-
-  // Legend
-  segs.forEach(seg => {
-    const taskLabels = seg.tasks.map(t => S.tasks[t]?.label || t).join(', ');
-    const li = document.createElement('span');
-    li.className = 'mem-legend-item';
-    li.innerHTML = `<span class="mem-dot" style="background:${seg.color}"></span>${seg.name.split(':')[0]} · ${fmt(seg.bytes)} · ${taskLabels}`;
-    legend.appendChild(li);
-  });
-
-  warn.style.display = 'none'; // overflow shown visually in the bar
 }
 
 function renderTasks() {
   const el = document.getElementById('tasks');
   el.innerHTML = '';
-
   const ls = loadedSet();
-  const ps = projectedSet();
 
-  for (const [key, info] of Object.entries(S.tasks)) {
-    const div = document.createElement('div');
-    div.className = 'task';
-    const taskColor = TASK_COLORS[key] || '#888';
-    div.innerHTML = `<div class="task-head" style="border-left:3px solid ${taskColor};padding-left:8px">${info.label}</div>`;
-
-    let eligible = S.models.filter(m => m.eligible_tasks?.includes(key));
-    // Stable sort: by params descending only (never re-sort by loaded status)
-    eligible.sort((a,b) => b.total_params_b - a.total_params_b);
+  for (const key of TASK_ORDER) {
+    const info = S.tasks[key];
+    if (!info) continue;
+    const color = TC[key] || '#888';
+    const picked = S.picks[key];
 
     // Find default
     let def = null;
     for (const pref of (info.defaults||[])) {
-      const f = eligible.find(m => m.name===pref || m.name.startsWith(pref));
+      const f = S.models.find(m => m.name===pref || m.name.startsWith(pref));
       if (f) { def = f.name; break; }
     }
     if (!def && info.prefixes) {
-      for (const m of eligible) {
+      for (const m of S.models) {
         if (info.prefixes.some(p => m.name.startsWith(p))) { def = m.name; break; }
       }
     }
 
-    const picked = S.picks[key];
+    const eligible = S.models
+      .filter(m => m.eligible_tasks?.includes(key))
+      .sort((a,b) => b.total_params_b - a.total_params_b);
 
-    if (!eligible.length) {
-      div.innerHTML += '<div class="no-models">No eligible models</div>';
-    }
+    const selectedName = picked || def;
+    const selectedModel = S.models.find(m => m.name === selectedName);
+    const selectedLabel = selectedName ? selectedName.split(':')[0] : 'none';
+
+    const row = document.createElement('div');
+    row.className = 'task-row' + (S.openTasks.has(key) ? ' open' : '');
+
+    row.innerHTML = `
+      <div class="task-header" data-task="${key}">
+        <div class="task-color" style="background:${color}"></div>
+        <div class="task-label">${info.label}</div>
+        <div class="task-selected">${selectedLabel}</div>
+        <div class="task-chevron">&#9654;</div>
+      </div>
+      <div class="task-body"></div>
+    `;
+
+    row.querySelector('.task-header').onclick = () => {
+      if (S.openTasks.has(key)) S.openTasks.delete(key);
+      else S.openTasks.add(key);
+      render();
+    };
+
+    const body = row.querySelector('.task-body');
+    const ram = S.sys?.total_ram_bytes || 512*(1<<30);
 
     for (const m of eligible) {
       const isSelected = m.name === (picked || def);
-      const isLoaded = ls.has(m.name);
-      const isProj = ps.has(m.name) && !isLoaded;
       const isDef = m.name === def;
-      const ram = S.sys?.total_ram_bytes || 512e9;
       const tooLarge = (m.vram_bytes || m.disk_bytes) > ram;
 
       const card = document.createElement('div');
-      card.className = 'card' + (isSelected?' selected':'') + (isLoaded?' loaded':'') + (isProj?' projected':'') + (tooLarge?' too-large':'');
-      card.onclick = () => {
-        const ram = S.sys?.total_ram_bytes || 512e9;
-        const modelBytes = m.vram_bytes || m.disk_bytes;
-        if (modelBytes > ram) {
-          return; // too large to load
-        }
-        S.picks[key] = m.name;
-        render();
-      };
+      card.className = 'card' + (isSelected?' selected':'') + (ls.has(m.name)?' loaded':'') + (tooLarge?' too-large':'');
+
+      if (!tooLarge) {
+        card.onclick = () => { S.picks[key] = m.name; render(); };
+      }
 
       let badges = '';
       if (isDef && !isSelected) badges += '<span class="badge default">Default</span>';
-      if (isSelected) badges += '<span class="badge selected-badge">Active</span>';
+      if (isSelected) badges += '<span class="badge active-badge">Active</span>';
 
       const meta = [fmtP(m.total_params_b, m.active_params_b)];
       const ctx = fmtC(m.context);
@@ -406,10 +355,10 @@ function renderTasks() {
         </div>
         ${badges}
       `;
-      div.appendChild(card);
+      body.appendChild(card);
     }
 
-    el.appendChild(div);
+    el.appendChild(row);
   }
 }
 
@@ -417,15 +366,12 @@ async function activate(name) {
   const btn = document.querySelector('.prof-btn.go');
   if (btn) { btn.disabled = true; btn.textContent = 'Activating...'; }
   try {
-    // First save picks to the profile
     const p = S.profiles.profiles[name];
     if (p) p.tasks = {...S.picks};
     await fetch('/api/profiles', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
+      method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({name, ...p}),
     });
-    // Then activate
     await fetch(`/api/profiles/${name}/activate`, {method:'POST'});
     S.profiles.active = name;
     S.loaded = await fetch('/api/models/loaded').then(r=>r.json());
