@@ -1002,7 +1002,7 @@ class LocalModelsApp(rumps.App):
         self.menu_new_models_header = rumps.MenuItem("New Models Available")
         self.menu_check_now = rumps.MenuItem("Check for New Models", callback=self.check_models_now)
         self.menu_separator4 = rumps.separator
-        self.menu_update = rumps.MenuItem("Check for Updates", callback=self._update_now)
+        self.menu_update = rumps.MenuItem("Up to date")
         self.menu_separator5 = rumps.separator
         self.menu_action = rumps.MenuItem("Start MLX Server", callback=self.toggle_services)
         self.menu_quit = rumps.MenuItem("Quit", callback=self.quit_app)
@@ -1557,6 +1557,7 @@ class LocalModelsApp(rumps.App):
         self.update_summary = summary
         if behind > 0:
             self.menu_update.title = f"Update Available ({behind} commit{'s' if behind != 1 else ''})"
+            self.menu_update.set_callback(self._update_now)
             try:
                 rumps.notification(
                     "Super Puppy",
@@ -1566,17 +1567,13 @@ class LocalModelsApp(rumps.App):
             except RuntimeError:
                 pass
         else:
-            self.menu_update.title = "Check for Updates"
+            self.menu_update.title = "Up to date"
+            self.menu_update.set_callback(None)
 
     def _update_now(self, _):
-        if self.update_available:
-            self.menu_update.title = "Updating..."
-            thread = threading.Thread(target=self._apply_update, daemon=True)
-            thread.start()
-        else:
-            self.menu_update.title = "Checking..."
-            self._schedule_update_check()
-            threading.Timer(5.0, lambda: setattr(self.menu_update, 'title', 'Check for Updates')).start()
+        self.menu_update.title = "Updating..."
+        thread = threading.Thread(target=self._apply_update, daemon=True)
+        thread.start()
 
     def _apply_update(self):
         success, output = apply_repo_update()
@@ -1592,8 +1589,10 @@ class LocalModelsApp(rumps.App):
                 rumps.notification("Super Puppy", "Update failed", output[:100])
             except RuntimeError:
                 pass
-            threading.Timer(5.0, lambda: setattr(self.menu_update, 'title',
-                            f"Update Available ({self.update_available} commits)")).start()
+            def _restore_update_title():
+                self.menu_update.title = f"Update Available ({self.update_available} commits)"
+                self.menu_update.set_callback(self._update_now)
+            threading.Timer(5.0, _restore_update_title).start()
 
     # -------------------------------------------------------------------
     # Dismiss models
