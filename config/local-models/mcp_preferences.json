@@ -45,5 +45,12 @@
   "transcription": [
     "whisper-v3",
     "whisper"
+  ],
+  "embedding": [
+    "mxbai-embed-large",
+    "nomic-embed-text",
+    "snowflake-arctic-embed",
+    "all-minilm",
+    "bge-m3"
   ]
 }

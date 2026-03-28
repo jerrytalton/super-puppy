@@ -697,18 +697,15 @@ async def local_embed(
     if not texts:
         return "Error: provide texts or file_paths to embed."
 
-    # Pick model
-    chosen = model
-    if not chosen:
-        # Prefer Ollama models (faster startup), fall back to HF
-        for name in OLLAMA_EMBED_NAMES:
-            if name in _models:
-                chosen = name
-                break
-        if not chosen:
+    # Pick model — fall back to HF if no Ollama embedding model available
+    if model and (model in _models or model in HF_EMBED_MODELS):
+        chosen = model
+    else:
+        try:
+            chosen, _ = pick_model("embedding", model)
+        except ValueError:
             chosen = "bge-m3"
 
-    # Route to appropriate backend
     if chosen in HF_EMBED_MODELS:
         import asyncio
         embeddings = await asyncio.to_thread(embed_hf, chosen, texts)
@@ -763,17 +760,14 @@ async def local_similarity_search(
 
     all_texts = [query] + file_texts
 
-    # Pick model
-    chosen = model
-    if not chosen:
-        for name in OLLAMA_EMBED_NAMES:
-            if name in _models:
-                chosen = name
-                break
-        if not chosen:
+    if model and (model in _models or model in HF_EMBED_MODELS):
+        chosen = model
+    else:
+        try:
+            chosen, _ = pick_model("embedding", model)
+        except ValueError:
             chosen = "bge-m3"
 
-    # Embed
     if chosen in HF_EMBED_MODELS:
         import asyncio
         embeddings = await asyncio.to_thread(embed_hf, chosen, all_texts)
