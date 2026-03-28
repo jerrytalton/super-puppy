@@ -1,6 +1,6 @@
 # Super Puppy
 
-Local AI model infrastructure for Claude Code. Menu bar app + smart routing + LAN serving.
+Local AI model infrastructure for Claude Code. MCP tools + menu bar app + LAN serving.
 
 ## Structure
 
@@ -12,11 +12,11 @@ Local AI model infrastructure for Claude Code. Menu bar app + smart routing + LA
 
 ## Key Design Decisions
 
-- `claude-smart` dynamically builds CCR provider model lists from what's installed (not static). Any new `ollama pull` is immediately routable.
-- Role filters live in `role_filters.json`, not hardcoded. Each role specifies min/max active params, context requirements, and vision capability.
+- The MCP server discovers models live from Ollama and MLX at startup. Any new `ollama pull` is immediately available as a tool.
 - The menu bar app queries model capabilities live from Ollama `/api/show` and MLX `config.json` files in the HuggingFace cache. No hardcoded param tables.
 - MLX models marked `on_demand: true` download on first use and unload after idle timeout.
 - The desktop hostname for LAN serving is in `config/local-models/network.conf`, detected via mDNS (Bonjour).
+- The `local-models-mcp-detect` wrapper probes the desktop before launching. Laptops use the desktop if reachable, fall back to localhost.
 
 ## Local Model Tools (MCP)
 
