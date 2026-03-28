@@ -32,6 +32,7 @@ link bin/claude-smart              ~/bin/claude-smart
 link bin/start-local-models        ~/bin/start-local-models
 link bin/pal-mcp-detect            ~/bin/pal-mcp-detect
 link bin/local-models-menubar      ~/bin/local-models-menubar
+link bin/local-models-mcp-detect   ~/bin/local-models-mcp-detect
 
 # Configs
 link config/mlx-server/config.yaml         ~/.config/mlx-server/config.yaml
