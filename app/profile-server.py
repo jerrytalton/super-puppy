@@ -199,7 +199,7 @@ def get_all_models():
         family = show.get("details", {}).get("family", details.get("family", ""))
         ctx = 0
         for k, v in mi.items():
-            if "context_length" in k:
+            if k.endswith(".context_length"):
                 ctx = int(v)
                 break
         has_vision = any("vision" in k for k in mi)
