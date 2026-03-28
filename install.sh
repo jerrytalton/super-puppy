@@ -117,6 +117,21 @@ echo "Starting menu bar app..."
 launchctl unload ~/Library/LaunchAgents/com.local-models.menubar.plist 2>/dev/null || true
 launchctl load ~/Library/LaunchAgents/com.local-models.menubar.plist
 
+# Check for CLAUDE.md local-models guidance
+CLAUDE_MD="$HOME/.claude/CLAUDE.md"
+if [ -f "$CLAUDE_MD" ]; then
+    if ! grep -q "Local Model Cluster" "$CLAUDE_MD" 2>/dev/null; then
+        echo ""
+        echo "  ⚠  Missing local-models guidance in $CLAUDE_MD"
+        echo "     Claude won't know when to use local model tools without it."
+        echo "     Add the '## Local Model Cluster' section from the README."
+    fi
+else
+    echo ""
+    echo "  ⚠  No $CLAUDE_MD found. Claude won't know about local model tools."
+    echo "     Create it and add the '## Local Model Cluster' section from the README."
+fi
+
 echo ""
 echo "Done! Next steps:"
 echo "  1. ollama pull qwen3.5          # pull a model"
