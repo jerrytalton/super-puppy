@@ -32,6 +32,7 @@ import rumps
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_DIR = os.path.dirname(SCRIPT_DIR)
 ICON_PATH = os.path.join(SCRIPT_DIR, "icon.png")
 ICONS_DIR = os.path.join(SCRIPT_DIR, "icons")
 NETWORK_CONF = os.path.expanduser("~/.config/local-models/network.conf")
@@ -40,6 +41,7 @@ OLLAMA_LOCAL = "http://localhost:11434"
 MLX_LOCAL = "http://localhost:8000"
 POLL_INTERVAL = 15          # seconds between status refreshes
 MODEL_CHECK_INTERVAL = 3600 # seconds between new-model checks (1 hour)
+UPDATE_CHECK_INTERVAL = 3600 # seconds between git update checks (1 hour)
 
 # HuggingFace API for discovering trending MLX models
 HF_API_URL = "https://huggingface.co/api/models"
@@ -242,6 +244,44 @@ MCP_SPECIAL_TASKS = {
         "prefixes": ["whisper"],
     },
 }
+
+
+# ---------------------------------------------------------------------------
+# Update detection (git)
+# ---------------------------------------------------------------------------
+
+def check_repo_update_available():
+    """Check if the local repo is behind origin/main. Returns (behind, summary)."""
+    try:
+        subprocess.run(["git", "-C", REPO_DIR, "fetch", "--quiet"],
+                       capture_output=True, timeout=15)
+        result = subprocess.run(
+            ["git", "-C", REPO_DIR, "rev-list", "--count", "HEAD..origin/main"],
+            capture_output=True, text=True, timeout=5)
+        behind = int(result.stdout.strip())
+        if behind > 0:
+            log_result = subprocess.run(
+                ["git", "-C", REPO_DIR, "log", "--oneline", "HEAD..origin/main"],
+                capture_output=True, text=True, timeout=5)
+            summary = log_result.stdout.strip()
+            return behind, summary
+    except Exception:
+        pass
+    return 0, ""
+
+
+def apply_repo_update():
+    """Pull latest and re-run install.sh. Returns (success, output)."""
+    try:
+        pull = subprocess.run(["git", "-C", REPO_DIR, "pull", "--ff-only"],
+                              capture_output=True, text=True, timeout=30)
+        if pull.returncode != 0:
+            return False, pull.stderr.strip()
+        install = subprocess.run(["bash", os.path.join(REPO_DIR, "install.sh")],
+                                 capture_output=True, text=True, timeout=30)
+        return True, pull.stdout.strip()
+    except Exception as e:
+        return False, str(e)
 
 
 def is_mcp_configured():
@@ -933,6 +973,9 @@ class LocalModelsApp(rumps.App):
         self.model_info_cache = ModelInfoCache()
         self.mlx_config_info = query_mlx_model_info_from_config()
         self.last_model_check = 0
+        self.last_update_check = 0
+        self.update_available = 0      # commits behind
+        self.update_summary = ""
         self.app_ready = False         # set True once run loop starts
 
         # Menu items
@@ -953,6 +996,8 @@ class LocalModelsApp(rumps.App):
         self.menu_new_models_header = rumps.MenuItem("New Models Available")
         self.menu_check_now = rumps.MenuItem("Check for New Models", callback=self.check_models_now)
         self.menu_separator4 = rumps.separator
+        self.menu_update = rumps.MenuItem("Check for Updates", callback=self._update_now)
+        self.menu_separator5 = rumps.separator
         self.menu_action = rumps.MenuItem("Start MLX Server", callback=self.toggle_services)
         self.menu_quit = rumps.MenuItem("Quit", callback=self.quit_app)
 
@@ -970,6 +1015,8 @@ class LocalModelsApp(rumps.App):
             self.menu_new_models_header,
             self.menu_check_now,
             self.menu_separator4,
+            self.menu_update,
+            self.menu_separator5,
             self.menu_action,
             None,
             self.menu_quit,
@@ -985,6 +1032,7 @@ class LocalModelsApp(rumps.App):
             self.app_ready = True
             self.start_services()
             self._schedule_model_check()
+            self._schedule_update_check()
             return
         self.refresh(None)
 
@@ -1051,9 +1099,11 @@ class LocalModelsApp(rumps.App):
         else:
             self._refresh_client_mode()
 
-        # Periodic model discovery check
+        # Periodic checks
         if time.time() - self.last_model_check > MODEL_CHECK_INTERVAL:
             self._schedule_model_check()
+        if time.time() - self.last_update_check > UPDATE_CHECK_INTERVAL:
+            self._schedule_update_check()
 
         if self.app_ready:
             self._update_menu()
@@ -1485,6 +1535,63 @@ class LocalModelsApp(rumps.App):
             rumps.notification("Local Models", "Download timed out", short_name)
         except Exception as e:
             rumps.notification("Local Models", "Download failed", str(e))
+
+    # -------------------------------------------------------------------
+    # App update (git)
+    # -------------------------------------------------------------------
+
+    def _schedule_update_check(self):
+        self.last_update_check = time.time()
+        thread = threading.Thread(target=self._check_for_updates, daemon=True)
+        thread.start()
+
+    def _check_for_updates(self):
+        behind, summary = check_repo_update_available()
+        self.update_available = behind
+        self.update_summary = summary
+        if behind > 0:
+            self.menu_update.title = f"Update Available ({behind} commit{'s' if behind != 1 else ''})"
+            try:
+                rumps.notification(
+                    "Super Puppy",
+                    "Update available",
+                    f"{behind} new commit{'s' if behind != 1 else ''}",
+                )
+            except RuntimeError:
+                pass
+        else:
+            self.menu_update.title = "Check for Updates"
+
+    def _update_now(self, _):
+        if self.update_available:
+            self.menu_update.title = "Updating..."
+            thread = threading.Thread(target=self._apply_update, daemon=True)
+            thread.start()
+        else:
+            self.menu_update.title = "Checking..."
+            self._schedule_update_check()
+            threading.Timer(5.0, lambda: setattr(self.menu_update, 'title', 'Check for Updates')).start()
+
+    def _apply_update(self):
+        success, output = apply_repo_update()
+        if success:
+            try:
+                rumps.notification("Super Puppy", "Updated successfully", "Restarting...")
+            except RuntimeError:
+                pass
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        else:
+            self.menu_update.title = "Update Failed"
+            try:
+                rumps.notification("Super Puppy", "Update failed", output[:100])
+            except RuntimeError:
+                pass
+            threading.Timer(5.0, lambda: setattr(self.menu_update, 'title',
+                            f"Update Available ({self.update_available} commits)")).start()
+
+    # -------------------------------------------------------------------
+    # Dismiss models
+    # -------------------------------------------------------------------
 
     def dismiss_all_new_models(self, _):
         """Dismiss all currently listed new models."""
