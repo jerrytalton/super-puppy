@@ -137,6 +137,8 @@ fi
 if is_desktop; then
     # Desktop: bind to all interfaces so laptops on the LAN can reach us
     export OLLAMA_HOST="0.0.0.0:11434"
+    # Keep core models loaded to avoid swap delays on MCP tool calls
+    export OLLAMA_MAX_LOADED_MODELS=6
 fi
 
 if pgrep -x ollama > /dev/null; then
