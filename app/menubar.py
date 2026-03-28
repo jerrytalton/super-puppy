@@ -35,7 +35,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ICON_PATH = os.path.join(SCRIPT_DIR, "icon.png")
 ICONS_DIR = os.path.join(SCRIPT_DIR, "icons")
 NETWORK_CONF = os.path.expanduser("~/.config/local-models/network.conf")
-CCR_CONFIG = os.path.expanduser("~/.config/claude-code-router/config.json")
+MCP_TOOLS_FILE = os.path.expanduser("~/.claude.json")
 OLLAMA_LOCAL = "http://localhost:11434"
 MLX_LOCAL = "http://localhost:8000"
 POLL_INTERVAL = 15          # seconds between status refreshes
@@ -56,7 +56,6 @@ MIN_DOWNLOADS = 1000
 # Models we already know about (won't re-suggest)
 DISMISSED_MODELS_FILE = os.path.expanduser("~/.config/local-models/dismissed_models.json")
 
-# Which models are enabled for use in claude-smart routing
 MODEL_PREFS_FILE = os.path.expanduser("~/.config/local-models/model_preferences.json")
 
 
@@ -137,38 +136,30 @@ def get_mlx_models(base_url, timeout=3):
 
 
 # ---------------------------------------------------------------------------
-# CCR role mapping (which task types use which models)
+# MCP tool status
 # ---------------------------------------------------------------------------
 
-def load_ccr_config():
-    """Read the full CCR config."""
-    if os.path.exists(CCR_CONFIG):
+MCP_TOOL_LABELS = {
+    "local_generate": "Code & Text Generation",
+    "local_review": "Code Review",
+    "local_vision": "Vision (Images)",
+    "local_transcribe": "Transcription (Whisper)",
+    "local_candidates": "Multi-Model Consensus",
+    "local_summarize": "File Summarization",
+    "local_models_status": "Model Status",
+}
+
+
+def is_mcp_configured():
+    """Check if local-models MCP is registered in Claude config."""
+    if os.path.exists(MCP_TOOLS_FILE):
         try:
-            with open(CCR_CONFIG) as f:
-                return json.load(f)
+            with open(MCP_TOOLS_FILE) as f:
+                data = json.load(f)
+            return "local-models" in data.get("mcpServers", {})
         except Exception:
             pass
-    return {}
-
-
-def get_ccr_router(config):
-    """Extract {role: "provider,model"} from CCR config Router section."""
-    router = {}
-    for role, value in config.get("Router", {}).items():
-        if role == "longContextThreshold":
-            continue
-        router[role] = str(value)
-    return router
-
-
-def get_all_ccr_models(config):
-    """Extract list of (provider, model) tuples from all CCR providers."""
-    models = []
-    for provider in config.get("Providers", []):
-        pname = provider.get("name", "")
-        for m in provider.get("models", []):
-            models.append((pname, m))
-    return models
+    return False
 
 
 # Provider icon file paths (set after ICONS_DIR is defined)
@@ -796,10 +787,7 @@ class LocalModelsApp(rumps.App):
         self.servers_started = False
         self.new_models = []           # discovered models not yet installed
         self.dismissed = load_dismissed_models()
-        self.ccr_config = load_ccr_config()
-        self.ccr_router = get_ccr_router(self.ccr_config)      # role -> "provider,model"
-        self.ccr_models = get_all_ccr_models(self.ccr_config)  # [(provider, model), ...]
-        self.routing_prefs = load_routing_prefs()               # role -> "provider,model" overrides
+        self.mcp_configured = is_mcp_configured()
         self.model_info_cache = ModelInfoCache()
         self.mlx_config_info = query_mlx_model_info_from_config()
         self.last_model_check = 0
@@ -812,7 +800,7 @@ class LocalModelsApp(rumps.App):
         self.menu_mlx = rumps.MenuItem("MLX Server: ...")
         self.menu_separator2 = rumps.separator
         self.menu_services = rumps.MenuItem("Services")
-        self.menu_models_header = rumps.MenuItem("Routing")
+        self.menu_models_header = rumps.MenuItem("MCP Tools")
         self.menu_separator3 = rumps.separator
         self.menu_new_models_header = rumps.MenuItem("New Models Available")
         self.menu_check_now = rumps.MenuItem("Check for New Models", callback=self.check_models_now)
@@ -1004,101 +992,24 @@ class LocalModelsApp(rumps.App):
             self.menu_ollama.title = f"Ollama: {ollama_status}"
             self.menu_mlx.title = f"MLX Server: {mlx_status}"
 
-        # Routing submenu — grouped by task type, radio-select per group
+        # MCP Tools submenu — show available tools and their status
         try:
             self.menu_models_header.clear()
         except AttributeError:
             pass
 
-        if self.ccr_router:
-            for role, default_value in self.ccr_router.items():
-                # Current selection (prefs override, else CCR default)
-                current = self.routing_prefs.get(role, default_value)
-                label = ROLE_LABELS.get(role, role)
-                role_submenu = rumps.MenuItem(label)
-
-                # Populate cache (one-time bulk query)
-                ollama_url = (self.ollama_remote if self.mode == "client"
-                              else OLLAMA_LOCAL)
-                mlx_live = set(self.mlx_models)
-                self.model_info_cache.populate(
-                    self.ccr_models, ollama_url, self.mlx_config_info,
-                    mlx_live)
-
-                # Build right-aligned tab paragraph style
-                from AppKit import (NSImage, NSSize, NSFont,
-                                    NSMutableParagraphStyle,
-                                    NSMutableAttributedString,
-                                    NSAttributedString,
-                                    NSParagraphStyleAttributeName,
-                                    NSFontAttributeName,
-                                    NSForegroundColorAttributeName,
-                                    NSColor)
-                from Foundation import NSTextTab
-
-                para = NSMutableParagraphStyle.alloc().init()
-                para.setTabStops_([])
-                para.addTabStop_(NSTextTab.alloc().initWithType_location_(1, 280))
-
-                menu_font = NSFont.menuFontOfSize_(13)
-                detail_font = NSFont.menuFontOfSize_(11)
-
-                # List only available models, sorted by total params (biggest first)
-                for provider, model in sorted(self.ccr_models,
-                                               key=self.model_info_cache.sort_key):
-                    if not self.model_info_cache.is_available(provider, model):
-                        continue
-                    if not self.model_info_cache.fits_role(provider, model, role):
-                        continue
-                    value = f"{provider},{model}"
-                    selected = (value == current)
-                    is_suggested = (value == default_value)
-                    name, detail = self.model_info_cache.get_label(provider, model)
-
-                    # Build attributed string: "name  SUGGESTED\tdetail"
-                    astr = NSMutableAttributedString.alloc().initWithString_attributes_(
-                        name, {
-                            NSParagraphStyleAttributeName: para,
-                            NSFontAttributeName: menu_font,
-                        })
-                    if is_suggested:
-                        # Small rounded "SUGGESTED" badge
-                        badge_attrs = {
-                            NSFontAttributeName: NSFont.menuFontOfSize_(9),
-                            NSForegroundColorAttributeName: NSColor.secondaryLabelColor(),
-                            NSParagraphStyleAttributeName: para,
-                        }
-                        badge = NSAttributedString.alloc().initWithString_attributes_(
-                            "  SUGGESTED", badge_attrs)
-                        astr.appendAttributedString_(badge)
-                    if detail:
-                        detail_attrs = {
-                            NSFontAttributeName: detail_font,
-                            NSForegroundColorAttributeName: NSColor.secondaryLabelColor(),
-                            NSParagraphStyleAttributeName: para,
-                        }
-                        detail_str = NSAttributedString.alloc().initWithString_attributes_(
-                            f"\t{detail}", detail_attrs)
-                        astr.appendAttributedString_(detail_str)
-
-                    item = rumps.MenuItem(name,
-                                         callback=self._make_route_callback(role, value))
-                    item._menuitem.setAttributedTitle_(astr)
-                    item.state = 1 if selected else 0
-
-                    # Set provider icon
-                    icon_path = PROVIDER_ICON_PATH.get(provider, "")
-                    if icon_path and os.path.exists(icon_path):
-                        ns_image = NSImage.alloc().initWithContentsOfFile_(icon_path)
-                        if ns_image:
-                            ns_image.setTemplate_(False)
-                            ns_image.setSize_(NSSize(16, 16))
-                            item._menuitem.setImage_(ns_image)
-                    role_submenu.add(item)
-
-                self.menu_models_header.add(role_submenu)
+        self.mcp_configured = is_mcp_configured()
+        if self.mcp_configured:
+            status = "Configured" if (self.ollama_ok or self.mlx_ok) else "No backends"
+            self.menu_models_header.add(rumps.MenuItem(f"  local-models: {status}"))
+            self.menu_models_header.add(rumps.separator)
+            for tool_name, label in MCP_TOOL_LABELS.items():
+                item = rumps.MenuItem(f"  {label}")
+                item.state = 1
+                self.menu_models_header.add(item)
         else:
-            self.menu_models_header.add(rumps.MenuItem("  (no routing config found)"))
+            self.menu_models_header.add(rumps.MenuItem("  (not configured in Claude)"))
+            self.menu_models_header.add(rumps.MenuItem("  Add local-models to ~/.claude.json"))
 
         # Services submenu — each service is a sub-menu with selectable implementations
         try:
@@ -1160,22 +1071,6 @@ class LocalModelsApp(rumps.App):
             self.menu_action.title = "Start MLX Server"
         else:
             self.menu_action.title = "Stop MLX Server"
-
-    # -------------------------------------------------------------------
-    # Route selection (pick one model per task type)
-    # -------------------------------------------------------------------
-
-    def _make_route_callback(self, role, value):
-        """Create a callback that selects a model for a task type."""
-        def callback(sender):
-            self.routing_prefs[role] = value
-            save_routing_prefs(self.routing_prefs)
-            # Update radio states in this submenu
-            if sender.parent:
-                for sibling in sender.parent.values():
-                    sibling.state = 0
-            sender.state = 1
-        return callback
 
     # -------------------------------------------------------------------
     # Model discovery
