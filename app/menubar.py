@@ -136,17 +136,111 @@ def get_mlx_models(base_url, timeout=3):
 
 
 # ---------------------------------------------------------------------------
-# MCP tool status
+# MCP tool preferences
 # ---------------------------------------------------------------------------
 
-MCP_TOOL_LABELS = {
-    "local_generate": "Code & Text Generation",
-    "local_review": "Code Review",
-    "local_vision": "Vision (Images)",
-    "local_transcribe": "Transcription (Whisper)",
-    "local_candidates": "Multi-Model Consensus",
-    "local_summarize": "File Summarization",
-    "local_models_status": "Model Status",
+MCP_PREFS_FILE = os.path.expanduser("~/.config/local-models/mcp_preferences.json")
+
+# Task types that users can configure a preferred model for.
+# Keys match the MCP server's pick_model() task parameter.
+MCP_TASK_LABELS = {
+    "code": "Code Generation",
+    "general": "General Text",
+    "translation": "Translation",
+    "reasoning": "Reasoning & Review",
+    "long_context": "Long Context",
+}
+
+MCP_DEFAULT_PREFS = {
+    "code": ["qwen3-coder", "qwen2.5-coder:32b", "qwen2.5-coder", "qwen-coder", "qwen3.5"],
+    "general": ["qwen3.5", "qwen3.5-fast", "qwen3.5-large"],
+    "translation": ["cogito-2.1", "qwen3.5", "qwen3.5-large"],
+    "reasoning": ["qwen3.5-large", "nemotron-super", "DeepSeek-R1", "qwen3.5"],
+    "long_context": ["qwen3.5", "qwen3.5-large"],
+}
+
+# Filters: include/exclude patterns and numeric thresholds.
+# "include_names" — model must match at least one prefix (if set).
+# "exclude_names" — model is hidden if it matches any prefix.
+# "min_active_b" / "min_ctx" — numeric minimums.
+MCP_TASK_FILTERS = {
+    "code": {
+        "priority_names": ["coder"],
+        "include_names": ["qwen3.5", "deepseek", "cogito", "nemotron",
+                          "gpt-oss", "llama3.3"],
+        "exclude_names": ["vl", "flux", "z-image", "whisper", "ocr", "tinyllama",
+                          "goonsai", "nsfw"],
+        "min_active_b": 3,
+    },
+    "general": {
+        "exclude_names": ["coder", "vl", "flux", "z-image", "whisper", "ocr",
+                          "tinyllama", "goonsai", "nsfw"],
+        "min_active_b": 3,
+    },
+    "translation": {
+        "exclude_names": ["coder", "vl", "flux", "z-image", "whisper", "ocr",
+                          "tinyllama", "goonsai", "nsfw"],
+        "min_active_b": 3,
+    },
+    "reasoning": {
+        "exclude_names": ["coder", "vl", "flux", "z-image", "whisper", "ocr",
+                          "tinyllama", "goonsai", "nsfw"],
+        "min_active_b": 10,
+    },
+    "long_context": {
+        "exclude_names": ["vl", "flux", "z-image", "whisper", "ocr",
+                          "tinyllama", "goonsai", "nsfw"],
+        "min_ctx": 64000,
+    },
+}
+
+
+def _model_matches_filter(model_name, raw_info, task_filter):
+    """Check if a model passes the task filter."""
+    name_lower = model_name.lower()
+
+    # Always exclude models matching exclude patterns
+    excludes = task_filter.get("exclude_names", [])
+    if any(p.lower() in name_lower for p in excludes):
+        return False
+
+    # Models matching "priority_names" always pass (e.g. coder models for code tasks)
+    priority = task_filter.get("priority_names", [])
+    if any(p.lower() in name_lower for p in priority):
+        return True
+
+    # Must match at least one include pattern (if set)
+    includes = task_filter.get("include_names")
+    if includes and not any(p.lower() in name_lower for p in includes):
+        return False
+
+    # Numeric thresholds
+    active = raw_info.get("active", 0)
+    min_active = task_filter.get("min_active_b", 0)
+    if min_active and active > 0 and active < min_active:
+        return False
+
+    ctx = raw_info.get("ctx", 0)
+    min_ctx = task_filter.get("min_ctx", 0)
+    if min_ctx and ctx > 0 and ctx < min_ctx:
+        return False
+
+    return True
+
+# Specialized task types matched by model name prefix.
+MCP_SPECIAL_TASKS = {
+    "vision": {
+        "label": "Vision",
+        "prefixes": ["qwen3-vl", "llava", "moondream"],
+    },
+    "image_gen": {
+        "label": "Image Generation",
+        "prefixes": ["x/flux2", "x/z-image", "flux", "stable-diffusion"],
+    },
+    "transcription": {
+        "label": "Transcription",
+        "prefixes": ["whisper"],
+    },
 }
 
 
@@ -160,6 +254,24 @@ def is_mcp_configured():
         except Exception:
             pass
     return False
+
+
+def load_mcp_prefs():
+    """Load {task: model_name} overrides."""
+    if os.path.exists(MCP_PREFS_FILE):
+        try:
+            with open(MCP_PREFS_FILE) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def save_mcp_prefs(prefs):
+    """Save MCP task→model preferences."""
+    os.makedirs(os.path.dirname(MCP_PREFS_FILE), exist_ok=True)
+    with open(MCP_PREFS_FILE, "w") as f:
+        json.dump(prefs, f, indent=2)
 
 
 # Provider icon file paths (set after ICONS_DIR is defined)
@@ -246,17 +358,16 @@ def query_ollama_all_models(base_url, timeout=5):
     return result
 
 
-def query_ollama_model_detail(base_url, model_name, timeout=5):
-    """Query Ollama /api/show for full model architecture info.
+# Known active params for hybrid architectures where auto-detection fails.
+# Keyed by Ollama family name → {total_b: active_b}.
+_KNOWN_ACTIVE_PARAMS_B = {
+    "nemotron_h_moe": {124: 12},
+    "deepseek2": {671: 37},
+}
 
-    Returns {
-        "total_params": float (billions),
-        "active_params": float (billions) — same as total for dense models,
-        "context": int,
-        "expert_count": int or None,
-        "expert_used": int or None,
-    }
-    """
+
+def query_ollama_model_detail(base_url, model_name, timeout=5):
+    """Query Ollama /api/show for full model architecture info."""
     try:
         data = json.dumps({"name": model_name}).encode()
         req = urllib.request.Request(
@@ -269,12 +380,17 @@ def query_ollama_model_detail(base_url, model_name, timeout=5):
 
         model_info = info.get("model_info", {})
         details = info.get("details", {})
+        family = details.get("family", "")
 
-        # Total params from general.parameter_count
+        def _get(suffix, default=None):
+            for k, v in model_info.items():
+                if k.endswith(suffix) and ".vision." not in k:
+                    return v
+            return default
+
+        # Total params
         total_raw = model_info.get("general.parameter_count", 0)
         total_b = total_raw / 1e9 if total_raw else 0
-
-        # Fallback to details.parameter_size
         if not total_b:
             ps = details.get("parameter_size", "")
             try:
@@ -282,36 +398,58 @@ def query_ollama_model_detail(base_url, model_name, timeout=5):
             except (ValueError, AttributeError):
                 pass
 
-        # Context length (key varies by model family)
+        # Context length
         ctx = 0
         for k, v in model_info.items():
             if "context_length" in k:
                 ctx = int(v)
                 break
 
-        # MoE: expert_count and expert_used_count
-        expert_count = None
-        expert_used = None
-        for k, v in model_info.items():
-            if k.endswith(".expert_count"):
-                expert_count = int(v)
-            elif k.endswith(".expert_used_count"):
-                expert_used = int(v)
+        # MoE detection
+        expert_count = _get(".expert_count")
+        expert_used = _get(".expert_used_count")
+        if expert_count:
+            expert_count = int(expert_count)
+        if expert_used:
+            expert_used = int(expert_used)
 
-        # Compute active params for MoE
+        # Active params — multi-strategy for MoE models
+        active_b = total_b
         if expert_count and expert_used and expert_count > 1:
-            # For MoE: active = total * (active_experts / total_experts)
-            # This is approximate but matches advertised numbers well
-            # (e.g., 125B with 8/256 experts → ~3.9B active)
-            active_b = round(total_b * expert_used / expert_count, 1)
-        else:
-            active_b = total_b
+            total_b_rounded = round(total_b)
+
+            # Strategy 1: Parse "AXB" from model name
+            match = re.search(r'[_-]A(\d+(?:\.\d+)?)B', model_name, re.IGNORECASE)
+            if match:
+                active_b = float(match.group(1))
+
+            # Strategy 2: Known hybrid model lookup
+            elif family in _KNOWN_ACTIVE_PARAMS_B:
+                known = _KNOWN_ACTIVE_PARAMS_B[family]
+                if total_b_rounded in known:
+                    active_b = known[total_b_rounded]
+
+            # Strategy 3: FFN subtraction (works for pure MoE like Qwen)
+            else:
+                expert_ffn = _get(".expert_feed_forward_length", 0)
+                embed_len = _get(".embedding_length", 0)
+                block_count = _get(".block_count", 0)
+                if expert_ffn and embed_len and block_count:
+                    total_moe = block_count * expert_count * expert_ffn * embed_len * 3
+                    active_moe = block_count * expert_used * expert_ffn * embed_len * 3
+                    computed = total_raw - total_moe + active_moe
+                    if 0 < computed < total_raw:
+                        active_b = computed / 1e9
+
+                # Strategy 4: Simple ratio (last resort)
+                if active_b == total_b:
+                    active_b = total_b * expert_used / expert_count
 
         has_vision = any("vision" in k for k in model_info)
 
         return {
-            "total_params": round(total_b, 1),
-            "active_params": round(active_b, 1),
+            "total_params": round(total_b),
+            "active_params": round(active_b),
             "context": ctx,
             "expert_count": expert_count,
             "expert_used": expert_used,
@@ -484,8 +622,8 @@ def query_mlx_model_info_from_config():
             has_vision = "vision_config" in hf_config or "vision_config" in hf_config.get("text_config", {})
 
         info[name] = {
-            "total_params": round(total_b, 1),
-            "active_params": round(active_b, 1),
+            "total_params": round(total_b),
+            "active_params": round(active_b),
             "context": ctx,
             "model_path": model_path,
             "has_vision": has_vision,
@@ -575,9 +713,9 @@ class ModelInfoCache:
             # Format: "Total/Active • Ctx" for MoE, "Total • Ctx" for dense
             parts = []
             if total > 0 and active > 0 and active != total:
-                parts.append(f"{total:g}B/{active:g}B")
+                parts.append(f"{total:.0f}B/{active:.0f}B")
             elif total > 0:
-                parts.append(f"{total:g}B")
+                parts.append(f"{total:.0f}B")
             ctx_str = format_context(ctx)
             if ctx_str:
                 parts.append(ctx_str)
@@ -788,6 +926,7 @@ class LocalModelsApp(rumps.App):
         self.new_models = []           # discovered models not yet installed
         self.dismissed = load_dismissed_models()
         self.mcp_configured = is_mcp_configured()
+        self.mcp_prefs = load_mcp_prefs()
         self.model_info_cache = ModelInfoCache()
         self.mlx_config_info = query_mlx_model_info_from_config()
         self.last_model_check = 0
@@ -798,9 +937,15 @@ class LocalModelsApp(rumps.App):
         self.menu_separator1 = rumps.separator
         self.menu_ollama = rumps.MenuItem("Ollama: ...")
         self.menu_mlx = rumps.MenuItem("MLX Server: ...")
+        self.menu_mcp_status = rumps.MenuItem("MCP: checking...")
         self.menu_separator2 = rumps.separator
-        self.menu_services = rumps.MenuItem("Services")
-        self.menu_models_header = rumps.MenuItem("MCP Tools")
+        # One submenu per task type (populated in _update_menu)
+        self.menu_tasks = {task: rumps.MenuItem(label)
+                           for task, label in MCP_TASK_LABELS.items()}
+        self.menu_separator_caps = rumps.separator
+        # Specialized task submenus (vision, image gen, transcription)
+        self.menu_special = {key: rumps.MenuItem(info["label"])
+                             for key, info in MCP_SPECIAL_TASKS.items()}
         self.menu_separator3 = rumps.separator
         self.menu_new_models_header = rumps.MenuItem("New Models Available")
         self.menu_check_now = rumps.MenuItem("Check for New Models", callback=self.check_models_now)
@@ -813,9 +958,11 @@ class LocalModelsApp(rumps.App):
             self.menu_separator1,
             self.menu_ollama,
             self.menu_mlx,
+            self.menu_mcp_status,
             self.menu_separator2,
-            self.menu_services,
-            self.menu_models_header,
+            *self.menu_tasks.values(),
+            self.menu_separator_caps,
+            *self.menu_special.values(),
             self.menu_separator3,
             self.menu_new_models_header,
             self.menu_check_now,
@@ -992,49 +1139,192 @@ class LocalModelsApp(rumps.App):
             self.menu_ollama.title = f"Ollama: {ollama_status}"
             self.menu_mlx.title = f"MLX Server: {mlx_status}"
 
-        # MCP Tools submenu — show available tools and their status
-        try:
-            self.menu_models_header.clear()
-        except AttributeError:
-            pass
-
+        # MCP status line
         self.mcp_configured = is_mcp_configured()
+        self.mcp_prefs = load_mcp_prefs()
+        parts = []
+        if self.ollama_models:
+            parts.append(f"{len(self.ollama_models)} Ollama")
+        if self.mlx_models:
+            parts.append(f"{len(self.mlx_models)} MLX")
+        summary = " + ".join(parts) if parts else "none"
         if self.mcp_configured:
-            status = "Configured" if (self.ollama_ok or self.mlx_ok) else "No backends"
-            self.menu_models_header.add(rumps.MenuItem(f"  local-models: {status}"))
-            self.menu_models_header.add(rumps.separator)
-            for tool_name, label in MCP_TOOL_LABELS.items():
-                item = rumps.MenuItem(f"  {label}")
-                item.state = 1
-                self.menu_models_header.add(item)
+            self.menu_mcp_status.title = f"MCP: ready ({summary})"
         else:
-            self.menu_models_header.add(rumps.MenuItem("  (not configured in Claude)"))
-            self.menu_models_header.add(rumps.MenuItem("  Add local-models to ~/.claude.json"))
+            self.menu_mcp_status.title = f"MCP: not configured ({summary})"
 
-        # Services submenu — each service is a sub-menu with selectable implementations
-        try:
-            self.menu_services.clear()
-        except AttributeError:
-            pass
+        # Build model info for all local models
+        ollama_url = (self.ollama_remote if self.mode == "client"
+                      else OLLAMA_LOCAL)
+        mlx_live = set(self.mlx_models)
+        all_local = (
+            [("ollama", m) for m in self.ollama_models]
+            + [("mlx", m) for m in self.mlx_models]
+        )
+        self.model_info_cache.populate(
+            all_local, ollama_url, self.mlx_config_info, mlx_live)
 
-        # Speech-to-Text
-        stt_menu = rumps.MenuItem("Speech-to-Text")
-        stt_whisper = rumps.MenuItem("  Whisper v3 (MLX, local)")
-        stt_whisper.state = 1 if "whisper-v3" in set(self.mlx_models) else 0
-        stt_menu.add(stt_whisper)
-        self.menu_services.add(stt_menu)
+        from AppKit import (NSImage, NSSize, NSFont,
+                            NSMutableParagraphStyle,
+                            NSMutableAttributedString,
+                            NSAttributedString,
+                            NSParagraphStyleAttributeName,
+                            NSFontAttributeName,
+                            NSForegroundColorAttributeName,
+                            NSColor)
+        from Foundation import NSTextTab
 
-        # Web Search
-        ws_menu = rumps.MenuItem("Web Search")
-        ws_open = rumps.MenuItem("  open-webSearch (Bing, DuckDuckGo, Brave)")
-        ws_open.state = 1
-        ws_menu.add(ws_open)
-        self.menu_services.add(ws_menu)
+        para = NSMutableParagraphStyle.alloc().init()
+        para.setTabStops_([])
+        para.addTabStop_(NSTextTab.alloc().initWithType_location_(1, 280))
+        menu_font = NSFont.menuFontOfSize_(13)
+        detail_font = NSFont.menuFontOfSize_(11)
+        badge_font = NSFont.menuFontOfSize_(9)
 
-        # Summary
-        self.menu_services.add(rumps.separator)
-        self.menu_services.add(rumps.MenuItem(f"  {len(self.ollama_models)} Ollama models"))
-        self.menu_services.add(rumps.MenuItem(f"  {len(self.mlx_models)} MLX models"))
+        # Find the recommended model for each task (first available from defaults)
+        all_model_names = self.ollama_models + self.mlx_models
+        recommended = {}
+        for task, pref_list in MCP_DEFAULT_PREFS.items():
+            for pref in pref_list:
+                if pref in all_model_names:
+                    recommended[task] = pref
+                    break
+                for m in all_model_names:
+                    if m.startswith(pref):
+                        recommended[task] = m
+                        break
+                if task in recommended:
+                    break
+
+        # Task→model submenus (top level)
+        for task, label in MCP_TASK_LABELS.items():
+            submenu = self.menu_tasks[task]
+            try:
+                submenu.clear()
+            except AttributeError:
+                pass
+
+            current_pref = self.mcp_prefs.get(task)
+            rec_model = recommended.get(task)
+            task_filter = MCP_TASK_FILTERS.get(task, {})
+
+            for provider, model in sorted(all_local,
+                                           key=self.model_info_cache.sort_key):
+                if not self.model_info_cache.is_available(provider, model):
+                    continue
+                raw = self.model_info_cache._raw.get(f"{provider}:{model}", {})
+                if not _model_matches_filter(model, raw, task_filter):
+                    continue
+                name, detail = self.model_info_cache.get_label(provider, model)
+                is_recommended = (model == rec_model)
+
+                astr = NSMutableAttributedString.alloc().initWithString_attributes_(
+                    name, {
+                        NSParagraphStyleAttributeName: para,
+                        NSFontAttributeName: menu_font,
+                    })
+                if is_recommended:
+                    badge = NSAttributedString.alloc().initWithString_attributes_(
+                        "  DEFAULT", {
+                            NSFontAttributeName: badge_font,
+                            NSForegroundColorAttributeName: NSColor.secondaryLabelColor(),
+                            NSParagraphStyleAttributeName: para,
+                        })
+                    astr.appendAttributedString_(badge)
+                if detail:
+                    detail_str = NSAttributedString.alloc().initWithString_attributes_(
+                        f"\t{detail}", {
+                            NSFontAttributeName: detail_font,
+                            NSForegroundColorAttributeName: NSColor.secondaryLabelColor(),
+                            NSParagraphStyleAttributeName: para,
+                        })
+                    astr.appendAttributedString_(detail_str)
+
+                item = rumps.MenuItem(name,
+                                     callback=self._make_mcp_pref_callback(task, model))
+                item._menuitem.setAttributedTitle_(astr)
+
+                # Selected: explicit pref, or recommended if no pref set
+                if current_pref:
+                    item.state = 1 if model == current_pref else 0
+                else:
+                    item.state = 1 if is_recommended else 0
+
+                icon_path = PROVIDER_ICON_PATH.get(provider, "")
+                if icon_path and os.path.exists(icon_path):
+                    ns_image = NSImage.alloc().initWithContentsOfFile_(icon_path)
+                    if ns_image:
+                        ns_image.setTemplate_(False)
+                        ns_image.setSize_(NSSize(16, 16))
+                        item._menuitem.setImage_(ns_image)
+
+                submenu.add(item)
+
+        # Specialized task submenus (matched by prefix)
+        for spec_key, spec_info in MCP_SPECIAL_TASKS.items():
+            submenu = self.menu_special[spec_key]
+            try:
+                submenu.clear()
+            except AttributeError:
+                pass
+
+            current_pref = self.mcp_prefs.get(spec_key)
+            matching = []
+            for m in all_model_names:
+                if any(m.startswith(p) for p in spec_info["prefixes"]):
+                    matching.append(m)
+
+            if not matching:
+                submenu.title = f"{spec_info['label']}: not installed"
+                submenu.add(rumps.MenuItem("  (no models available)"))
+            else:
+                submenu.title = spec_info["label"]
+                first = True
+                for model in matching:
+                    # Find provider
+                    provider = "ollama" if model in self.ollama_models else "mlx"
+                    name, detail = self.model_info_cache.get_label(provider, model)
+
+                    astr = NSMutableAttributedString.alloc().initWithString_attributes_(
+                        name, {
+                            NSParagraphStyleAttributeName: para,
+                            NSFontAttributeName: menu_font,
+                        })
+                    if first and not current_pref:
+                        badge = NSAttributedString.alloc().initWithString_attributes_(
+                            "  DEFAULT", {
+                                NSFontAttributeName: badge_font,
+                                NSForegroundColorAttributeName: NSColor.secondaryLabelColor(),
+                                NSParagraphStyleAttributeName: para,
+                            })
+                        astr.appendAttributedString_(badge)
+                    if detail:
+                        detail_str = NSAttributedString.alloc().initWithString_attributes_(
+                            f"\t{detail}", {
+                                NSFontAttributeName: detail_font,
+                                NSForegroundColorAttributeName: NSColor.secondaryLabelColor(),
+                                NSParagraphStyleAttributeName: para,
+                            })
+                        astr.appendAttributedString_(detail_str)
+
+                    item = rumps.MenuItem(name,
+                                         callback=self._make_mcp_pref_callback(spec_key, model))
+                    item._menuitem.setAttributedTitle_(astr)
+                    if current_pref:
+                        item.state = 1 if model == current_pref else 0
+                    else:
+                        item.state = 1 if first else 0
+
+                    icon_path = PROVIDER_ICON_PATH.get(provider, "")
+                    if icon_path and os.path.exists(icon_path):
+                        ns_image = NSImage.alloc().initWithContentsOfFile_(icon_path)
+                        if ns_image:
+                            ns_image.setTemplate_(False)
+                            ns_image.setSize_(NSSize(16, 16))
+                            item._menuitem.setImage_(ns_image)
+
+                    submenu.add(item)
+                    first = False
 
         # New models submenu
         try:
@@ -1071,6 +1361,25 @@ class LocalModelsApp(rumps.App):
             self.menu_action.title = "Start MLX Server"
         else:
             self.menu_action.title = "Stop MLX Server"
+
+    # -------------------------------------------------------------------
+    # MCP preference selection
+    # -------------------------------------------------------------------
+
+    def _make_mcp_pref_callback(self, task, model_name):
+        """Create a callback that sets the preferred model for a task."""
+        def callback(sender):
+            if model_name is None:
+                self.mcp_prefs.pop(task, None)
+            else:
+                self.mcp_prefs[task] = model_name
+            save_mcp_prefs(self.mcp_prefs)
+            # Update radio states
+            if sender.parent:
+                for sibling in sender.parent.values():
+                    sibling.state = 0
+            sender.state = 1
+        return callback
 
     # -------------------------------------------------------------------
     # Model discovery

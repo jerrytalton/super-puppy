@@ -24,8 +24,14 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 MLX_URL = os.environ.get("MLX_URL", "http://localhost:8000")
+MCP_PREFS_FILE = Path("~/.config/local-models/mcp_preferences.json").expanduser()
 
 mcp = FastMCP("local-models")
+
+_KNOWN_ACTIVE = {
+    "nemotron_h_moe": {124: 12},
+    "deepseek2": {671: 37},
+}
 
 # ── Model Discovery ─────────────────────────────────────────────────
 
@@ -56,7 +62,9 @@ async def discover_models():
                         json={"name": name}, timeout=5,
                     )
                     mi = show.json().get("model_info", {})
+                    family = show.json().get("details", {}).get("family", "")
                     has_vision = any("vision" in k for k in mi)
+                    expert_ffn, embed_len, block_count = 0, 0, 0
                     for k, v in mi.items():
                         if "context_length" in k:
                             ctx = int(v)
@@ -64,12 +72,41 @@ async def discover_models():
                             expert_count = int(v)
                         elif k.endswith(".expert_used_count"):
                             expert_used = int(v)
+                        elif k.endswith(".expert_feed_forward_length"):
+                            expert_ffn = int(v)
+                        elif k.endswith(".embedding_length") and ".vision." not in k:
+                            embed_len = int(v)
+                        elif k.endswith(".block_count") and ".vision." not in k:
+                            block_count = int(v)
                 except Exception:
                     pass
 
                 active_b = total_b
                 if expert_count and expert_used and expert_count > 1:
-                    active_b = round(total_b * expert_used / expert_count, 1)
+                    import re as _re
+                    total_raw = int(total_b * 1e9)
+                    # Strategy 1: parse AXB from name
+                    m = _re.search(r'[_-]A(\d+(?:\.\d+)?)B', name, _re.IGNORECASE)
+                    if m:
+                        active_b = float(m.group(1))
+                    # Strategy 2: known hybrid lookup
+                    elif family in _KNOWN_ACTIVE:
+                        known = _KNOWN_ACTIVE[family]
+                        if round(total_b) in known:
+                            active_b = known[round(total_b)]
+                    # Strategy 3: FFN subtraction
+                    elif expert_ffn and embed_len and block_count:
+                        total_moe = block_count * expert_count * expert_ffn * embed_len * 3
+                        active_moe = block_count * expert_used * expert_ffn * embed_len * 3
+                        computed = total_raw - total_moe + active_moe
+                        if 0 < computed < total_raw:
+                            active_b = round(computed / 1e9)
+                        else:
+                            active_b = round(total_b * expert_used / expert_count)
+                    else:
+                        active_b = round(total_b * expert_used / expert_count)
+                active_b = round(active_b)
+                total_b = round(total_b)
 
                 models[name] = {
                     "backend": "ollama",
@@ -102,21 +139,44 @@ async def discover_models():
     return models
 
 
+DEFAULT_PREFERENCES = {
+    "code": ["qwen3-coder", "qwen2.5-coder:32b", "qwen2.5-coder", "qwen-coder", "qwen3.5"],
+    "general": ["qwen3.5", "qwen3.5-fast", "qwen3.5-large"],
+    "translation": ["cogito-2.1", "qwen3.5", "qwen3.5-large"],
+    "reasoning": ["qwen3.5-large", "nemotron-super", "DeepSeek-R1", "qwen3.5"],
+    "vision": ["qwen3-vl"],
+    "long_context": ["qwen3.5", "qwen3.5-large"],
+}
+
+
+def load_mcp_prefs() -> dict[str, str]:
+    """Load {task: model_name} overrides from preferences file."""
+    if MCP_PREFS_FILE.exists():
+        try:
+            return json.loads(MCP_PREFS_FILE.read_text())
+        except Exception:
+            pass
+    return {}
+
+
 def pick_model(task: str, override: str | None = None) -> tuple[str, str]:
     """Pick best model for a task. Returns (model_name, backend)."""
     if override and override in _models:
         return override, _models[override]["backend"]
 
-    preferences = {
-        "code": ["qwen3-coder", "qwen2.5-coder:32b", "qwen2.5-coder", "qwen-coder", "qwen3.5"],
-        "general": ["qwen3.5", "qwen3.5-fast", "qwen3.5-large"],
-        "reasoning": ["qwen3.5-large", "nemotron-super", "DeepSeek-R1", "qwen3.5"],
-        "vision": ["qwen3-vl"],
-        "long_context": ["qwen3.5", "qwen3.5-large"],
-    }
-    for name in preferences.get(task, preferences["general"]):
-        if name in _models:
-            return name, _models[name]["backend"]
+    # Check user preferences first
+    prefs = load_mcp_prefs()
+    if task in prefs and prefs[task] in _models:
+        return prefs[task], _models[prefs[task]]["backend"]
+
+    for pref in DEFAULT_PREFERENCES.get(task, DEFAULT_PREFERENCES["general"]):
+        # Exact match first
+        if pref in _models:
+            return pref, _models[pref]["backend"]
+        # Prefix match (e.g. "qwen3-vl" matches "qwen3-vl:235b")
+        for name in _models:
+            if name.startswith(pref):
+                return name, _models[name]["backend"]
 
     # Last resort: pick anything
     for name, info in _models.items():
@@ -305,11 +365,16 @@ async def local_vision(
         image_paths: List of absolute paths to image files (PNG, JPG, etc).
         prompt: What to analyze about the image(s).
     """
-    vision_models = [n for n, i in _models.items() if i.get("vision")]
-    if not vision_models:
-        return "Error: no vision-capable model available. Need qwen3-vl in Ollama."
-
-    model_name = vision_models[0]
+    prefs = load_mcp_prefs()
+    if "vision" in prefs and prefs["vision"] in _models:
+        model_name = prefs["vision"]
+    else:
+        vision_models = [n for n, i in _models.items() if i.get("vision")]
+        if not vision_models:
+            vision_models = [n for n in _models if n.startswith("qwen3-vl")]
+        if not vision_models:
+            return "Error: no vision-capable model available. Need qwen3-vl in Ollama."
+        model_name = vision_models[0]
 
     images = []
     for ip in image_paths:
@@ -334,6 +399,67 @@ async def local_vision(
 
 
 @mcp.tool()
+async def local_image(
+    prompt: str,
+    output_path: str | None = None,
+    model: str | None = None,
+) -> str:
+    """Generate an image using a local model (Flux, Z-Image, etc).
+
+    Creates images locally on the M3 Ultra. The generated image is saved
+    to disk and the path is returned.
+
+    Args:
+        prompt: Description of the image to generate.
+        output_path: Where to save the image. Defaults to /tmp/local_image_<timestamp>.png.
+        model: Optional model override. Defaults to best available image model.
+    """
+    # Find an image generation model
+    image_prefixes = ["x/flux2", "x/z-image", "flux", "stable-diffusion"]
+    selected = None
+    if model and model in _models:
+        selected = model
+    else:
+        # Check user preference
+        prefs = load_mcp_prefs()
+        if "image_gen" in prefs and prefs["image_gen"] in _models:
+            selected = prefs["image_gen"]
+    if not selected:
+        for prefix in image_prefixes:
+            for name in _models:
+                if name.startswith(prefix):
+                    selected = name
+                    break
+            if selected:
+                break
+
+    if not selected:
+        return "Error: no image generation model available. Need flux2 or similar in Ollama."
+
+    if not output_path:
+        import time as _time
+        output_path = f"/tmp/local_image_{int(_time.time())}.png"
+
+    _log("→ generate image", f"{selected}: {prompt[:50]}")
+
+    async with httpx.AsyncClient(timeout=300) as client:
+        resp = await client.post(
+            f"{OLLAMA_URL}/api/generate",
+            json={"model": selected, "prompt": prompt, "stream": False},
+        )
+        resp.raise_for_status()
+        image_b64 = resp.json().get("image", "")
+
+    if not image_b64:
+        return f"Error: {selected} did not return an image."
+
+    image_data = base64.b64decode(image_b64)
+    Path(output_path).write_bytes(image_data)
+
+    return f"[{selected} via ollama]\n\nImage saved to {output_path} ({len(image_data)} bytes)"
+
+
+@mcp.tool()
 async def local_transcribe(
     audio_path: str,
     language: str | None = None,
@@ -344,8 +470,13 @@ async def local_transcribe(
         audio_path: Absolute path to an audio file (mp3, wav, m4a, etc).
         language: Optional language hint (e.g. "en", "es", "ja").
     """
-    if "whisper-v3" not in _models:
-        return "Error: whisper-v3 not available on MLX server."
+    prefs = load_mcp_prefs()
+    whisper_model = prefs.get("transcription", "whisper-v3")
+    whisper_candidates = [n for n in _models if n.startswith("whisper")]
+    if not whisper_candidates:
+        return "Error: no whisper model available on MLX server."
+    if whisper_model not in _models and whisper_candidates:
+        whisper_model = whisper_candidates[0]
 
     try:
         audio_data = Path(audio_path).read_bytes()
@@ -360,7 +491,7 @@ async def local_transcribe(
 
     async with httpx.AsyncClient(timeout=300) as client:
         files = {"file": (Path(audio_path).name, audio_data, ct)}
-        data = {"model": "whisper-v3"}
+        data = {"model": whisper_model}
         if language:
             data["language"] = language
 
@@ -371,7 +502,52 @@ async def local_transcribe(
         resp.raise_for_status()
         result = resp.json().get("text", resp.text)
 
-    return f"[whisper-v3 via mlx]\n\n{result}"
+    return f"[{whisper_model} via mlx]\n\n{result}"
+
+
+@mcp.tool()
+async def local_translate(
+    text: str,
+    target_language: str,
+    source_language: str | None = None,
+    file_paths: list[str] | None = None,
+    model: str | None = None,
+) -> str:
+    """Translate text between languages using a local multilingual model.
+
+    Uses models like Cogito (30+ languages) or Qwen3.5 for translation.
+    Handles inline text or entire files.
+
+    Args:
+        text: Text to translate (or instructions if using file_paths).
+        target_language: Target language (e.g. "Spanish", "Japanese", "zh-CN").
+        source_language: Optional source language. Auto-detected if omitted.
+        file_paths: Optional list of file paths to translate instead of inline text.
+        model: Optional model override.
+    """
+    model_name, backend = pick_model("general", model)
+
+    content = text
+    if file_paths:
+        parts = []
+        for fp in file_paths:
+            try:
+                parts.append(f"--- {fp} ---\n{Path(fp).read_text(errors='replace')}")
+            except Exception as e:
+                parts.append(f"--- {fp} --- (error: {e})")
+        content = "\n\n".join(parts)
+
+    source_hint = f" from {source_language}" if source_language else ""
+    messages = [
+        {"role": "system",
+         "content": f"You are a professional translator. Translate{source_hint} "
+                    f"to {target_language}. Preserve formatting, code blocks, and "
+                    "structure. Output only the translation."},
+        {"role": "user", "content": content},
+    ]
+
+    result = await chat(model_name, backend, messages, 8192)
+    return f"[{model_name} via {backend}]\n\n{result}"
 
 
 @mcp.tool()

@@ -29,7 +29,6 @@ echo "Installing Super Puppy..."
 
 # Scripts
 link bin/start-local-models        ~/bin/start-local-models
-link bin/pal-mcp-detect            ~/bin/pal-mcp-detect
 link bin/local-models-menubar      ~/bin/local-models-menubar
 link bin/local-models-mcp-detect   ~/bin/local-models-mcp-detect
 
@@ -48,6 +47,30 @@ if [ "$RAM_GB" -ge 256 ]; then
     link config/launchd/setenv.OLLAMA_HOST.plist \
         ~/Library/LaunchAgents/setenv.OLLAMA_HOST.plist
     echo "  (desktop detected — installed Ollama LAN LaunchAgent)"
+fi
+
+# Register local-models MCP in Claude Code config
+CLAUDE_JSON="$HOME/.claude.json"
+if [ -f "$CLAUDE_JSON" ]; then
+    if ! python3 -c "import json; d=json.load(open('$CLAUDE_JSON')); exit(0 if 'local-models' in d.get('mcpServers',{}) else 1)" 2>/dev/null; then
+        python3 -c "
+import json
+with open('$CLAUDE_JSON') as f:
+    d = json.load(f)
+d.setdefault('mcpServers', {})['local-models'] = {
+    'type': 'stdio',
+    'command': 'bash',
+    'args': ['-c', '\$HOME/bin/local-models-mcp-detect']
+}
+with open('$CLAUDE_JSON', 'w') as f:
+    json.dump(d, f, indent=2)
+"
+        echo "  Added local-models MCP to $CLAUDE_JSON"
+    else
+        echo "  local-models MCP already in $CLAUDE_JSON"
+    fi
+else
+    echo "  $CLAUDE_JSON not found — run claude once first, then re-run install.sh"
 fi
 
 # Check dependencies

@@ -1,27 +1,32 @@
 # Super Puppy
 
-Local AI model infrastructure for Claude Code. Routes tasks to the best available model — local when it's good enough, cloud when it matters.
+Local AI model infrastructure for Claude Code. Exposes Ollama and MLX models as MCP tools so Claude can delegate bulk work, vision, transcription, translation, and image generation to local hardware.
 
-## What It Does
+## How It Works
 
 ```
-claude-smart ──> Claude Code Router ──┬──> Local Ollama (:11434)
-                                      ├──> Local MLX-OpenAI-Server (:8000)
-                                      └──> Anthropic API (cloud Claude)
+Claude Code (Max subscription, Anthropic handles reasoning)
+    │
+    └── MCP tool calls ──> local-models-server.py
+                               ├── Ollama (:11434) — 30+ models
+                               └── MLX (:8000) — 7 models, Whisper v3
 ```
 
-Every request is classified by task type and routed automatically:
+Claude does the thinking. Local models do the heavy lifting:
 
-| Task Type | Default | Why |
-|-----------|---------|-----|
-| Routine (edits, completions) | Local Qwen 3.5 | Fast, free |
-| Complex Reasoning | Cloud Claude Opus | Best quality for hard problems |
-| Background (boilerplate) | Local Llama 3B | Speed over quality |
-| Long Context | Cloud Claude Opus | Reliable at length |
-| Vision | Cloud Claude Opus | Best-in-class |
-| Web Search | Local Qwen 3.5 | open-webSearch MCP does the work |
+| Tool | What | Default Model |
+|------|-------|---------------|
+| `local_generate` | Code & text generation | qwen3-coder (code), qwen3.5 (text) |
+| `local_review` | Second opinion on code | qwen3.5-large (397B) |
+| `local_vision` | Analyze images on disk | qwen3-vl |
+| `local_image` | Generate images | Flux2, Z-Image |
+| `local_transcribe` | Audio → text | Whisper v3 |
+| `local_translate` | Translate text/files | Cogito 2.1 (30+ languages) |
+| `local_candidates` | Same prompt → N models | Diverse set in parallel |
+| `local_summarize` | Condense large files | qwen3.5 (128K context) |
+| `local_models_status` | What's available | — |
 
-You control the split from the menu bar app. Pull a new model and it's immediately available for routing.
+You control which model backs each task from the menu bar app. Pull a new model and it's immediately available.
 
 ## Quick Start
 
@@ -32,8 +37,7 @@ cd ~/super-puppy
 
 ollama pull qwen3.5
 start-local-models
-claude-smart --check
-claude-smart
+claude    # local-models MCP auto-connects
 ```
 
 ### Dependencies
@@ -41,7 +45,6 @@ claude-smart
 ```bash
 brew install ollama
 uv tool install --python 3.12 mlx-openai-server
-npm install -g @musistudio/claude-code-router
 ```
 
 ## Three Environments
@@ -50,27 +53,26 @@ The system auto-detects where you are:
 
 | Environment | What happens |
 |-------------|-------------|
-| **Desktop** (512GB) | All models run locally. Serves to LAN. |
-| **Laptop at home** | Routes to desktop over LAN (same models, zero cost). |
-| **Laptop away** | Local models where capable, cloud where not. Tells you what to install. |
+| **Desktop** (512GB M3 Ultra) | All models run locally. Serves to LAN. |
+| **Laptop at home** | MCP tools route to desktop over LAN. |
+| **Laptop away** | Falls back to local models. Claude does the rest itself. |
 
 ## Menu Bar App
 
 A puppy icon in the menu bar provides:
 
-- **Status** — Ollama/MLX running, loading, or down
-- **Routing** — pick which model handles each task type, with provider icons, param counts, context windows
-- **Services** — Speech-to-Text (Whisper v3), Web Search (open-webSearch)
+- **Status** — Ollama/MLX running or down, MCP configured or not
+- **Task preferences** — pick which model backs each MCP tool (code gen, reasoning, translation, etc.)
+- **Capabilities** — vision, image generation, transcription availability
 - **Model Discovery** — checks HuggingFace hourly for trending models that fit your hardware
 
 ## Commands
 
 ```bash
-claude-smart              # smart-routed Claude (the one you want)
-claude-smart --check      # show what's available, what's missing, what to install
+claude                    # Claude Code with local model tools
+claude-local              # fully local (Ollama only, no Anthropic)
 
-start-local-models        # start Ollama + MLX (auto-detects hardware)
-start-local-models --status
+start-local-models        # start Ollama + MLX
 start-local-models --stop
 ```
 
@@ -78,37 +80,33 @@ start-local-models --stop
 
 ```
 super-puppy/
+├── mcp/
+│   └── local-models-server.py   # MCP server (PEP 723, runs via uv)
 ├── app/
-│   ├── menubar.py          # Menu bar app (PEP 723, runs via uv)
-│   ├── icon.png            # Menu bar icon
-│   └── icons/              # Provider icons (Ollama, Claude, MLX)
+│   ├── menubar.py               # Menu bar app (PEP 723, rumps)
+│   ├── icon.png
+│   └── icons/
 ├── bin/
-│   ├── claude-smart        # Smart-routed Claude launcher
-│   ├── start-local-models  # Service manager
-│   ├── pal-mcp-detect      # MCP wrapper with network detection
-│   └── local-models-menubar # App launcher
+│   ├── local-models-mcp-detect  # MCP wrapper with LAN detection
+│   ├── start-local-models       # Service manager
+│   └── local-models-menubar     # App launcher
 ├── config/
-│   ├── mlx-server/         # MLX configs (desktop + laptop)
-│   ├── claude-code-router/ # CCR config + role filters
-│   ├── local-models/       # Network config (desktop hostname)
-│   └── launchd/            # LaunchAgent plists
+│   ├── mlx-server/              # MLX configs (desktop + laptop)
+│   ├── local-models/            # Network config (desktop hostname)
+│   └── launchd/                 # LaunchAgent plists
 ├── install.sh
 └── README.md
 ```
 
 ## Configuration
 
-### Routing Defaults
+### Task Model Preferences
 
-Edit `config/claude-code-router/config.json` to change which model handles each task type.
-
-### Role Filters
-
-Edit `config/claude-code-router/role_filters.json` to control which models appear in each role's menu (min/max params, context requirements, vision requirement).
+Use the menu bar app to pick which model backs each task type. Saved to `~/.config/local-models/mcp_preferences.json`. The MCP server reads these on every tool call.
 
 ### MLX Models
 
-Edit `config/mlx-server/config.yaml` (desktop) or `config-laptop.yaml` (laptop) to add MLX models. Set `on_demand: true` for models that should only load when requested.
+Edit `config/mlx-server/config.yaml` (desktop) or `config-laptop.yaml` (laptop). Set `on_demand: true` for models that should only load when requested.
 
 ### LAN Serving
 
@@ -121,16 +119,15 @@ sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp /usr/local/bin
 
 ## Adding a New Model
 
-**Ollama**: Just pull it. It's immediately available in routing menus.
+**Ollama**: Just pull it. It's immediately available as an MCP tool.
 ```bash
 ollama pull some-new-model
 ```
 
 **MLX**: Add an entry to `config/mlx-server/config.yaml` and restart:
 ```bash
-# Edit the config, then:
 pkill -f mlx-openai-server
 start-local-models
 ```
 
-**The menu bar app** also checks HuggingFace hourly for trending models and offers to install them.
+The menu bar app also checks HuggingFace hourly for trending models and offers to install them.
