@@ -143,49 +143,8 @@ async def discover_models():
     return models
 
 
-DEFAULT_PREFERENCES = {
-    "code": [
-        "qwen3-coder:480b",    # full-size coding MoE (35B active) — best quality
-        "qwen3-coder",         # 30B MoE (3B active) — fast, good default
-        "qwen2.5-coder:32b",   # dense 32B — solid fallback
-        "glm-4.7-flash",       # 30B MoE all-rounder with strong code
-        "qwen3.5",             # general-purpose fallback
-    ],
-    "general": [
-        "qwen3.5",             # 122B MoE (10B active), 256K ctx, 201 languages
-        "glm-4.7-flash",       # 30B MoE, 200K ctx, fast
-        "nemotron-3-super",    # 120B MoE (12B active), 256K ctx
-        "qwen3.5-fast",        # MLX variant
-    ],
-    "translation": [
-        "cogito-2.1",          # 671B MoE (37B active), 30+ languages, hybrid reasoning
-        "qwen3.5",             # 201 languages natively
-        "glm-4.7-flash",       # multilingual
-    ],
-    "reasoning": [
-        "deepseek-r1:671b",    # gold standard reasoning, explicit chain-of-thought
-        "cogito-2.1",          # 671B hybrid reasoning, fewer tokens than R1
-        "nemotron-3-super",    # 120B MoE, strong agentic reasoning, fast
-        "qwen3.5-large",       # 397B MoE (17B active), MLX
-        "qwen3.5",             # thinking mode available
-        "glm-4.7-flash",       # thinking mode, fast
-    ],
-    "vision": [
-        "qwen3-vl",            # best open vision model
-        "qwen3.5",             # native multimodal (built-in vision)
-    ],
-    "long_context": [
-        "qwen3.5",             # 256K native
-        "nemotron-3-super",    # 256K native
-        "glm-4.7-flash",       # 200K
-        "deepseek-r1:671b",    # 164K
-        "qwen3.5-large",       # 64K (MLX limit)
-    ],
-}
-
-
-def load_mcp_prefs() -> dict[str, str]:
-    """Load {task: model_name} overrides from preferences file."""
+def load_mcp_prefs() -> dict[str, str | list[str]]:
+    """Load task→model preferences from config file."""
     if MCP_PREFS_FILE.exists():
         try:
             return json.loads(MCP_PREFS_FILE.read_text())
@@ -194,26 +153,42 @@ def load_mcp_prefs() -> dict[str, str]:
     return {}
 
 
+def _resolve_model(name: str) -> tuple[str, str] | None:
+    """Try exact match, then prefix match (e.g. 'qwen3-vl' → 'qwen3-vl:235b')."""
+    if name in _models:
+        return name, _models[name]["backend"]
+    for full_name in _models:
+        if full_name.startswith(name + ":"):
+            return full_name, _models[full_name]["backend"]
+    return None
+
+
 def pick_model(task: str, override: str | None = None) -> tuple[str, str]:
-    """Pick best model for a task. Returns (model_name, backend)."""
-    if override and override in _models:
-        return override, _models[override]["backend"]
+    """Pick best model for a task. Returns (model_name, backend).
 
-    # Check user preferences first
+    Resolution order:
+      1. Explicit override from the tool call
+      2. Preferences from mcp_preferences.json (list or single string)
+      3. 'general' task preferences as last-ditch fallback
+      4. Any available model
+    """
+    if override:
+        result = _resolve_model(override)
+        if result:
+            return result
+
     prefs = load_mcp_prefs()
-    if task in prefs and prefs[task] in _models:
-        return prefs[task], _models[prefs[task]]["backend"]
+    for key in (task, "general"):
+        candidates = prefs.get(key, [])
+        if isinstance(candidates, str):
+            candidates = [candidates]
+        for pref in candidates:
+            result = _resolve_model(pref)
+            if result:
+                return result
+        if key == task and candidates:
+            break  # task had preferences but none matched; try general
 
-    for pref in DEFAULT_PREFERENCES.get(task, DEFAULT_PREFERENCES["general"]):
-        # Exact match first
-        if pref in _models:
-            return pref, _models[pref]["backend"]
-        # Prefix match (e.g. "qwen3-vl" matches "qwen3-vl:235b")
-        for name in _models:
-            if name.startswith(pref):
-                return name, _models[name]["backend"]
-
-    # Last resort: pick anything
     for name, info in _models.items():
         if info["backend"] in ("ollama", "mlx"):
             return name, info["backend"]
@@ -389,6 +364,7 @@ async def local_review(
 async def local_vision(
     image_paths: list[str],
     prompt: str = "Describe what you see in this image.",
+    model: str | None = None,
 ) -> str:
     """Analyze images from disk using a local vision model.
 
@@ -399,17 +375,11 @@ async def local_vision(
     Args:
         image_paths: List of absolute paths to image files (PNG, JPG, etc).
         prompt: What to analyze about the image(s).
+        model: Optional model name override. Must be a vision-capable model.
     """
-    prefs = load_mcp_prefs()
-    if "vision" in prefs and prefs["vision"] in _models:
-        model_name = prefs["vision"]
-    else:
-        vision_models = [n for n, i in _models.items() if i.get("vision")]
-        if not vision_models:
-            vision_models = [n for n in _models if n.startswith("qwen3-vl")]
-        if not vision_models:
-            return "Error: no vision-capable model available. Need qwen3-vl in Ollama."
-        model_name = vision_models[0]
+    model_name, backend = pick_model("vision", model)
+    if not _models.get(model_name, {}).get("vision"):
+        return f"Error: {model_name} is not vision-capable. Need a model like qwen3-vl."
 
     images = []
     for ip in image_paths:
@@ -449,26 +419,9 @@ async def local_image(
         output_path: Where to save the image. Defaults to /tmp/local_image_<timestamp>.png.
         model: Optional model override. Defaults to best available image model.
     """
-    # Find an image generation model
-    image_prefixes = ["x/flux2", "x/z-image", "flux", "stable-diffusion"]
-    selected = None
-    if model and model in _models:
-        selected = model
-    else:
-        # Check user preference
-        prefs = load_mcp_prefs()
-        if "image_gen" in prefs and prefs["image_gen"] in _models:
-            selected = prefs["image_gen"]
-    if not selected:
-        for prefix in image_prefixes:
-            for name in _models:
-                if name.startswith(prefix):
-                    selected = name
-                    break
-            if selected:
-                break
-
-    if not selected:
+    try:
+        selected, _ = pick_model("image_gen", model)
+    except ValueError:
         return "Error: no image generation model available. Need flux2 or similar in Ollama."
 
     if not output_path:
@@ -498,20 +451,19 @@ async def local_image(
 async def local_transcribe(
     audio_path: str,
     language: str | None = None,
+    model: str | None = None,
 ) -> str:
     """Transcribe audio to text using local Whisper v3.
 
     Args:
         audio_path: Absolute path to an audio file (mp3, wav, m4a, etc).
         language: Optional language hint (e.g. "en", "es", "ja").
+        model: Optional model name override. Must be a whisper model.
     """
-    prefs = load_mcp_prefs()
-    whisper_model = prefs.get("transcription", "whisper-v3")
-    whisper_candidates = [n for n in _models if n.startswith("whisper")]
-    if not whisper_candidates:
+    try:
+        whisper_model, _ = pick_model("transcription", model)
+    except ValueError:
         return "Error: no whisper model available on MLX server."
-    if whisper_model not in _models and whisper_candidates:
-        whisper_model = whisper_candidates[0]
 
     try:
         audio_data = Path(audio_path).read_bytes()
@@ -560,7 +512,7 @@ async def local_translate(
         file_paths: Optional list of file paths to translate instead of inline text.
         model: Optional model override.
     """
-    model_name, backend = pick_model("general", model)
+    model_name, backend = pick_model("translation", model)
 
     content = text
     if file_paths:

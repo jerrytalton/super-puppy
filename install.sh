@@ -38,6 +38,15 @@ link config/mlx-server/config.yaml         ~/.config/mlx-server/config.yaml
 link config/mlx-server/config-laptop.yaml  ~/.config/mlx-server/config-laptop.yaml
 link config/local-models/network.conf      ~/.config/local-models/network.conf
 
+# MCP preferences: copy defaults if no file exists (not symlinked — profile viewer writes to it)
+MCP_PREFS="$HOME/.config/local-models/mcp_preferences.json"
+if [ ! -e "$MCP_PREFS" ]; then
+    cp "$REPO_DIR/config/local-models/mcp_preferences.json" "$MCP_PREFS"
+    echo "  Installed default $MCP_PREFS"
+else
+    echo "  $MCP_PREFS already exists, keeping"
+fi
+
 # LaunchAgent: menu bar app (all machines)
 link config/launchd/com.local-models.menubar.plist \
     ~/Library/LaunchAgents/com.local-models.menubar.plist
