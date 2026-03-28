@@ -140,3 +140,25 @@ start-local-models
 ```
 
 The menu bar app also checks HuggingFace hourly for trending models and offers to install them.
+
+## CLAUDE.md Setup
+
+The installer checks for a `## Local Model Cluster` section in `~/.claude/CLAUDE.md`. Without it, Claude won't know when to use local model tools. Add this to your global CLAUDE.md:
+
+```markdown
+## Local Model Cluster
+
+There is a local model cluster available as MCP tools via the `local-models` server.
+
+When the `local-models` tools are available, look for opportunities to take advantage of them:
+* **Vision**: Use `local_vision` to examine screenshots, UI states, diagrams, or any image on disk.
+* **Image generation**: Use `local_image` to create images locally with Flux2 or Z-Image.
+* **Translation**: Use `local_translate` for translating text or files between languages.
+* **Audio**: Use `local_transcribe` to turn audio files into text with Whisper v3.
+* **Bulk work**: Use `local_generate` for boilerplate, scaffolding, repetitive transforms, or large amounts of code.
+* **Second opinions**: Use `local_review` or `local_candidates` for a different model's perspective.
+* **Large files**: Use `local_summarize` before reading huge files.
+* **Discovery**: Call `local_models_status` if you're unsure what's available.
+
+Don't delegate complex reasoning, architecture decisions, or subtle debugging — do that yourself.
+```
