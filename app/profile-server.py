@@ -53,6 +53,7 @@ SPECIAL_TASKS = {
     "vision": {"label": "Vision", "prefixes": ["qwen3-vl", "llava", "moondream"]},
     "image_gen": {"label": "Image Gen", "prefixes": ["x/flux2", "x/z-image", "flux", "stable-diffusion"]},
     "transcription": {"label": "Transcription", "prefixes": ["whisper"]},
+    "embedding": {"label": "Embedding", "prefixes": ["mxbai-embed", "nomic-embed", "snowflake-arctic", "all-minilm"]},
 }
 
 TASK_FILTERS = {
