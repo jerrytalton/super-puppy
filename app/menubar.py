@@ -273,8 +273,14 @@ def check_repo_update_available():
 def apply_repo_update():
     """Pull latest and re-run install.sh. Returns (success, output)."""
     try:
-        pull = subprocess.run(["git", "-C", REPO_DIR, "pull", "--ff-only"],
+        # Stash any local changes (e.g. modified preferences)
+        subprocess.run(["git", "-C", REPO_DIR, "stash", "--quiet"],
+                       capture_output=True, timeout=10)
+        pull = subprocess.run(["git", "-C", REPO_DIR, "pull", "--rebase"],
                               capture_output=True, text=True, timeout=30)
+        # Restore stashed changes
+        subprocess.run(["git", "-C", REPO_DIR, "stash", "pop", "--quiet"],
+                       capture_output=True, timeout=10)
         if pull.returncode != 0:
             return False, pull.stderr.strip()
         install = subprocess.run(["bash", os.path.join(REPO_DIR, "install.sh")],
