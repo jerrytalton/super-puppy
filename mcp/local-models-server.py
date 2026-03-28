@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["mcp[cli]>=1.0", "httpx>=0.28"]
+# dependencies = ["mcp[cli]>=1.0", "httpx>=0.28", "sentence-transformers>=3.0", "torch"]
 # ///
 """
 Local Models MCP Server for Super Puppy.
@@ -675,6 +675,174 @@ async def local_summarize(
 
     result = await chat(model_name, backend, messages, max_tokens)
     return f"[{model_name} via {backend}]\n\n{result}"
+
+
+# ── Embeddings ───────────────────────────────────────────────────────
+
+# HuggingFace embedding models (loaded lazily)
+_hf_embed_models: dict = {}
+
+HF_EMBED_MODELS = {
+    "bge-m3": "BAAI/bge-m3",
+    "e5-small-v2": "intfloat/e5-small-v2",
+}
+
+# Ollama embedding models (discovered at startup)
+OLLAMA_EMBED_NAMES = ["mxbai-embed-large", "nomic-embed-text",
+                      "snowflake-arctic-embed", "all-minilm"]
+
+
+def _get_hf_model(name: str):
+    """Lazy-load a HuggingFace embedding model."""
+    if name not in _hf_embed_models:
+        from sentence_transformers import SentenceTransformer
+        _hf_embed_models[name] = SentenceTransformer(HF_EMBED_MODELS[name])
+    return _hf_embed_models[name]
+
+
+async def embed_ollama(model: str, texts: list[str]) -> list[list[float]]:
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(
+            f"{OLLAMA_URL}/api/embed",
+            json={"model": model, "input": texts},
+        )
+        resp.raise_for_status()
+        return resp.json()["embeddings"]
+
+
+def embed_hf(model_name: str, texts: list[str]) -> list[list[float]]:
+    model = _get_hf_model(model_name)
+    embeddings = model.encode(texts, normalize_embeddings=True)
+    return [e.tolist() for e in embeddings]
+
+
+@mcp.tool()
+async def local_embed(
+    texts: list[str],
+    model: str | None = None,
+    file_paths: list[str] | None = None,
+) -> str:
+    """Generate embeddings for text or files using a local embedding model.
+
+    Use for semantic code search, finding similar files, clustering, or RAG.
+    Returns cosine-similarity-ready normalized vectors.
+
+    Available models: bge-m3 (best quality, multilingual), mxbai-embed-large,
+    nomic-embed-text, snowflake-arctic-embed, all-minilm (fastest), e5-small-v2.
+
+    Args:
+        texts: List of text strings to embed.
+        model: Embedding model name. Default: mxbai-embed-large (Ollama) or bge-m3 (HF).
+        file_paths: Optional file paths — contents are read and embedded.
+    """
+    if file_paths:
+        for fp in file_paths:
+            try:
+                texts.append(Path(fp).read_text(errors="replace"))
+            except Exception as e:
+                texts.append(f"Error reading {fp}: {e}")
+
+    if not texts:
+        return "Error: provide texts or file_paths to embed."
+
+    # Pick model
+    chosen = model
+    if not chosen:
+        # Prefer Ollama models (faster startup), fall back to HF
+        for name in OLLAMA_EMBED_NAMES:
+            if name in _models:
+                chosen = name
+                break
+        if not chosen:
+            chosen = "bge-m3"
+
+    # Route to appropriate backend
+    if chosen in HF_EMBED_MODELS:
+        import asyncio
+        embeddings = await asyncio.to_thread(embed_hf, chosen, texts)
+        dim = len(embeddings[0]) if embeddings else 0
+        return (
+            f"[{chosen} via huggingface · {len(embeddings)} embeddings · {dim}d]\n\n"
+            + json.dumps(embeddings)
+        )
+    else:
+        embeddings = await embed_ollama(chosen, texts)
+        dim = len(embeddings[0]) if embeddings else 0
+        return (
+            f"[{chosen} via ollama · {len(embeddings)} embeddings · {dim}d]\n\n"
+            + json.dumps(embeddings)
+        )
+
+
+@mcp.tool()
+async def local_similarity_search(
+    query: str,
+    file_paths: list[str],
+    model: str | None = None,
+    top_k: int = 5,
+) -> str:
+    """Find files most semantically similar to a query.
+
+    Embeds the query and all files, then ranks by cosine similarity.
+    Use for "which files relate to X?" questions.
+
+    Args:
+        query: The search query (e.g. "authentication logic", "database connection handling").
+        file_paths: List of absolute file paths to search through.
+        model: Embedding model name. Default: best available.
+        top_k: Number of top results to return (default 5).
+    """
+    if not file_paths:
+        return "Error: provide file_paths to search."
+
+    # Read files
+    file_texts = []
+    valid_paths = []
+    for fp in file_paths:
+        try:
+            text = Path(fp).read_text(errors="replace")
+            file_texts.append(text[:8000])  # truncate for embedding context
+            valid_paths.append(fp)
+        except Exception:
+            pass
+
+    if not file_texts:
+        return "Error: no readable files."
+
+    all_texts = [query] + file_texts
+
+    # Pick model
+    chosen = model
+    if not chosen:
+        for name in OLLAMA_EMBED_NAMES:
+            if name in _models:
+                chosen = name
+                break
+        if not chosen:
+            chosen = "bge-m3"
+
+    # Embed
+    if chosen in HF_EMBED_MODELS:
+        import asyncio
+        embeddings = await asyncio.to_thread(embed_hf, chosen, all_texts)
+    else:
+        embeddings = await embed_ollama(chosen, all_texts)
+
+    # Cosine similarity (embeddings are normalized)
+    query_emb = embeddings[0]
+    results = []
+    for i, (fp, emb) in enumerate(zip(valid_paths, embeddings[1:])):
+        sim = sum(a * b for a, b in zip(query_emb, emb))
+        results.append((sim, fp))
+
+    results.sort(reverse=True)
+    top = results[:top_k]
+
+    lines = [f"[{chosen} · {len(valid_paths)} files searched]\n"]
+    for sim, fp in top:
+        lines.append(f"  {sim:.3f}  {fp}")
+
+    return "\n".join(lines)
 
 
 # ── Background dispatch/collect ──────────────────────────────────────
