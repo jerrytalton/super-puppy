@@ -1,0 +1,39 @@
+#!/bin/bash
+#
+# Wrapper that detects the desktop model server, resolves mDNS to IP,
+# sets OLLAMA_URL and MLX_URL, then launches the local-models MCP server.
+
+set -euo pipefail
+
+CONF="$HOME/.config/local-models/network.conf"
+REPO_DIR="$(cd "$(dirname "$(readlink "$0" || echo "$0")")/.." && pwd)"
+
+OLLAMA_URL="http://localhost:11434"
+MLX_URL="http://localhost:8000"
+
+if [ -f "$CONF" ]; then
+    # shellcheck source=/dev/null
+    source "$CONF"
+
+    if [ -n "${MODEL_SERVER_HOST:-}" ]; then
+        # Resolve .local mDNS to IP (Python/Node can't do mDNS)
+        HOST_IP=$(python3 -c "import socket; print(socket.gethostbyname('${MODEL_SERVER_HOST}'))" 2>/dev/null || echo "")
+
+        if [ -n "$HOST_IP" ] && curl -sf --connect-timeout "${PROBE_TIMEOUT:-2}" \
+             "http://${HOST_IP}:${OLLAMA_PORT:-11434}/api/version" > /dev/null 2>&1; then
+            OLLAMA_URL="http://${HOST_IP}:${OLLAMA_PORT:-11434}"
+            echo "local-models MCP: using desktop Ollama at ${MODEL_SERVER_HOST} (${HOST_IP})" >&2
+        fi
+
+        if [ -n "$HOST_IP" ] && curl -sf --connect-timeout "${PROBE_TIMEOUT:-2}" \
+             "http://${HOST_IP}:${MLX_PORT:-8000}/v1/models" > /dev/null 2>&1; then
+            MLX_URL="http://${HOST_IP}:${MLX_PORT:-8000}"
+            echo "local-models MCP: using desktop MLX at ${MODEL_SERVER_HOST} (${HOST_IP})" >&2
+        fi
+    fi
+fi
+
+export OLLAMA_URL
+export MLX_URL
+
+exec uv run --python 3.12 "$REPO_DIR/mcp/local-models-server.py"

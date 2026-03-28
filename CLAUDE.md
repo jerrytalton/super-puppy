@@ -5,6 +5,7 @@ Local AI model infrastructure for Claude Code. Menu bar app + smart routing + LA
 ## Structure
 
 - `app/` — Menu bar app (Python/rumps, PEP 723 inline deps, runs via `uv run --python 3.12`)
+- `mcp/` — MCP server exposing local models as tools for Claude Code
 - `bin/` — Shell scripts symlinked to `~/bin/`
 - `config/` — Config files symlinked to `~/.config/` and `~/Library/LaunchAgents/`
 - `install.sh` — Creates symlinks, checks dependencies, detects desktop vs laptop
@@ -16,6 +17,10 @@ Local AI model infrastructure for Claude Code. Menu bar app + smart routing + LA
 - The menu bar app queries model capabilities live from Ollama `/api/show` and MLX `config.json` files in the HuggingFace cache. No hardcoded param tables.
 - MLX models marked `on_demand: true` download on first use and unload after idle timeout.
 - The desktop hostname for LAN serving is in `config/local-models/network.conf`, detected via mDNS (Bonjour).
+
+## Local Model Tools (MCP)
+
+The `mcp/local-models-server.py` MCP server exposes Ollama and MLX models as tools for Claude Code. See global CLAUDE.md for usage guidance. Wrapper script is `bin/local-models-mcp-detect`.
 
 ## When Modifying This Repo
 
