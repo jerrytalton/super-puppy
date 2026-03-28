@@ -86,10 +86,10 @@ start-local-models --stop
 Add to your `~/.zshrc`:
 
 ```bash
-alias claude-local='ANTHROPIC_AUTH_TOKEN=ollama ANTHROPIC_BASE_URL=http://localhost:11434 ANTHROPIC_API_KEY="" claude --model qwen3.5'
+alias claude-local='ANTHROPIC_AUTH_TOKEN=ollama ANTHROPIC_BASE_URL=http://localhost:11434 ANTHROPIC_API_KEY="" claude --model qwen3.5:122b'
 ```
 
-Change the model to whatever you prefer. Any model Ollama serves works.
+Use `curl -s http://localhost:11434/v1/models | python3 -c "import sys,json; [print(m['id']) for m in json.loads(sys.stdin.read())['data']]"` to see available model names. The model name must match exactly (including the tag).
 
 ## Structure
 
