@@ -29,6 +29,10 @@ When using `claude` with Max, these tools let Claude delegate to local models:
 | `local_translate` | Translate text/files | Cogito 2.1 (30+ languages) |
 | `local_candidates` | Same prompt → N models | Diverse set in parallel |
 | `local_summarize` | Condense large files | qwen3.5 (128K context) |
+| `local_embed` | Generate embeddings | mxbai-embed-large, bge-m3 |
+| `local_similarity_search` | Semantic file search | Best available embedding model |
+| `local_dispatch` | Start background job | Returns immediately, model works async |
+| `local_collect` | Get background result | Collect when ready |
 | `local_models_status` | What's available | — |
 
 You control which model backs each task from the menu bar app. Pull a new model and it's immediately available.
@@ -157,7 +161,9 @@ When the `local-models` tools are available, look for opportunities to take adva
 * **Audio**: Use `local_transcribe` to turn audio files into text with Whisper v3.
 * **Bulk work**: Use `local_generate` for boilerplate, scaffolding, repetitive transforms, or large amounts of code.
 * **Second opinions**: Use `local_review` or `local_candidates` for a different model's perspective.
+* **Parallel reasoning**: Use `local_dispatch` to start a local model thinking while you continue working. Call `local_collect` when ready for its answer.
 * **Large files**: Use `local_summarize` before reading huge files.
+* **Semantic search**: Use `local_similarity_search` to find files related to a concept without reading every file. Use `local_embed` for raw embeddings.
 * **Discovery**: Call `local_models_status` if you're unsure what's available.
 
 Don't delegate complex reasoning, architecture decisions, or subtle debugging — do that yourself.
