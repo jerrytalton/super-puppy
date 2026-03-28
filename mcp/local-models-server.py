@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import sys
+import uuid
 from pathlib import Path
 
 import httpx
@@ -36,6 +37,9 @@ _KNOWN_ACTIVE = {
 # ── Model Discovery ─────────────────────────────────────────────────
 
 _models: dict = {}  # populated at startup
+
+# Background job store for async dispatch/collect pattern
+_jobs: dict[str, dict] = {}  # job_id -> {task, status, result, model, created}
 
 
 async def discover_models():
@@ -640,6 +644,103 @@ async def local_summarize(
 
     result = await chat(model_name, backend, messages, max_tokens)
     return f"[{model_name} via {backend}]\n\n{result}"
+
+
+# ── Background dispatch/collect ──────────────────────────────────────
+
+@mcp.tool()
+async def local_dispatch(
+    prompt: str,
+    system_prompt: str | None = None,
+    model: str | None = None,
+    context_files: list[str] | None = None,
+    task_type: str = "reasoning",
+) -> str:
+    """Start a local model working on a task in the background. Returns immediately.
+
+    Use this to get a parallel second opinion while you continue thinking.
+    Call local_collect with the returned job_id when you're ready for the result.
+
+    This is true parallelism: the local model runs on GPU while you run on
+    Anthropic's servers. Use it for architecture review, code review,
+    alternative approaches — anything where a second perspective helps.
+
+    Args:
+        prompt: The task or question for the local model.
+        system_prompt: Optional system prompt.
+        model: Optional model override. Defaults to best reasoning model.
+        context_files: Optional file paths to include as context.
+        task_type: Task type for model selection (reasoning, code, general). Default: reasoning.
+    """
+    model_name, backend = pick_model(task_type, model)
+    job_id = uuid.uuid4().hex[:8]
+
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+
+    user_content = prompt
+    if context_files:
+        file_parts = []
+        for fp in context_files:
+            try:
+                file_parts.append(f"--- {fp} ---\n{Path(fp).read_text(errors='replace')}")
+            except Exception as e:
+                file_parts.append(f"--- {fp} --- (error: {e})")
+        user_content = "\n\n".join(file_parts) + "\n\n" + prompt
+
+    messages.append({"role": "user", "content": user_content})
+
+    _jobs[job_id] = {
+        "status": "running",
+        "model": model_name,
+        "backend": backend,
+        "result": None,
+        "created": asyncio.get_event_loop().time(),
+    }
+
+    async def _run():
+        try:
+            result = await chat(model_name, backend, messages, 8192)
+            _jobs[job_id]["result"] = f"[{model_name} via {backend}]\n\n{result}"
+            _jobs[job_id]["status"] = "done"
+        except Exception as e:
+            _jobs[job_id]["result"] = f"Error: {e}"
+            _jobs[job_id]["status"] = "failed"
+
+    asyncio.create_task(_run())
+
+    return (
+        f"Job dispatched: {job_id}\n"
+        f"Model: {model_name} ({backend})\n"
+        f"Continue your work, then call local_collect('{job_id}') for the result."
+    )
+
+
+@mcp.tool()
+async def local_collect(job_id: str) -> str:
+    """Collect the result of a background job started with local_dispatch.
+
+    Args:
+        job_id: The job ID returned by local_dispatch.
+    """
+    if job_id not in _jobs:
+        available = [f"{jid} ({j['status']})" for jid, j in _jobs.items()]
+        return f"Unknown job ID: {job_id}\nActive jobs: {', '.join(available) or 'none'}"
+
+    job = _jobs[job_id]
+
+    if job["status"] == "running":
+        elapsed = asyncio.get_event_loop().time() - job["created"]
+        return (
+            f"Job {job_id} still running ({elapsed:.0f}s elapsed).\n"
+            f"Model: {job['model']} ({job['backend']})\n"
+            f"Call local_collect('{job_id}') again shortly."
+        )
+
+    result = job["result"]
+    del _jobs[job_id]
+    return result
 
 
 # ── Main ─────────────────────────────────────────────────────────────
