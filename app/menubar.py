@@ -27,6 +27,7 @@ import urllib.error
 import objc
 import rumps
 from AppKit import NSCommandKeyMask, NSObject, NSWindow
+import WebKit  # must be imported before _WebViewUIDelegate for block metadata
 
 
 class _ProfileWindow(NSWindow):
@@ -68,10 +69,9 @@ class _WebViewMessageHandler(NSObject):
 class _WebViewUIDelegate(NSObject):
     """WKUIDelegate that auto-grants media capture (microphone) permission.
 
-    Without this, getUserMedia() crashes the WKWebView because there's
-    no delegate to handle the permission request. pyobjc-framework-WebKit
-    registers the full block callable metadata for this selector, so no
-    @objc.typedSelector is needed (and would break block invocation).
+    The WebKit import above must happen before this class is defined so
+    pyobjc-framework-WebKit's block metadata is registered when the ObjC
+    method trampoline is created.
     """
 
     def webView_requestMediaCapturePermissionForOrigin_initiatedByFrame_type_decisionHandler_(
