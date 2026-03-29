@@ -1046,7 +1046,10 @@ class LocalModelsApp(rumps.App):
         if self.desktop:
             self._start_local_servers()
         else:
-            if self.desktop_host and probe_service(self.ollama_remote, self.probe_timeout):
+            if self.desktop_host and (
+                probe_service(self.ollama_remote, self.probe_timeout)
+                or probe_service(self.mlx_remote, self.probe_timeout)
+            ):
                 self.mode = "client"
             else:
                 self._start_local_servers()
@@ -1282,12 +1285,14 @@ class LocalModelsApp(rumps.App):
             desktop_ollama = probe_service(self.ollama_remote, self.probe_timeout)
             desktop_mlx = probe_service(self.mlx_remote, self.probe_timeout)
 
-        if desktop_ollama:
+        if desktop_ollama or desktop_mlx:
             self.mode = "client"
-            self.ollama_ok = True
+            self.ollama_ok = desktop_ollama
             self.mlx_ok = desktop_mlx
-            self.ollama_models = get_ollama_models(self.ollama_remote)
-            self.mlx_models = get_mlx_models(self.mlx_remote) if desktop_mlx else []
+            self.ollama_models = (
+                get_ollama_models(self.ollama_remote) if desktop_ollama else [])
+            self.mlx_models = (
+                get_mlx_models(self.mlx_remote) if desktop_mlx else [])
         else:
             self.ollama_ok = probe_service(OLLAMA_LOCAL, 2)
             self.mlx_ok = probe_service(MLX_LOCAL, 2)

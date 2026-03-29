@@ -60,12 +60,10 @@ int main(int argc, char *argv[]) {
     /* Ensure user-local paths are in PATH (launchd/open gives minimal PATH) */
     const char *old_path = getenv("PATH");
     char new_path[PATH_MAX * 4];
-    snprintf(new_path, sizeof(new_path), "%s/.local/bin:%s/bin:%s",
+    snprintf(new_path, sizeof(new_path),
+             "%s/.local/bin:%s/bin:/opt/homebrew/bin:%s",
              home, home, old_path ? old_path : "/usr/bin:/bin:/usr/sbin:/sbin");
     setenv("PATH", new_path, 1);
-
-    char uv[PATH_MAX];
-    snprintf(uv, sizeof(uv), "%s/.local/bin/uv", home);
 
     /* Phase 1 */
     int pipefd[2];
@@ -77,8 +75,8 @@ int main(int argc, char *argv[]) {
         close(pipefd[0]);
         dup2(pipefd[1], STDOUT_FILENO);
         close(pipefd[1]);
-        execl(uv, "uv", "run", "--python", "3.12", script,
-              "--python-info", NULL);
+        execlp("uv", "uv", "run", "--python", "3.12", script,
+               "--python-info", NULL);
         _exit(1);
     }
     close(pipefd[1]);
