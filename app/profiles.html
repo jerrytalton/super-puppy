@@ -42,9 +42,10 @@ body {
   margin-left: auto; background: var(--green); color: #fff; border-color: var(--green); font-weight: 600;
 }
 .prof-btn.warm {
-  background: var(--surface); color: var(--amber); border-color: var(--amber); font-weight: 600;
+  margin-left: auto; background: var(--amber); color: #fff; border-color: var(--amber);
+  font-weight: 600; box-shadow: 0 1px 4px rgba(255,159,10,0.3);
 }
-.prof-btn.warm:hover { background: var(--amber); color: #fff; }
+.prof-btn.warm:hover { opacity: 0.85; }
 .prof-btn.go:hover { opacity: 0.85; }
 .prof-btn:disabled { opacity: 0.4; pointer-events: none; }
 
@@ -146,7 +147,7 @@ const TC = {
 const TASK_ORDER = ['code','general','reasoning','long_context','translation','vision','image_gen','transcription','embedding','uncensored'];
 
 let S = { sys:null, models:[], tasks:{}, profiles:{active:null,profiles:{}},
-           sel:null, picks:{}, thinkPicks:{}, openTasks:new Set() };
+           sel:null, picks:{}, thinkPicks:{}, openTasks:new Set(), dirty:false };
 
 const fmt = b => b>=1e12?(b/1e12).toFixed(1)+'TB':b>=1e9?Math.round(b/1e9)+'GB':b>=1e6?Math.round(b/1e6)+'MB':b+'B';
 const fmtP = (t,a) => t===a||!a ? t+'B' : t+'B/'+a+'B';
@@ -170,6 +171,17 @@ async function init() {
   fillThinkDefaults();
   fillDefaults();
   render();
+}
+
+function switchToCustom() {
+  if (S.sel === 'custom') return;
+  if (!S.profiles.profiles.custom) {
+    S.profiles.profiles.custom = { label: 'Custom', description: 'Your custom configuration', tasks: {}, thinking: {} };
+  }
+  S.profiles.profiles.custom.tasks = {...S.picks};
+  S.profiles.profiles.custom.thinking = {...S.thinkPicks};
+  S.sel = 'custom';
+  S.dirty = true;
 }
 
 function fillThinkDefaults() {
@@ -207,12 +219,20 @@ function render() {
 function renderProfiles() {
   const el = document.getElementById('profiles');
   el.innerHTML = '';
-  for (const [name, p] of Object.entries(S.profiles.profiles)) {
+  const order = Object.keys(S.profiles.profiles).sort((a,b) => {
+    if (a === 'custom') return 1;
+    if (b === 'custom') return -1;
+    if (a === 'everyday') return -1;
+    if (b === 'everyday') return 1;
+    return 0;
+  });
+  for (const name of order) {
+    const p = S.profiles.profiles[name];
     const b = document.createElement('button');
     b.className = 'prof-btn' + (S.sel===name?' active':'');
     b.textContent = p.label || name;
     b.title = p.description || '';
-    b.onclick = () => { S.sel = name; S.picks = {...(p.tasks||{})}; S.thinkPicks = {...(p.thinking||{})}; fillThinkDefaults(); fillDefaults(); render(); };
+    b.onclick = () => { S.sel = name; S.dirty = false; S.picks = {...(p.tasks||{})}; S.thinkPicks = {...(p.thinking||{})}; fillThinkDefaults(); fillDefaults(); render(); };
     el.appendChild(b);
   }
   const isActive = S.sel === S.profiles.active;
@@ -341,6 +361,7 @@ function renderTasks() {
 
     row.querySelector('.think-toggle').onclick = (e) => {
       e.stopPropagation();
+      switchToCustom();
       S.thinkPicks[key] = !think;
       render();
     };
@@ -362,7 +383,7 @@ function renderTasks() {
       card.className = 'card' + (isSelected?' selected':'') + (tooLarge?' too-large':'');
 
       if (!tooLarge) {
-        card.onclick = () => { S.picks[key] = m.name; render(); };
+        card.onclick = () => { switchToCustom(); S.picks[key] = m.name; render(); };
       }
 
       let badges = '';

@@ -19,6 +19,29 @@ Local AI model infrastructure for Claude Code. MCP tools + menu bar app + LAN se
 - The desktop hostname for LAN serving is in `config/local-models/network.conf`, detected via mDNS (Bonjour).
 - The `local-models-mcp-detect` wrapper probes the desktop before launching. Laptops use the desktop if reachable, fall back to localhost.
 
+## Runtime Architecture
+
+The menu bar app (`app/menubar.py`) launches via `app/SuperPuppy.app` and spawns:
+
+- **Profile server** (`app/profile-server.py`) — Flask app on a random port. Serves the Model Profiles UI (`app/profiles.html`) and the Playground (`app/tools.html`). The port is assigned at startup and passed via `PROFILE_SERVER_PORT` env var. To find it at runtime: `lsof -p $(pgrep -f profile-server) -iTCP -sTCP:LISTEN` or check the menubar app's `self.profile_port`.
+- **Ollama** — `http://localhost:11434` (desktop binds `0.0.0.0:11434` for LAN access)
+- **MLX-OpenAI-Server** — `http://localhost:8000`, config at `~/.config/mlx-server/config.yaml`
+
+### Key files at runtime
+
+| What | Where |
+|------|-------|
+| Profiles | `~/.config/local-models/profiles.json` |
+| MCP preferences | `~/.config/local-models/mcp_preferences.json` |
+| Network config | `~/.config/local-models/network.conf` |
+| MLX server config | `~/.config/mlx-server/config.yaml` |
+| Menu bar log | `/tmp/local-models-menubar.log` |
+| Instance lock | `~/.config/local-models/menubar.lock` |
+
+### Task types
+
+Profiles map these task types to models. Standard tasks: `code`, `general`, `reasoning`, `long_context`, `translation`. Special tasks (matched by model capability, not general-purpose): `vision`, `image_gen`, `transcription`, `embedding`, `uncensored`.
+
 ## Local Model Tools (MCP)
 
 The `mcp/local-models-server.py` MCP server exposes Ollama and MLX models as tools for Claude Code. See global CLAUDE.md for usage guidance. Wrapper script is `bin/local-models-mcp-detect`.
