@@ -16,5 +16,7 @@
     <true/>
     <key>NSScreenCaptureUsageDescription</key>
     <string>Super Puppy needs screen capture to analyze screenshots with local vision models.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Super Puppy needs microphone access to record audio for transcription with local Whisper models.</string>
 </dict>
 </plist>

@@ -16,6 +16,7 @@ Or via:    open app/SuperPuppy.app
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -62,6 +63,22 @@ class _WebViewMessageHandler(NSObject):
     def userContentController_didReceiveScriptMessage_(self, controller, message):
         if self.on_message:
             self.on_message(message.body())
+
+
+class _WebViewUIDelegate(NSObject):
+    """WKUIDelegate that auto-grants media capture (microphone) permission.
+
+    Without this, getUserMedia() crashes the WKWebView because there's
+    no delegate to handle the permission request. pyobjc-framework-WebKit
+    registers the full block callable metadata for this selector, so no
+    @objc.typedSelector is needed (and would break block invocation).
+    """
+
+    def webView_requestMediaCapturePermissionForOrigin_initiatedByFrame_type_decisionHandler_(
+        self, webView, origin, frame, mediaType, decisionHandler
+    ):
+        # WKPermissionDecision.grant = 1
+        decisionHandler(1)
 
 
 
@@ -120,6 +137,24 @@ def http_get_json(url, timeout=3):
             return json.loads(resp.read())
     except Exception:
         return None
+
+
+def resolve_mdns(hostname, timeout=5):
+    """Resolve an mDNS (.local) hostname to an IP address.
+
+    Uses socket.getaddrinfo with a generous timeout to handle cold mDNS
+    caches. Returns the IP string, or empty string on failure.
+    """
+    if not hostname:
+        return ""
+    try:
+        results = socket.getaddrinfo(hostname, None, socket.AF_INET,
+                                     socket.SOCK_STREAM)
+        if results:
+            return results[0][4][0]
+    except (socket.gaierror, OSError):
+        pass
+    return ""
 
 
 def probe_service(base_url, timeout=2):
@@ -904,9 +939,12 @@ class LocalModelsApp(rumps.App):
         self.mlx_port = self.conf["MLX_PORT"]
         self.probe_timeout = int(self.conf["PROBE_TIMEOUT"])
 
-        # Remote URLs (desktop on LAN)
-        self.ollama_remote = f"http://{self.desktop_host}:{self.ollama_port}"
-        self.mlx_remote = f"http://{self.desktop_host}:{self.mlx_port}"
+        # Resolve mDNS hostname to IP once (avoids repeated cold-cache
+        # lookups that eat into the probe timeout window)
+        self.desktop_ip = resolve_mdns(self.desktop_host)
+        remote_addr = self.desktop_ip or self.desktop_host
+        self.ollama_remote = f"http://{remote_addr}:{self.ollama_port}"
+        self.mlx_remote = f"http://{remote_addr}:{self.mlx_port}"
 
         # State (protected by _lock for cross-thread access)
         self._lock = threading.Lock()
@@ -1019,11 +1057,15 @@ class LocalModelsApp(rumps.App):
             env = os.environ.copy()
             if self.desktop:
                 env["OLLAMA_HOST"] = f"0.0.0.0:{self.ollama_port}"
+            # Ensure Homebrew is on PATH — launchd gives a minimal PATH
+            if "/opt/homebrew/bin" not in env.get("PATH", ""):
+                env["PATH"] = f"/opt/homebrew/bin:{env.get('PATH', '')}"
+            log = open("/tmp/local-models-startup.log", "w")
             subprocess.Popen(
                 [os.path.expanduser("~/bin/start-local-models")],
                 env=env,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=log,
+                stderr=log,
             )
             self.servers_started = True
             self.mode = "server" if self.desktop else "offline"
@@ -1103,10 +1145,15 @@ class LocalModelsApp(rumps.App):
                     mlx_config = os.path.expanduser(
                         "~/.config/mlx-server/config-laptop.yaml")
                 mlx_log = open("/tmp/local-models-mlx-restart.log", "w")
+                env = os.environ.copy()
+                # Ensure Homebrew is on PATH for tools like ffmpeg
+                if "/opt/homebrew/bin" not in env.get("PATH", ""):
+                    env["PATH"] = f"/opt/homebrew/bin:{env.get('PATH', '')}"
                 subprocess.Popen(
                     ["mlx-openai-server", "launch", "--config", mlx_config,
                      "--no-log-file"],
                     stdout=mlx_log, stderr=mlx_log,
+                    env=env,
                     cwd=os.path.expanduser("~"),
                     start_new_session=True)
                 # Wait for it to come up
@@ -1184,6 +1231,21 @@ class LocalModelsApp(rumps.App):
         self.ollama_loading = not self.ollama_ok and process_is_running("ollama")
         self.mlx_loading = not self.mlx_ok and process_is_running("mlx-openai-server")
 
+        # Track how long MLX has been in "loading" state — if the process is
+        # alive but not responding for >60s, it's stuck. Kill it so the
+        # auto-restart logic below can relaunch it.
+        if self.mlx_loading:
+            if not hasattr(self, '_mlx_loading_since'):
+                self._mlx_loading_since = time.time()
+            elif time.time() - self._mlx_loading_since > 60:
+                subprocess.run(["pkill", "-9", "-f", "mlx-openai-server"],
+                               capture_output=True, timeout=3)
+                self.mlx_loading = False
+                del self._mlx_loading_since
+        else:
+            if hasattr(self, '_mlx_loading_since'):
+                del self._mlx_loading_since
+
         # Auto-restart downed services on desktop (at most once per 2 minutes)
         if (self.servers_started
                 and (not self.ollama_ok and not self.ollama_loading
@@ -1208,6 +1270,15 @@ class LocalModelsApp(rumps.App):
         desktop_mlx = False
 
         if self.desktop_host:
+            # Re-resolve mDNS if we don't have an IP yet (server may have
+            # been down when we booted)
+            if not self.desktop_ip:
+                self.desktop_ip = resolve_mdns(self.desktop_host)
+                if self.desktop_ip:
+                    self.ollama_remote = (
+                        f"http://{self.desktop_ip}:{self.ollama_port}")
+                    self.mlx_remote = (
+                        f"http://{self.desktop_ip}:{self.mlx_port}")
             desktop_ollama = probe_service(self.ollama_remote, self.probe_timeout)
             desktop_mlx = probe_service(self.mlx_remote, self.probe_timeout)
 
@@ -1457,6 +1528,8 @@ class LocalModelsApp(rumps.App):
             self._msg_handler, "app")
         webview = WKWebView.alloc().initWithFrame_configuration_(
             window.contentView().bounds(), config)
+        self._ui_delegate = _WebViewUIDelegate.alloc().init()
+        webview.setUIDelegate_(self._ui_delegate)
         webview.setAutoresizingMask_(0x12)
         full_url = f"http://127.0.0.1:{self.profile_port}{path}"
         url = NSURL.URLWithString_(full_url)
@@ -1473,10 +1546,14 @@ class LocalModelsApp(rumps.App):
             from Foundation import NSMakeRect
             src = NSImage.alloc().initWithContentsOfFile_(icon_path)
             sz = 128
+            radius = sz * 0.22  # macOS-style rounded rect
             dock_icon = NSImage.alloc().initWithSize_((sz, sz))
             dock_icon.lockFocus()
+            rrect = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                NSMakeRect(0, 0, sz, sz), radius, radius)
+            rrect.addClip()
             NSColor.whiteColor().setFill()
-            NSBezierPath.fillRect_(NSMakeRect(0, 0, sz, sz))
+            rrect.fill()
             src.drawInRect_fromRect_operation_fraction_(
                 NSMakeRect(0, 0, sz, sz), ((0, 0), src.size()),
                 NSCompositingOperationSourceOver, 1.0)
