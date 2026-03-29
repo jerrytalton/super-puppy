@@ -120,6 +120,33 @@ else
     exit 1
 fi
 
+# Build Super Puppy app bundle
+echo ""
+echo "Building Super Puppy.app..."
+APP_MACOS="$REPO_DIR/app/SuperPuppy.app/Contents/MacOS"
+APP_RES="$REPO_DIR/app/SuperPuppy.app/Contents/Resources"
+APP_SRC="$REPO_DIR/app/super-puppy.c"
+if [ ! -f "$APP_SRC" ]; then
+    echo "  ERROR: $APP_SRC not found"
+    exit 1
+fi
+mkdir -p "$APP_MACOS"
+cc -o "$APP_MACOS/super-puppy" "$APP_SRC" 2>&1
+echo "  Compiled launcher binary"
+
+# Generate .icns from icon.png
+mkdir -p "$APP_RES"
+ICONSET=$(mktemp -d)/AppIcon.iconset
+mkdir -p "$ICONSET"
+for size in 16 32 64 128 256 512; do
+    sips -z $size $size "$REPO_DIR/app/icon.png" --out "$ICONSET/icon_${size}x${size}.png" > /dev/null 2>&1
+done
+iconutil -c icns "$ICONSET" -o "$APP_RES/AppIcon.icns" 2>/dev/null && echo "  Generated app icon" || true
+
+# Ad-hoc code sign (required for TCC / screen recording permission)
+codesign --sign - --force "$REPO_DIR/app/SuperPuppy.app" > /dev/null 2>&1
+echo "  Signed app bundle (ad-hoc)"
+
 # Start the menu bar app
 echo ""
 echo "Starting menu bar app..."

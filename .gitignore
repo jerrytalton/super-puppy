@@ -2,3 +2,9 @@
 __pycache__/
 *.pyc
 .DS_Store
+logs/
+
+# Compiled app bundle artifacts (built by install.sh)
+app/SuperPuppy.app/Contents/MacOS/super-puppy
+app/SuperPuppy.app/Contents/Resources/AppIcon.icns
+app/SuperPuppy.app/Contents/_CodeSignature/

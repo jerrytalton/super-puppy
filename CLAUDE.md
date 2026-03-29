@@ -4,11 +4,12 @@ Local AI model infrastructure for Claude Code. MCP tools + menu bar app + LAN se
 
 ## Structure
 
-- `app/` — Menu bar app (Python/rumps, PEP 723 inline deps, runs via `uv run --python 3.12`)
+- `app/` — Menu bar app (Python/rumps, PEP 723 inline deps)
+- `app/SuperPuppy.app/` — macOS app bundle wrapping the menu bar app. A native C launcher (`super-puppy.c`) embeds Python via dlopen so macOS shows "Super Puppy" in Cmd-Tab and attributes screen recording permission to the app. Built by `install.sh`.
 - `mcp/` — MCP server exposing local models as tools for Claude Code
 - `bin/` — Shell scripts symlinked to `~/bin/`
 - `config/` — Config files symlinked to `~/.config/` and `~/Library/LaunchAgents/`
-- `install.sh` — Creates symlinks, checks dependencies, detects desktop vs laptop
+- `install.sh` — Creates symlinks, builds the app bundle, checks dependencies, detects desktop vs laptop
 
 ## Key Design Decisions
 
@@ -28,3 +29,5 @@ The `mcp/local-models-server.py` MCP server exposes Ollama and MLX models as too
 - Never add secrets, tokens, or API keys.
 - Menu bar app uses PEP 723 inline metadata for dependencies — no separate requirements.txt or venv.
 - Pin to Python 3.12 (pyobjc-core doesn't build on 3.14+).
+- The compiled binary and .icns icon in `SuperPuppy.app` are gitignored — `install.sh` builds them. Only the C source (`app/super-puppy.c`) and Info.plist are tracked.
+- If you change `app/super-puppy.c`, re-run `install.sh` or manually: `cc -o app/SuperPuppy.app/Contents/MacOS/super-puppy app/super-puppy.c && codesign --sign - --force app/SuperPuppy.app`.

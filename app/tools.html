@@ -143,10 +143,10 @@ h2 { font-size: 13px; font-weight: 600; color: var(--text2); text-transform: upp
 <div class="run-row">
   <button class="run-btn" id="run" onclick="run()">Run</button>
   <span class="status" id="status"></span>
+  <span id="log" style="font-size:11px; color:var(--text3); font-family:ui-monospace,monospace; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; flex:1; min-width:0;"></span>
 </div>
 <h2>Output</h2>
 <div class="output-box" id="output">Select a tool and click Run.</div>
-<div id="log" style="margin-top:8px; font-size:11px; color:var(--text3); font-family:ui-monospace,monospace; white-space:pre-wrap;"></div>
 
 <script>
 const TOOLS = {
@@ -158,6 +158,7 @@ const TOOLS = {
   ]},
   vision:      { label: 'Vision', task: 'vision', fields: [
     {id:'image_path', label:'Image', type:'file', accept:'image/*'},
+    {id:'screenshot', label:'Or screenshot', type:'screenshot'},
     {id:'prompt', label:'Prompt', type:'text', placeholder:'Describe what you see', value:'Describe what you see in this image.'},
   ]},
   image_gen:   { label: 'Image Gen', task: 'image_gen', fields: [
@@ -191,6 +192,7 @@ let selectedModel = null;
 let pickerOpen = false;
 let thinkEnabled = true;
 let taskThinkDefaults = {};
+const toolState = {};  // per-tool saved state: {fields, model, think, output, outputClass, log}
 
 const fmtP = (t,a) => t===a||!a ? t+'B' : t+'B/'+a+'B';
 const fmtC = c => c>=1e6?Math.round(c/1e6)+'M':c>=1024?Math.floor(c/1024)+'K':c>0?''+c:'';
@@ -238,19 +240,53 @@ async function init() {
   selectTool('generate');
 }
 
+function saveToolState() {
+  if (!selected) return;
+  const fields = {};
+  for (const f of TOOLS[selected].fields) {
+    const el = document.getElementById('f_' + f.id);
+    if (el && (f.type === 'text' || f.type === 'textarea')) fields[f.id] = el.value;
+  }
+  const out = document.getElementById('output');
+  toolState[selected] = {
+    fields, model: selectedModel, think: thinkEnabled,
+    output: out.innerHTML, outputClass: out.className,
+    log: document.getElementById('log').textContent,
+  };
+}
+
 function selectTool(key) {
+  saveToolState();
   selected = key;
   document.querySelectorAll('.tool-btn').forEach((b, i) => {
     b.className = 'tool-btn' + (Object.keys(TOOLS)[i] === key ? ' active' : '');
   });
-  const fields = document.getElementById('fields');
-  fields.innerHTML = '';
+  const fieldsEl = document.getElementById('fields');
+  fieldsEl.innerHTML = '';
+  const saved = toolState[key];
   for (const f of TOOLS[key].fields) {
     const div = document.createElement('div');
     div.className = 'field';
     if (f.type === 'file') {
       div.innerHTML = `<label>${f.label}</label>` +
         `<input id="f_${f.id}" type="file" accept="${f.accept || '*/*'}">`;
+    } else if (f.type === 'screenshot') {
+      const label = document.createElement('label');
+      label.textContent = f.label;
+      div.appendChild(label);
+      const row = document.createElement('div');
+      row.className = 'mic-row';
+      const btn = document.createElement('button');
+      btn.className = 'mic-btn';
+      btn.id = 'f_' + f.id + '_btn';
+      btn.textContent = 'Capture Region';
+      btn.onclick = () => captureScreenshot(f.id);
+      row.appendChild(btn);
+      const info = document.createElement('span');
+      info.className = 'mic-time';
+      info.id = 'f_' + f.id + '_info';
+      row.appendChild(info);
+      div.appendChild(row);
     } else if (f.type === 'mic') {
       const label = document.createElement('label');
       label.textContent = f.label;
@@ -275,19 +311,33 @@ function selectTool(key) {
       div.innerHTML = `<label>${f.label}</label>` +
         `<input id="f_${f.id}" type="text" placeholder="${f.placeholder || ''}" ${f.value ? `value="${f.value}"` : ''}>`;
     }
-    fields.appendChild(div);
+    fieldsEl.appendChild(div);
+  }
+  // Restore saved field values
+  if (saved) {
+    for (const [id, val] of Object.entries(saved.fields || {})) {
+      const el = document.getElementById('f_' + id);
+      if (el) el.value = val;
+    }
   }
   // Populate model card picker
   const task = TOOLS[key].task;
   const defaultModel = taskDefaults[task] || '';
   const profileModel = profilePicks[task] || '';
-  selectedModel = profileModel || defaultModel || null;
-  thinkEnabled = taskThinkDefaults[task] !== false;
+  selectedModel = saved?.model ?? profileModel || defaultModel || null;
+  thinkEnabled = saved?.think ?? (taskThinkDefaults[task] !== false);
   pickerOpen = false;
   renderModelPicker(task, defaultModel, profileModel);
 
-  document.getElementById('output').textContent = 'Select a tool and click Run.';
-  document.getElementById('output').className = 'output-box';
+  const out = document.getElementById('output');
+  if (saved?.output) {
+    out.innerHTML = saved.output;
+    out.className = saved.outputClass || 'output-box';
+  } else {
+    out.textContent = 'Select a tool and click Run.';
+    out.className = 'output-box';
+  }
+  document.getElementById('log').textContent = saved?.log || '';
 }
 
 function renderModelPicker(task, defaultModel, profileModel) {
@@ -347,10 +397,7 @@ const STREAM_TOOLS = new Set(['generate', 'review', 'translate', 'summarize', 'u
 let _elapsedTimer = null;
 
 function log(msg) {
-  const el = document.getElementById('log');
-  const ts = new Date().toLocaleTimeString();
-  el.textContent += `[${ts}] ${msg}\n`;
-  el.scrollTop = el.scrollHeight;
+  document.getElementById('log').textContent = msg;
 }
 
 function startTimer(t0, status) {
@@ -380,6 +427,11 @@ async function buildBody() {
         if (upData.error) throw new Error(upData.error);
         body[f.id] = upData.path;
       }
+    } else if (f.type === 'screenshot') {
+      const companion = TOOLS[selected].fields.find(x => x.type === 'file');
+      if (_screenshotPath && companion && !body[companion.id]) {
+        body[companion.id] = _screenshotPath;
+      }
     } else if (f.type === 'mic') {
       const companion = TOOLS[selected].fields.find(x => x.type === 'file');
       if (_recBlob && companion && !body[companion.id]) {
@@ -407,7 +459,6 @@ async function run() {
 
   const t0 = Date.now();
   startTimer(t0, status);
-  document.getElementById('log').textContent = '';
 
   try {
     log(`Tool: ${selected} · Model: ${selectedModel}`);
@@ -491,6 +542,30 @@ async function run() {
     status.textContent = 'Failed';
   }
   btn.disabled = false;
+}
+
+let _screenshotPath = null;
+
+async function captureScreenshot(id) {
+  const btn = document.getElementById('f_' + id + '_btn');
+  const info = document.getElementById('f_' + id + '_info');
+  btn.textContent = 'Select a region...';
+  info.textContent = '';
+  _screenshotPath = null;
+  try {
+    const resp = await fetch('/api/test/screenshot', {method: 'POST'});
+    const data = await resp.json();
+    if (data.error) {
+      info.textContent = data.error;
+    } else {
+      _screenshotPath = data.path;
+      btn.textContent = 'Capture Region';
+      info.textContent = 'Captured';
+    }
+  } catch (e) {
+    info.textContent = e.message;
+    btn.textContent = 'Capture Region';
+  }
 }
 
 let _recorder = null;

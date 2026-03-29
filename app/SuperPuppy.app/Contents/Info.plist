@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Super Puppy</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.super-puppy.app</string>
+    <key>CFBundleExecutable</key>
+    <string>super-puppy</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Super Puppy needs screen capture to analyze screenshots with local vision models.</string>
+</dict>
+</plist>

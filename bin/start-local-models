@@ -15,7 +15,6 @@ set -euo pipefail
 
 MLX_CONFIG_DIR="$HOME/.config/mlx-server"
 NETWORK_CONF="$HOME/.config/local-models/network.conf"
-MLX_PID_FILE="/tmp/mlx-openai-server.pid"
 OLLAMA_PID_FILE="/tmp/ollama-serve.pid"
 
 # Load network config
@@ -59,11 +58,25 @@ pick_mlx_config() {
     fi
 }
 
+wait_for_service() {
+    local url="$1" name="$2" max_wait="${3:-30}"
+    local elapsed=0
+    while [ "$elapsed" -lt "$max_wait" ]; do
+        if curl -sf "$url" > /dev/null 2>&1; then
+            echo "  $name is up after ${elapsed}s."
+            return 0
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    echo "  WARNING: $name did not respond within ${max_wait}s."
+    return 1
+}
+
 stop_services() {
     echo "Stopping Super Puppy services..."
 
     pkill -f "mlx-openai-server" 2>/dev/null && echo "  MLX-OpenAI-Server stopped." || echo "  MLX-OpenAI-Server not running."
-    rm -f "$MLX_PID_FILE"
 
     echo "  Ollama left running (system service, not Super Puppy's to stop)."
     rm -f "$OLLAMA_PID_FILE"
@@ -145,9 +158,9 @@ if pgrep -x ollama > /dev/null; then
     echo "Ollama already running."
 else
     echo "Starting Ollama..."
-    ollama serve &
+    ollama serve > /dev/null 2>&1 &
     echo $! > "$OLLAMA_PID_FILE"
-    sleep 2
+    wait_for_service "http://localhost:${OLLAMA_PORT}/api/version" "Ollama" 10 || true
 fi
 
 # --- MLX-OpenAI-Server ---
@@ -159,13 +172,13 @@ elif [ ! -f "$mlx_config" ]; then
     echo "Error: MLX config not found at $mlx_config"
     echo "Run install.sh to symlink config files."
     exit 1
-elif curl -sf http://localhost:8000/v1/models > /dev/null 2>&1; then
+elif curl -sf "http://localhost:${MLX_PORT}/v1/models" > /dev/null 2>&1; then
     echo "MLX-OpenAI-Server already running."
 else
     echo "Starting MLX-OpenAI-Server with $(basename "$mlx_config")..."
-    mlx-openai-server launch --config "$mlx_config" &
-    echo $! > "$MLX_PID_FILE"
-    sleep 3
+    mlx-openai-server launch --config "$mlx_config" > /dev/null 2>&1 &
+    disown
+    wait_for_service "http://localhost:${MLX_PORT}/v1/models" "MLX-OpenAI-Server" 30 || true
 fi
 
 # --- Summary ---

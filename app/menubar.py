@@ -9,10 +9,8 @@ Shows the status of the local model infrastructure (Ollama + MLX-OpenAI-Server).
 Auto-detects whether this machine is the desktop (server mode) or a laptop
 (client mode), and whether the desktop is reachable on the LAN.
 
-Periodically checks HuggingFace for trending new MLX models that fit this
-machine's RAM, and offers to install them via notification.
-
-Run with:  uv run local-models/menubar.py
+Run with:  uv run app/menubar.py
+Or via:    open app/SuperPuppy.app
 """
 
 import json
@@ -72,23 +70,7 @@ MCP_TOOLS_FILE = os.path.expanduser("~/.claude.json")
 OLLAMA_LOCAL = "http://localhost:11434"
 MLX_LOCAL = "http://localhost:8000"
 POLL_INTERVAL = 15          # seconds between status refreshes
-MODEL_CHECK_INTERVAL = 3600 # seconds between new-model checks (1 hour)
 UPDATE_CHECK_INTERVAL = 3600 # seconds between git update checks (1 hour)
-
-# HuggingFace API for discovering trending MLX models
-HF_API_URL = "https://huggingface.co/api/models"
-HF_SEARCH_PARAMS = {
-    "library": "mlx",
-    "sort": "trending",
-    "direction": "-1",
-    "limit": "30",
-}
-
-# Minimum downloads to consider a model "notable"
-MIN_DOWNLOADS = 1000
-
-# Models we already know about (won't re-suggest)
-DISMISSED_MODELS_FILE = os.path.expanduser("~/.config/local-models/dismissed_models.json")
 
 MODEL_PREFS_FILE = os.path.expanduser("~/.config/local-models/model_preferences.json")
 
@@ -882,110 +864,6 @@ def save_routing_prefs(prefs):
 # Model discovery
 # ---------------------------------------------------------------------------
 
-def estimate_size_gb(model_id):
-    """Estimate download size in GB from model name heuristics.
-
-    Looks for patterns like '70B', '32B-4bit', '8B-Instruct-4bit', etc.
-    Returns estimated disk size for 4-bit quantized version.
-    """
-    # Find parameter count (e.g., "70B", "32B", "397B")
-    match = re.search(r"(\d+)B", model_id, re.IGNORECASE)
-    if not match:
-        return None
-
-    params_b = int(match.group(1))
-
-    # Check if it's a MoE with active params noted (e.g., "397B-A17B")
-    moe_match = re.search(r"(\d+)B-A(\d+)B", model_id, re.IGNORECASE)
-    if moe_match:
-        params_b = int(moe_match.group(1))  # total params for storage
-
-    # 4-bit quant: ~0.5 GB per billion params; 8-bit: ~1 GB/B
-    if "8bit" in model_id.lower() or "8-bit" in model_id.lower():
-        return params_b * 1.0
-    else:
-        return params_b * 0.5  # assume 4-bit
-
-
-def load_dismissed_models():
-    """Load the set of model IDs the user has dismissed."""
-    if os.path.exists(DISMISSED_MODELS_FILE):
-        try:
-            with open(DISMISSED_MODELS_FILE) as f:
-                return set(json.load(f))
-        except Exception:
-            pass
-    return set()
-
-
-def save_dismissed_models(dismissed):
-    """Save the set of dismissed model IDs."""
-    os.makedirs(os.path.dirname(DISMISSED_MODELS_FILE), exist_ok=True)
-    with open(DISMISSED_MODELS_FILE, "w") as f:
-        json.dump(list(dismissed), f)
-
-
-def fetch_trending_mlx_models():
-    """Fetch trending MLX models from HuggingFace."""
-    params = "&".join(f"{k}={v}" for k, v in HF_SEARCH_PARAMS.items())
-    url = f"{HF_API_URL}?{params}"
-    return http_get_json(url, timeout=15) or []
-
-
-def discover_new_models(ram_gb, installed_names, dismissed):
-    """Find notable new MLX models that fit this machine and aren't installed.
-
-    Returns a list of dicts: {id, downloads, size_gb, description}
-    """
-    max_size_gb = ram_gb * 0.8  # leave 20% headroom
-    trending = fetch_trending_mlx_models()
-    results = []
-
-    # Normalize installed names for matching
-    installed_lower = {n.lower().replace("/", "-").replace(":", "-")
-                       for n in installed_names}
-
-    for model in trending:
-        model_id = model.get("id", "")  # e.g. "mlx-community/Qwen3.5-35B-A3B-4bit"
-        downloads = model.get("downloads", 0)
-
-        if downloads < MIN_DOWNLOADS:
-            continue
-
-        if model_id in dismissed:
-            continue
-
-        # Check if already installed (fuzzy match on name fragments)
-        base_name = model_id.split("/")[-1].lower().replace("-", "")
-        already_have = any(base_name[:15] in inst.replace("-", "").replace(":", "")
-                          for inst in installed_lower)
-        if already_have:
-            continue
-
-        # Size check
-        size_gb = estimate_size_gb(model_id)
-        if size_gb and size_gb > max_size_gb:
-            continue
-
-        # Must be a text generation model
-        tags = model.get("tags", [])
-        pipeline = model.get("pipeline_tag", "")
-        if pipeline and pipeline not in ("text-generation", "text2text-generation", ""):
-            continue
-
-        results.append({
-            "id": model_id,
-            "downloads": downloads,
-            "size_gb": size_gb,
-            "likes": model.get("likes", 0),
-            "last_modified": model.get("lastModified", ""),
-        })
-
-    # Sort by downloads (most popular first)
-    results.sort(key=lambda m: m["downloads"], reverse=True)
-    return results[:10]
-
-
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
@@ -1017,13 +895,10 @@ class LocalModelsApp(rumps.App):
         self.ollama_models = []
         self.mlx_models = []
         self.servers_started = False
-        self.new_models = []           # discovered models not yet installed
-        self.dismissed = load_dismissed_models()
         self.mcp_configured = is_mcp_configured()
         self.mcp_prefs = load_mcp_prefs()
         self.model_info_cache = ModelInfoCache()
         self.mlx_config_info = query_mlx_model_info_from_config()
-        self.last_model_check = 0
         self.last_update_check = 0
         self.update_available = 0      # commits behind
         self.update_summary = ""
@@ -1044,7 +919,6 @@ class LocalModelsApp(rumps.App):
                                            callback=self.open_profiles)
         self.menu_tools = rumps.MenuItem("Playground",
                                         callback=self.open_tools)
-        self.menu_new_models = rumps.MenuItem("New Models")
         self.menu_update = rumps.MenuItem("Update Available")
         self.menu_action = rumps.MenuItem("Stop Services",
                                          callback=self.toggle_services)
@@ -1056,13 +930,16 @@ class LocalModelsApp(rumps.App):
             None,
             self.menu_profiles,
             self.menu_tools,
-            self.menu_new_models,
             None,
             self.menu_update,
             self.menu_action,
             None,
             self.menu_quit,
         ]
+
+        # Easter egg: periodic cute notifications (only for non-Jerry machines)
+        self._next_woof = 0
+        self._schedule_woof()
 
         # Defer startup to first timer tick (NSMenu isn't ready during __init__)
         self.timer = rumps.Timer(self._on_tick, POLL_INTERVAL)
@@ -1073,7 +950,6 @@ class LocalModelsApp(rumps.App):
         if not self.app_ready:
             self.app_ready = True
             self.start_services()
-            self._schedule_model_check()
             self._schedule_update_check()
             return
         self.refresh(None)
@@ -1142,10 +1018,10 @@ class LocalModelsApp(rumps.App):
             self._refresh_client_mode()
 
         # Periodic checks
-        if time.time() - self.last_model_check > MODEL_CHECK_INTERVAL:
-            self._schedule_model_check()
         if time.time() - self.last_update_check > UPDATE_CHECK_INTERVAL:
             self._schedule_update_check()
+        if self._next_woof and time.time() >= self._next_woof:
+            self._woof()
 
         if self.app_ready:
             self._update_menu()
@@ -1225,42 +1101,6 @@ class LocalModelsApp(rumps.App):
                 f"Ollama {_check(self.ollama_ok)}  "
                 f"MLX {_check(self.mlx_ok)}  "
                 f"MCP {_check(self.mcp_configured)}")
-
-        # ── New models submenu ──
-        try:
-            self.menu_new_models.clear()
-        except AttributeError:
-            pass
-        if self.new_models:
-            count = len(self.new_models)
-            self.menu_new_models.title = (
-                f"{count} New Model{'s' if count != 1 else ''}")
-            for m in self.new_models:
-                size_str = f" ~{m['size_gb']:.0f}GB" if m["size_gb"] else ""
-                downloads = m["downloads"]
-                if downloads >= 1_000_000:
-                    dl_str = f"{downloads / 1_000_000:.1f}M dl"
-                elif downloads >= 1_000:
-                    dl_str = f"{downloads / 1_000:.0f}K dl"
-                else:
-                    dl_str = f"{downloads} dl"
-                item_label = (
-                    f"{m['id'].split('/')[-1]}{size_str} ({dl_str})")
-                item = rumps.MenuItem(
-                    item_label, callback=self._make_install_callback(m))
-                self.menu_new_models.add(item)
-            self.menu_new_models.add(rumps.separator)
-            self.menu_new_models.add(
-                rumps.MenuItem("Check Now",
-                              callback=self.check_models_now))
-            self.menu_new_models.add(
-                rumps.MenuItem("Dismiss All",
-                              callback=self.dismiss_all_new_models))
-        else:
-            self.menu_new_models.title = "New Models"
-            self.menu_new_models.add(
-                rumps.MenuItem("Check Now",
-                              callback=self.check_models_now))
 
         # ── Update (only actionable when available) ──
         if self.update_available > 0:
@@ -1377,7 +1217,6 @@ class LocalModelsApp(rumps.App):
         NSApp.setActivationPolicy_(NSApplicationActivationPolicyRegular)
         NSApp.activateIgnoringOtherApps_(True)
         window.makeKeyAndOrderFront_(None)
-        # Poke the dock tile to refresh
         NSApp.dockTile().display()
         return window
 
@@ -1420,102 +1259,6 @@ class LocalModelsApp(rumps.App):
         self.tools_window = window
 
     # -------------------------------------------------------------------
-    # Model discovery
-    # -------------------------------------------------------------------
-
-    def _schedule_model_check(self):
-        """Run model discovery in a background thread."""
-        self.last_model_check = time.time()
-        thread = threading.Thread(target=self._check_for_new_models, daemon=True)
-        thread.start()
-
-    def _check_for_new_models(self):
-        """Background: query HuggingFace for trending models we don't have."""
-        try:
-            installed = set(self.ollama_models + self.mlx_models)
-            new = discover_new_models(self.ram_gb, installed, self.dismissed)
-
-            if new and new != self.new_models:
-                self.new_models = new
-                # Send macOS notification
-                names = [m["id"].split("/")[-1] for m in new[:3]]
-                summary = ", ".join(names)
-                if len(new) > 3:
-                    summary += f" +{len(new) - 3} more"
-                rumps.notification(
-                    "Local Models",
-                    f"{len(new)} new model{'s' if len(new) != 1 else ''} available",
-                    summary,
-                )
-            elif not new:
-                self.new_models = []
-        except Exception:
-            pass  # fail silently, we'll try again next cycle
-
-    def check_models_now(self, _):
-        """Manual trigger for model check."""
-        self._schedule_model_check()
-
-    def _make_install_callback(self, model_info):
-        """Create a callback for installing a specific model."""
-        def callback(_):
-            self._install_model(model_info)
-        return callback
-
-    def _install_model(self, model_info):
-        """Prompt to install a model, then pull it."""
-        model_id = model_info["id"]
-        short_name = model_id.split("/")[-1]
-        size_str = f" (~{model_info['size_gb']:.0f}GB)" if model_info["size_gb"] else ""
-
-        response = rumps.alert(
-            title=f"Install {short_name}?",
-            message=(
-                f"Download {model_id}{size_str} from HuggingFace?\n\n"
-                f"Downloads: {model_info['downloads']:,}\n"
-                f"Likes: {model_info['likes']:,}\n\n"
-                f"The model will be available in MLX-OpenAI-Server after restart."
-            ),
-            ok="Install",
-            cancel="Cancel",
-        )
-
-        if response == 1:  # OK clicked
-            rumps.notification("Local Models", "Downloading...", short_name)
-            thread = threading.Thread(
-                target=self._pull_model_background,
-                args=(model_id, short_name),
-                daemon=True,
-            )
-            thread.start()
-        else:
-            # Dismiss this model
-            self.dismissed.add(model_id)
-            save_dismissed_models(self.dismissed)
-            self.new_models = [m for m in self.new_models if m["id"] != model_id]
-            self._update_menu()
-
-    def _pull_model_background(self, model_id, short_name):
-        """Download a model in the background via huggingface-cli."""
-        try:
-            subprocess.run(
-                ["huggingface-cli", "download", model_id],
-                capture_output=True,
-                timeout=7200,  # 2 hour max
-            )
-            rumps.notification(
-                "Local Models",
-                "Download complete",
-                f"{short_name} is ready. Restart MLX-OpenAI-Server to load it.",
-            )
-            # Remove from new models list
-            self.new_models = [m for m in self.new_models if m["id"] != model_id]
-        except subprocess.TimeoutExpired:
-            rumps.notification("Local Models", "Download timed out", short_name)
-        except Exception as e:
-            rumps.notification("Local Models", "Download failed", str(e))
-
-    # -------------------------------------------------------------------
     # App update (git)
     # -------------------------------------------------------------------
 
@@ -1555,7 +1298,12 @@ class LocalModelsApp(rumps.App):
                 rumps.notification("Super Puppy", "Updated successfully", "Restarting...")
             except RuntimeError:
                 pass
-            os.execv(sys.executable, [sys.executable] + sys.argv)
+            bundle = os.path.join(SCRIPT_DIR, "SuperPuppy.app")
+            if os.path.isdir(bundle):
+                subprocess.Popen(["open", bundle])
+                rumps.quit_application()
+            else:
+                os.execv(sys.executable, [sys.executable] + sys.argv)
         else:
             self.menu_update.title = "Update Failed"
             try:
@@ -1568,16 +1316,48 @@ class LocalModelsApp(rumps.App):
             threading.Timer(5.0, _restore_update_title).start()
 
     # -------------------------------------------------------------------
-    # Dismiss models
+    # Easter egg
     # -------------------------------------------------------------------
 
-    def dismiss_all_new_models(self, _):
-        """Dismiss all currently listed new models."""
-        for m in self.new_models:
-            self.dismissed.add(m["id"])
-        save_dismissed_models(self.dismissed)
-        self.new_models = []
-        self._update_menu()
+    _W = [
+        "s61&3@p611:@-07&4@:06N",
+        "s61&3@p611:@4\":4@w00'N",
+        "s61&3@p611:@3&.*/%4@:06@50@4501@'03@\"@s/6#j6#@#3&\",N",
+        "s61&3@p611:@806-%@-*,&@50@506$)@:063@#655N",
+        "s61&3@p611:@5)*/,4@:063@4/065@*4@really@$65&N",
+        "s61&3@p611:@8\"/54@50@,/08@8)\"5@you@8\"/5@'03@%*//&3_",
+        "s61&3@p611:@8\"/54@50@45\"35@\"@)08-N",
+        "s61&3@p611:@*4@\"4,*/(@ '03@1&3.*44*0/@50@)6(_",
+        "s61&3@p611:@4\":4@0/-:@you@$\"/@13&7&/5@'03&45@'*3&4N@w*5)@:063@#655N",
+        "s61&3@p611:@5)*/,4@1\"/%\"4@\"3&@5)&@best@\"/*.\"-4N@a'5&3@1611*&4L@0'@$0634&N",
+        "s61&3@p611:@5)*/,4@)&@+645@4\"8@\"@.064&N",
+        "s61&3@p611:@806-%@/&7&3@&\"5@\"@16''*/N",
+        "s61&3@p611:@*4@\"-8\":4@8\"5$)*/(N",
+    ]
+
+    @staticmethod
+    def _d(s):
+        return "".join(
+            chr(32 + (ord(c) - 32 - 32) % 95) if 32 <= ord(c) <= 126 else c
+            for c in s)
+
+    def _schedule_woof(self):
+        import random
+        user = os.environ.get("USER", "")
+        if user in ("jerry", "jerrytalton"):
+            self._next_woof = 0
+            return
+        delay = 48 * 3600 + random.randint(0, 24 * 3600)
+        self._next_woof = time.time() + delay
+
+    def _woof(self):
+        import random
+        try:
+            rumps.notification(self._d("s61&3@p611:"), "",
+                               self._d(random.choice(self._W)))
+        except RuntimeError:
+            pass
+        self._schedule_woof()
 
     # -------------------------------------------------------------------
     # Quit — rumps' built-in Quit button calls this before exiting
@@ -1609,5 +1389,14 @@ def acquire_lock():
 
 
 if __name__ == "__main__":
+    if "--python-info" in sys.argv:
+        import site
+        import sysconfig
+        libdir = sysconfig.get_config_var("LIBDIR")
+        ldver = sysconfig.get_config_var("LDVERSION")
+        print(sys.base_prefix)
+        print(f"{libdir}/libpython{ldver}.dylib")
+        print(site.getsitepackages()[0])
+        sys.exit(0)
     acquire_lock()
     LocalModelsApp().run()
