@@ -196,10 +196,13 @@ elif curl -sf "http://localhost:${MLX_PORT}/v1/models" > /dev/null 2>&1; then
     echo "MLX-OpenAI-Server already running."
 else
     echo "Starting MLX-OpenAI-Server with $(basename "$mlx_config")..."
-    mlx-openai-server launch --config "$mlx_config" --no-log-file > /dev/null 2>&1 &
+    MLX_LOG="/tmp/local-models-mlx-startup.log"
+    cd "$HOME"
+    mlx-openai-server launch --config "$mlx_config" --no-log-file > "$MLX_LOG" 2>&1 &
     disown
-    if ! wait_for_service "http://localhost:${MLX_PORT}/v1/models" "MLX-OpenAI-Server" 30; then
+    if ! wait_for_service "http://localhost:${MLX_PORT}/v1/models" "MLX-OpenAI-Server" 60; then
         echo "  ERROR: MLX-OpenAI-Server failed to start. Check config: $mlx_config" >&2
+        echo "  Log: $MLX_LOG" >&2
     fi
 fi
 
