@@ -253,6 +253,8 @@ def get_all_models():
         except Exception:
             pass
 
+    hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
+
     for m in mlx_models:
         mid = m["id"]
         cfg = mlx_config.get(mid, {})
@@ -273,6 +275,21 @@ def get_all_models():
         # Estimate VRAM: ~0.5 bytes per param at 4-bit quant
         est_bytes = int(total_b * 1e9 * 0.5) if total_b else 0
 
+        # Detect vision: check HuggingFace config.json for vision_config
+        has_vision = "vision" in model_path.lower() or "vl" in model_path.lower()
+        if not has_vision and model_path:
+            cache_dir = hf_cache / f"models--{model_path.replace('/', '--')}" / "snapshots"
+            if cache_dir.exists():
+                for snap in sorted(cache_dir.iterdir(), reverse=True):
+                    hf_cfg = snap / "config.json"
+                    if hf_cfg.exists():
+                        try:
+                            hf = json.loads(hf_cfg.read_text())
+                            has_vision = "vision_config" in hf or "vision_config" in hf.get("text_config", {})
+                        except Exception:
+                            pass
+                        break
+
         models[mid] = {
             "name": mid,
             "backend": "mlx",
@@ -281,7 +298,7 @@ def get_all_models():
             "total_params_b": total_b,
             "active_params_b": active_b,
             "context": cfg.get("context_length", 0),
-            "has_vision": "vision" in model_path.lower() or "vl" in model_path.lower(),
+            "has_vision": has_vision,
             "family": "mlx",
             "quant": "4bit" if "4bit" in model_path else "",
             "is_loaded": not on_demand,  # always-on models are loaded
@@ -330,6 +347,8 @@ def get_eligible_tasks(name, model_info):
     for task, spec in SPECIAL_TASKS.items():
         if any(name.startswith(p) for p in spec["prefixes"]):
             tasks.append(task)
+    if model_info.get("has_vision") and "vision" not in tasks:
+        tasks.append("vision")
     return tasks
 
 
@@ -759,6 +778,25 @@ def api_test():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/test/screenshot", methods=["POST"])
+def api_test_screenshot():
+    """Interactive screenshot — permission attributed to the Super Puppy app bundle."""
+    import time as _time
+    dest = f"/tmp/screenshot_{int(_time.time())}.png"
+    result = subprocess.run(
+        ["screencapture", "-i", dest],
+        capture_output=True, text=True, timeout=60)
+    if not Path(dest).exists():
+        stderr = (result.stderr or "").strip()
+        if "could not create image" in stderr:
+            return jsonify({
+                "error": "Screen recording permission not granted. Enable Super Puppy "
+                         "in System Settings → Privacy & Security → Screen Recording."
+            }), 403
+        return jsonify({"error": "Screenshot cancelled."})
+    return jsonify({"path": dest})
 
 
 @app.route("/api/test/upload", methods=["POST"])

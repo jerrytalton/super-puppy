@@ -1,7 +1,7 @@
 #!/bin/bash
 # Launcher for the Super Puppy menu bar app.
-# Finds the repo by resolving this script's symlink back to source.
+# Uses the .app bundle so macOS attributes permissions (screen recording, etc.)
+# to "Super Puppy" and shows the correct name in alt-tab.
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0" || echo "$0")")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
-UV="${HOME}/.local/bin/uv"
-exec "$UV" run --python 3.12 "$REPO_DIR/app/menubar.py"
+exec open -W "$REPO_DIR/app/SuperPuppy.app"
