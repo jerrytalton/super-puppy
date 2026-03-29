@@ -358,7 +358,7 @@ def get_eligible_tasks(name, model_info):
 
 # ── Profiles ─────────────────────────────────────────────────────────
 
-PROFILES_VERSION = 2  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 3  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -397,7 +397,7 @@ DEFAULT_PROFILES = {
             },
         },
         "maximum": {
-            "label": "Maximum",
+            "label": "Heavyweight",
             "description": "Biggest models for everything, damn the RAM",
             "tasks": {
                 "code": "qwen3-coder:latest",
@@ -759,15 +759,28 @@ def api_test():
             model, backend = _pick("vision")
             image_data = Path(body["image_path"]).read_bytes()
             image_b64 = base64.b64encode(image_data).decode()
-            # Vision requires Ollama's native multimodal API
-            resp = requests.post(f"{OLLAMA_URL}/api/chat", json={
-                "model": model, "stream": False,
-                "messages": [{"role": "user",
-                              "content": body.get("prompt", "Describe this image."),
-                              "images": [image_b64]}],
-            }, timeout=120)
-            resp.raise_for_status()
-            return jsonify({"result": resp.json()["message"]["content"], "model": model})
+            prompt = body.get("prompt", "Describe this image.")
+            if backend == "mlx":
+                resp = requests.post(f"{MLX_URL}/v1/chat/completions", json={
+                    "model": model, "stream": False,
+                    "messages": [{"role": "user", "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {
+                            "url": f"data:image/png;base64,{image_b64}"}},
+                    ]}],
+                }, timeout=120)
+                resp.raise_for_status()
+                result = resp.json()["choices"][0]["message"]["content"]
+            else:
+                resp = requests.post(f"{OLLAMA_URL}/api/chat", json={
+                    "model": model, "stream": False,
+                    "messages": [{"role": "user",
+                                  "content": prompt,
+                                  "images": [image_b64]}],
+                }, timeout=120)
+                resp.raise_for_status()
+                result = resp.json()["message"]["content"]
+            return jsonify({"result": result, "model": model})
 
         elif tool == "image_gen":
             model, backend = _pick("image_gen")
@@ -830,12 +843,20 @@ def api_test():
         elif tool == "embed":
             model, backend = _pick("embedding")
             if not model:
-                model = "mxbai-embed-large"
-            resp = requests.post(f"{OLLAMA_URL}/api/embed", json={
-                "model": model, "input": [body["text"]],
-            }, timeout=60)
-            resp.raise_for_status()
-            embeddings = resp.json().get("embeddings", [])
+                model, backend = "mxbai-embed-large", "ollama"
+            if backend == "mlx":
+                resp = requests.post(f"{MLX_URL}/v1/embeddings", json={
+                    "model": model, "input": [body["text"]],
+                }, timeout=60)
+                resp.raise_for_status()
+                data = resp.json().get("data", [])
+                embeddings = [d["embedding"] for d in data]
+            else:
+                resp = requests.post(f"{OLLAMA_URL}/api/embed", json={
+                    "model": model, "input": [body["text"]],
+                }, timeout=60)
+                resp.raise_for_status()
+                embeddings = resp.json().get("embeddings", [])
             return jsonify({
                 "embeddings": embeddings,
                 "dimensions": len(embeddings[0]) if embeddings else 0,

@@ -955,8 +955,12 @@ class LocalModelsApp(rumps.App):
         self.refresh(None)
 
     def _start_services_bg(self):
-        """Background thread: start services then trigger first refresh."""
+        """Background thread: start services, then do first poll inline."""
         self.start_services()
+        if self.desktop:
+            self._refresh_server_mode()
+        else:
+            self._refresh_client_mode()
 
     # -------------------------------------------------------------------
     # Service management
@@ -973,7 +977,6 @@ class LocalModelsApp(rumps.App):
                 self._start_local_servers()
 
         self.servers_started = True
-        self.refresh(None)
 
     def _start_local_servers(self):
         """Launch Ollama and MLX-OpenAI-Server via start-local-models."""
@@ -1027,15 +1030,18 @@ class LocalModelsApp(rumps.App):
                 else:
                     self._refresh_client_mode()
             finally:
-                rumps.Timer(self._finish_refresh, 0).start()
+                self._refresh_busy = False
+                self._main_thread_update()
 
         threading.Thread(target=_poll, daemon=True).start()
 
-    def _finish_refresh(self, timer):
-        """Main-thread callback after background poll completes."""
-        timer.stop()
-        self._refresh_busy = False
+    def _main_thread_update(self):
+        """Schedule menu update on the main thread."""
+        from PyObjCTools import AppHelper
+        AppHelper.callAfter(self._finish_refresh)
 
+    def _finish_refresh(self):
+        """Main-thread callback after background poll completes."""
         if time.time() - self.last_update_check > UPDATE_CHECK_INTERVAL:
             self._schedule_update_check()
         if self._next_woof and time.time() >= self._next_woof:
