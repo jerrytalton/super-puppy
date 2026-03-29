@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Super Puppy — Playground</title>
+<style>
+:root {
+  --bg: #f5f5f7; --surface: #fff; --surface2: #f0f0f2;
+  --text: #1d1d1f; --text2: #86868b; --text3: #aeaeb2;
+  --border: #d2d2d7; --accent: #007aff;
+  --green: #34c759; --red: #ff3b30;
+  --r: 12px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #000; --surface: #1c1c1e; --surface2: #2c2c2e;
+    --text: #f5f5f7; --text2: #98989d; --text3: #636366;
+    --border: #38383a;
+  }
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  background: var(--bg); color: var(--text);
+  padding: 24px 32px; max-width: 720px; margin: 0 auto;
+  -webkit-font-smoothing: antialiased;
+}
+h2 { font-size: 13px; font-weight: 600; color: var(--text2); text-transform: uppercase;
+     letter-spacing: 0.5px; margin-bottom: 8px; }
+
+.tool-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 20px; }
+.tool-btn {
+  padding: 6px 14px; border-radius: 16px; border: 1.5px solid var(--border);
+  background: var(--surface); color: var(--text); font: inherit; font-size: 12px;
+  cursor: pointer; transition: all 0.15s;
+}
+.tool-btn:hover { border-color: var(--accent); color: var(--accent); }
+.tool-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+.field { margin-bottom: 12px; }
+.field label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 4px; }
+.field input, .field textarea, .field select {
+  width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); font: inherit; font-size: 13px;
+}
+.field textarea { height: 80px; resize: vertical; }
+.field input:focus, .field textarea:focus { outline: none; border-color: var(--accent); }
+
+.run-row { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.run-btn {
+  padding: 8px 24px; border-radius: 8px; border: none;
+  background: var(--accent); color: #fff; font: inherit; font-size: 13px;
+  font-weight: 600; cursor: pointer;
+}
+.run-btn:hover { opacity: 0.85; }
+.run-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.status { font-size: 12px; color: var(--text2); }
+
+.output-box {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--r);
+  padding: 14px 16px; min-height: 100px; font-size: 13px; white-space: pre-wrap;
+  word-break: break-word; color: var(--text);
+}
+.output-box.error { border-color: var(--red); color: var(--red); }
+.output-box img { max-width: 100%; border-radius: 8px; margin-top: 8px; }
+
+.mic-row { display: flex; align-items: center; gap: 10px; }
+.mic-btn {
+  padding: 6px 16px; border-radius: 8px; border: 1.5px solid var(--border);
+  background: var(--surface); color: var(--text); font: inherit; font-size: 12px;
+  cursor: pointer; transition: all 0.15s;
+}
+.mic-btn.recording { background: var(--red); color: #fff; border-color: var(--red); }
+.mic-time { font-size: 12px; color: var(--text2); font-variant-numeric: tabular-nums; }
+
+/* Model picker (matches profile viewer cards) */
+.model-picker {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--r);
+  margin-bottom: 12px; overflow: hidden;
+}
+.model-picker-header {
+  display: flex; align-items: center; padding: 10px 14px; cursor: pointer;
+  user-select: none; gap: 10px;
+}
+.model-picker-header:hover { background: var(--surface2); }
+.model-picker-label { font-size: 13px; font-weight: 600; }
+.model-picker-selected { font-size: 12px; color: var(--text2); flex: 1; text-align: right; }
+.model-picker-chevron { font-size: 10px; color: var(--text3); transition: transform 0.2s; }
+.model-picker.open .model-picker-chevron { transform: rotate(90deg); }
+.model-picker-body { display: none; padding: 4px 14px 10px; max-height: 240px; overflow-y: auto; }
+.model-picker.open .model-picker-body { display: block; }
+.card {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 10px; border-radius: 8px; margin-bottom: 4px;
+  border: 1.5px solid transparent; cursor: pointer; transition: all 0.12s;
+  background: var(--surface2);
+}
+.card:hover { border-color: var(--accent); }
+.card.selected { border-color: var(--accent); background: rgba(0,122,255,0.06); }
+.card .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--text3); }
+.card.loaded .dot { background: var(--green); }
+.card-body { flex: 1; min-width: 0; }
+.card-name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-meta { font-size: 11px; color: var(--text2); margin-top: 1px; }
+.badge {
+  font-size: 9px; font-weight: 700; padding: 2px 5px; border-radius: 4px;
+  flex-shrink: 0; text-transform: uppercase; letter-spacing: 0.3px;
+}
+.badge.profile-badge { background: rgba(0,122,255,0.12); color: var(--accent); }
+.badge.default { background: rgba(52,199,89,0.12); color: var(--green); }
+
+.output-box.running { animation: pulse 1.5s ease-in-out infinite; }
+@keyframes pulse {
+  0%, 100% { border-color: var(--border); }
+  50% { border-color: var(--accent); }
+}
+.elapsed { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+
+<h2>Tool</h2>
+<div class="tool-grid" id="tool-grid"></div>
+<div id="fields"></div>
+<div class="model-picker" id="model-picker">
+  <div class="model-picker-header" id="model-picker-header">
+    <div class="model-picker-label">Model</div>
+    <div class="model-picker-selected" id="model-picker-selected">Loading...</div>
+    <div class="model-picker-chevron">&#9654;</div>
+  </div>
+  <div class="model-picker-body" id="model-picker-body"></div>
+</div>
+<div class="run-row">
+  <button class="run-btn" id="run" onclick="run()">Run</button>
+  <span class="status" id="status"></span>
+</div>
+<h2>Output</h2>
+<div class="output-box" id="output">Select a tool and click Run.</div>
+<div id="log" style="margin-top:8px; font-size:11px; color:var(--text3); font-family:ui-monospace,monospace; white-space:pre-wrap;"></div>
+
+<script>
+const TOOLS = {
+  generate:    { label: 'Generate', task: 'code', fields: [
+    {id:'prompt', label:'Prompt', type:'textarea', placeholder:'Write a Python function that...'},
+  ]},
+  review:      { label: 'Review', task: 'reasoning', fields: [
+    {id:'code', label:'Code', type:'textarea', placeholder:'Paste code to review...'},
+  ]},
+  vision:      { label: 'Vision', task: 'vision', fields: [
+    {id:'image_path', label:'Image', type:'file', accept:'image/*'},
+    {id:'prompt', label:'Prompt', type:'text', placeholder:'Describe what you see', value:'Describe what you see in this image.'},
+  ]},
+  image_gen:   { label: 'Image Gen', task: 'image_gen', fields: [
+    {id:'prompt', label:'Prompt', type:'textarea', placeholder:'A cat wearing a space helmet...'},
+  ]},
+  transcribe:  { label: 'Transcribe', task: 'transcription', fields: [
+    {id:'audio_path', label:'Audio file', type:'file', accept:'audio/*'},
+    {id:'audio_rec', label:'Or record', type:'mic'},
+  ]},
+  translate:   { label: 'Translate', task: 'translation', fields: [
+    {id:'text', label:'Text', type:'textarea', placeholder:'Text to translate...'},
+    {id:'target', label:'Target language', type:'text', placeholder:'Spanish'},
+  ]},
+  summarize:   { label: 'Summarize', task: 'long_context', fields: [
+    {id:'file_path', label:'File path', type:'text', placeholder:'/path/to/large-file.py'},
+  ]},
+  embed:       { label: 'Embed', task: 'embedding', fields: [
+    {id:'text', label:'Text', type:'textarea', placeholder:'Text to embed...'},
+  ]},
+};
+
+let allModels = [];
+let taskDefaults = {};
+let profilePicks = {};
+
+let selected = null;
+let selectedModel = null;
+let pickerOpen = false;
+
+const fmtP = (t,a) => t===a||!a ? t+'B' : t+'B/'+a+'B';
+const fmtC = c => c>=1e6?Math.round(c/1e6)+'M':c>=1024?Math.floor(c/1024)+'K':c>0?''+c:'';
+
+async function init() {
+  const [models, tasks, profiles] = await Promise.all([
+    fetch('/api/models').then(r => r.json()),
+    fetch('/api/tasks').then(r => r.json()),
+    fetch('/api/profiles').then(r => r.json()),
+  ]);
+  allModels = models.sort((a, b) => (b.total_params_b || 0) - (a.total_params_b || 0));
+
+  // Active profile picks
+  const active = profiles.active;
+  if (active && profiles.profiles[active]?.tasks) {
+    profilePicks = profiles.profiles[active].tasks;
+  }
+
+  // Build task→default model from task defaults + available models
+  for (const [task, info] of Object.entries(tasks)) {
+    for (const pref of (info.defaults || [])) {
+      const found = allModels.find(m => m.name === pref || m.name.startsWith(pref + ':'));
+      if (found) { taskDefaults[task] = found.name; break; }
+    }
+  }
+  document.getElementById('model-picker-header').onclick = () => {
+    pickerOpen = !pickerOpen;
+    document.getElementById('model-picker').className = 'model-picker' + (pickerOpen ? ' open' : '');
+  };
+  const grid = document.getElementById('tool-grid');
+  for (const [key, tool] of Object.entries(TOOLS)) {
+    const b = document.createElement('button');
+    b.className = 'tool-btn';
+    b.textContent = tool.label;
+    b.onclick = () => selectTool(key);
+    grid.appendChild(b);
+  }
+  selectTool('generate');
+}
+
+function selectTool(key) {
+  selected = key;
+  document.querySelectorAll('.tool-btn').forEach((b, i) => {
+    b.className = 'tool-btn' + (Object.keys(TOOLS)[i] === key ? ' active' : '');
+  });
+  const fields = document.getElementById('fields');
+  fields.innerHTML = '';
+  for (const f of TOOLS[key].fields) {
+    const div = document.createElement('div');
+    div.className = 'field';
+    if (f.type === 'file') {
+      div.innerHTML = `<label>${f.label}</label>` +
+        `<input id="f_${f.id}" type="file" accept="${f.accept || '*/*'}">`;
+    } else if (f.type === 'mic') {
+      const label = document.createElement('label');
+      label.textContent = f.label;
+      div.appendChild(label);
+      const row = document.createElement('div');
+      row.className = 'mic-row';
+      const btn = document.createElement('button');
+      btn.className = 'mic-btn';
+      btn.id = 'f_' + f.id + '_btn';
+      btn.textContent = 'Record';
+      btn.onclick = () => toggleRecord(f.id);
+      row.appendChild(btn);
+      const time = document.createElement('span');
+      time.className = 'mic-time';
+      time.id = 'f_' + f.id + '_time';
+      row.appendChild(time);
+      div.appendChild(row);
+    } else if (f.type === 'textarea') {
+      div.innerHTML = `<label>${f.label}</label>` +
+        `<textarea id="f_${f.id}" placeholder="${f.placeholder || ''}"></textarea>`;
+    } else {
+      div.innerHTML = `<label>${f.label}</label>` +
+        `<input id="f_${f.id}" type="text" placeholder="${f.placeholder || ''}" ${f.value ? `value="${f.value}"` : ''}>`;
+    }
+    fields.appendChild(div);
+  }
+  // Populate model card picker
+  const task = TOOLS[key].task;
+  const defaultModel = taskDefaults[task] || '';
+  const profileModel = profilePicks[task] || '';
+  selectedModel = profileModel || defaultModel || null;
+  pickerOpen = false;
+  renderModelPicker(task, defaultModel, profileModel);
+
+  document.getElementById('output').textContent = 'Select a tool and click Run.';
+  document.getElementById('output').className = 'output-box';
+}
+
+function renderModelPicker(task, defaultModel, profileModel) {
+  const picker = document.getElementById('model-picker');
+  picker.className = 'model-picker' + (pickerOpen ? ' open' : '');
+  const body = document.getElementById('model-picker-body');
+  body.innerHTML = '';
+
+  const eligible = allModels.filter(m => m.eligible_tasks?.includes(task));
+  const models = eligible.length ? eligible : allModels;
+
+  // Update header with selected model name
+  const selLabel = document.getElementById('model-picker-selected');
+  selLabel.textContent = selectedModel ? selectedModel.split(':')[0] : 'none';
+
+  for (const m of models) {
+    const card = document.createElement('div');
+    const isSelected = m.name === selectedModel;
+    const isLoaded = m.is_loaded;
+    card.className = 'card' + (isSelected ? ' selected' : '') + (isLoaded ? ' loaded' : '');
+
+    card.onclick = () => {
+      selectedModel = m.name;
+      pickerOpen = false;
+      renderModelPicker(task, defaultModel, profileModel);
+    };
+
+    const meta = [];
+    if (m.total_params_b) meta.push(fmtP(m.total_params_b, m.active_params_b));
+    const ctx = fmtC(m.context);
+    if (ctx) meta.push(ctx + ' ctx');
+    if (m.has_vision) meta.push('vision');
+    meta.push(m.backend);
+
+    let badges = '';
+    if (m.name === profileModel) badges += '<span class="badge profile-badge">Profile</span>';
+    if (m.name === defaultModel && m.name !== profileModel) badges += '<span class="badge default">Default</span>';
+
+    card.innerHTML =
+      `<div class="dot"></div>` +
+      `<div class="card-body">` +
+        `<div class="card-name">${m.name}</div>` +
+        `<div class="card-meta">${meta.join(' \u00b7 ')}</div>` +
+      `</div>` +
+      badges;
+    body.appendChild(card);
+  }
+}
+
+function getField(id) {
+  const el = document.getElementById('f_' + id);
+  return el ? el.value.trim() : '';
+}
+
+const STREAM_TOOLS = new Set(['generate', 'review', 'translate', 'summarize']);
+let _elapsedTimer = null;
+
+function log(msg) {
+  const el = document.getElementById('log');
+  const ts = new Date().toLocaleTimeString();
+  el.textContent += `[${ts}] ${msg}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+function startTimer(t0, status) {
+  clearInterval(_elapsedTimer);
+  _elapsedTimer = setInterval(() => {
+    const s = ((Date.now() - t0) / 1000).toFixed(0);
+    status.innerHTML = `<span class="elapsed">${s}s</span>`;
+  }, 200);
+}
+
+function stopTimer(t0, status, model) {
+  clearInterval(_elapsedTimer);
+  const s = ((Date.now() - t0) / 1000).toFixed(1);
+  status.innerHTML = `<span class="elapsed">${s}s</span> · ${model || '?'}`;
+}
+
+async function buildBody() {
+  const body = {tool: selected, model: selectedModel};
+  for (const f of TOOLS[selected].fields) {
+    if (f.type === 'file') {
+      const input = document.getElementById('f_' + f.id);
+      if (input.files.length) {
+        const fd = new FormData();
+        fd.append('file', input.files[0]);
+        const upResp = await fetch('/api/test/upload', {method:'POST', body:fd});
+        const upData = await upResp.json();
+        if (upData.error) throw new Error(upData.error);
+        body[f.id] = upData.path;
+      }
+    } else if (f.type === 'mic') {
+      const companion = TOOLS[selected].fields.find(x => x.type === 'file');
+      if (_recBlob && companion && !body[companion.id]) {
+        const fd = new FormData();
+        fd.append('file', _recBlob, 'recording.webm');
+        const upResp = await fetch('/api/test/upload', {method:'POST', body:fd});
+        const upData = await upResp.json();
+        if (upData.error) throw new Error(upData.error);
+        body[companion.id] = upData.path;
+      }
+    } else {
+      body[f.id] = getField(f.id);
+    }
+  }
+  return body;
+}
+
+async function run() {
+  const btn = document.getElementById('run');
+  const status = document.getElementById('status');
+  const output = document.getElementById('output');
+  btn.disabled = true;
+  output.textContent = '';
+  output.className = 'output-box running';
+
+  const t0 = Date.now();
+  startTimer(t0, status);
+  document.getElementById('log').textContent = '';
+
+  try {
+    log(`Tool: ${selected} · Model: ${selectedModel}`);
+    const body = await buildBody();
+    log(`Request built, sending...`);
+
+    if (STREAM_TOOLS.has(selected)) {
+      log(`POST /api/test/stream`);
+      const resp = await fetch('/api/test/stream', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+      });
+      if (!resp.ok) {
+        const err = await resp.json();
+        throw new Error(err.error || `HTTP ${resp.status}`);
+      }
+      log(`Connected, streaming tokens...`);
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let model = '?';
+      let buf = '';
+      let loggedThinking = false;
+      while (true) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, {stream: true});
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const evt = JSON.parse(line.slice(6));
+            if (evt.error) { throw new Error(evt.error); }
+            if (evt.model) { model = evt.model; log(`Model: ${model}`); }
+            if (evt.thinking && !loggedThinking) { log(`Thinking...`); loggedThinking = true; }
+            if (evt.token) {
+              if (loggedThinking && !output.textContent) log(`Generating output...`);
+              output.textContent += evt.token;
+            }
+            if (evt.done) { log(`Stream complete`); break; }
+          } catch {}
+        }
+      }
+      output.className = 'output-box';
+      stopTimer(t0, status, model);
+
+    } else {
+      log(`POST /api/test`);
+      const resp = await fetch('/api/test', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+      });
+      const data = await resp.json();
+      log(`Response received · model: ${data.model || '?'}`);
+      output.className = 'output-box';
+      stopTimer(t0, status, data.model);
+
+      if (data.error) {
+        log(`Error: ${data.error}`);
+        output.textContent = data.error;
+        output.className = 'output-box error';
+      } else if (data.image_path) {
+        output.innerHTML = data.result +
+          `<img src="/api/test/image?path=${encodeURIComponent(data.image_path)}">`;
+      } else if (data.embeddings) {
+        const dims = data.dimensions || '?';
+        const count = data.count || '?';
+        output.textContent = `${count} embedding(s), ${dims} dimensions\n\n` +
+          `First vector (truncated): [${data.embeddings[0]?.slice(0, 8).map(v => v.toFixed(4)).join(', ')}...]`;
+      } else {
+        output.textContent = data.result || JSON.stringify(data, null, 2);
+      }
+    }
+  } catch (e) {
+    log(`FAILED: ${e.message}`);
+    output.textContent = e.message;
+    output.className = 'output-box error';
+    stopTimer(t0, status, '');
+    status.textContent = 'Failed';
+  }
+  btn.disabled = false;
+}
+
+let _recorder = null;
+let _recChunks = [];
+let _recBlob = null;
+let _recTimer = null;
+let _recStart = 0;
+
+async function toggleRecord(id) {
+  const btn = document.getElementById('f_' + id + '_btn');
+  const time = document.getElementById('f_' + id + '_time');
+
+  if (_recorder && _recorder.state === 'recording') {
+    _recorder.stop();
+    btn.textContent = 'Record';
+    btn.className = 'mic-btn';
+    clearInterval(_recTimer);
+    return;
+  }
+
+  _recChunks = [];
+  _recBlob = null;
+  try {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error('Microphone access not available (mediaDevices API missing)');
+    }
+    const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+    _recorder = new MediaRecorder(stream);
+    _recorder.ondataavailable = e => { if (e.data.size) _recChunks.push(e.data); };
+    _recorder.onstop = () => {
+      stream.getTracks().forEach(t => t.stop());
+      _recBlob = new Blob(_recChunks, {type: 'audio/webm'});
+      time.textContent = `${((Date.now() - _recStart) / 1000).toFixed(1)}s recorded`;
+    };
+    _recorder.start();
+    _recStart = Date.now();
+    btn.textContent = 'Stop';
+    btn.className = 'mic-btn recording';
+    _recTimer = setInterval(() => {
+      time.textContent = `${((Date.now() - _recStart) / 1000).toFixed(0)}s`;
+    }, 500);
+  } catch (e) {
+    time.textContent = e.message;
+  }
+}
+
+init();
+</script>
+</body>
+</html>

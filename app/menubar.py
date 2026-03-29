@@ -31,13 +31,20 @@ from AppKit import NSCommandKeyMask, NSObject, NSWindow
 
 
 class _ProfileWindow(NSWindow):
-    """NSWindow subclass that handles Cmd+W in a menu-bar app."""
+    """NSWindow subclass that handles keyboard shortcuts in a menu-bar app."""
 
     def performKeyEquivalent_(self, event):
-        if (event.modifierFlags() & NSCommandKeyMask
-                and event.charactersIgnoringModifiers() == "w"):
-            self.performClose_(None)
-            return True
+        if event.modifierFlags() & NSCommandKeyMask:
+            key = event.charactersIgnoringModifiers()
+            if key == "w":
+                self.performClose_(None)
+                return True
+            # Standard edit shortcuts — forward to the first responder
+            from AppKit import NSApp
+            actions = {"c": "copy:", "v": "paste:", "x": "cut:", "a": "selectAll:", "z": "undo:"}
+            if key in actions:
+                NSApp.sendAction_to_from_(actions[key], None, self)
+                return True
         return NSWindow.performKeyEquivalent_(self, event)
 
 
@@ -48,6 +55,8 @@ class _ProfileWindowDelegate(NSObject):
     def windowWillClose_(self, notification):
         if self.callback:
             self.callback()
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -1020,17 +1029,21 @@ class LocalModelsApp(rumps.App):
         self.update_summary = ""
         self.app_ready = False         # set True once run loop starts
 
-        # Profile viewer state
+        # Profile viewer / tool tester state
         self.profile_server = None
         self.profile_port = None
         self.profile_window = None
+        self.tools_window = None
         self._win_delegate = None
+        self._tools_delegate = None
 
         # Menu items
         self.menu_status = rumps.MenuItem("Starting...")
         self.menu_health = rumps.MenuItem("")
         self.menu_profiles = rumps.MenuItem("Model Profiles...",
                                            callback=self.open_profiles)
+        self.menu_tools = rumps.MenuItem("Playground...",
+                                        callback=self.open_tools)
         self.menu_new_models = rumps.MenuItem("New Models")
         self.menu_update = rumps.MenuItem("Update Available")
         self.menu_action = rumps.MenuItem("Stop Services",
@@ -1042,6 +1055,7 @@ class LocalModelsApp(rumps.App):
             self.menu_health,
             None,
             self.menu_profiles,
+            self.menu_tools,
             self.menu_new_models,
             None,
             self.menu_update,
@@ -1273,83 +1287,135 @@ class LocalModelsApp(rumps.App):
     # Profile viewer (native WKWebView window)
     # -------------------------------------------------------------------
 
+    def _ensure_profile_server(self):
+        """Start the Flask profile server if not already running."""
+        if self.profile_server is not None and self.profile_server.poll() is None:
+            return
+        import socket
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        self.profile_port = s.getsockname()[1]
+        s.close()
+
+        env = os.environ.copy()
+        env["PROFILE_SERVER_PORT"] = str(self.profile_port)
+        env["OLLAMA_URL"] = (
+            self.ollama_remote if self.mode == "client" else OLLAMA_LOCAL)
+        env["MLX_URL"] = (
+            self.mlx_remote if self.mode == "client" else MLX_LOCAL)
+
+        self.profile_server = subprocess.Popen(
+            ["uv", "run", "--python", "3.12",
+             os.path.join(SCRIPT_DIR, "profile-server.py")],
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        import urllib.request
+        for _ in range(20):
+            time.sleep(0.5)
+            try:
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{self.profile_port}/api/system",
+                    timeout=1)
+                break
+            except Exception:
+                continue
+
+    def _open_webview(self, title, path, size=(960, 700)):
+        """Open a native WKWebView window at the given server path."""
+        from AppKit import (NSRect, NSBackingStoreBuffered,
+                            NSWindowStyleMaskTitled, NSWindowStyleMaskClosable,
+                            NSApplicationActivationPolicyRegular,
+                            NSApplicationActivationPolicyAccessory,
+                            NSApp, NSImage)
+        from WebKit import WKWebView, WKWebViewConfiguration, WKPreferences
+        from Foundation import NSURL, NSURLRequest
+
+        self._ensure_profile_server()
+
+        frame = NSRect((200, 200), size)
+        style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+        window = _ProfileWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            frame, style, NSBackingStoreBuffered, False)
+        window.setTitle_(title)
+        window.center()
+        window.setReleasedWhenClosed_(False)
+
+        config = WKWebViewConfiguration.alloc().init()
+        prefs = config.preferences()
+        try:
+            prefs.setValue_forKey_(True, "mediaDevicesEnabled")
+            prefs.setValue_forKey_(False, "mediaCaptureRequiresSecureConnection")
+        except Exception:
+            pass
+        webview = WKWebView.alloc().initWithFrame_configuration_(
+            window.contentView().bounds(), config)
+        webview.setAutoresizingMask_(0x12)
+        url = NSURL.URLWithString_(
+            f"http://127.0.0.1:{self.profile_port}{path}")
+        webview.loadRequest_(NSURLRequest.requestWithURL_(url))
+        window.contentView().addSubview_(webview)
+
+        # Set dock icon with white background (menu bar icon stays template)
+        icon_path = os.path.join(SCRIPT_DIR, "icon.png")
+        if os.path.exists(icon_path):
+            from AppKit import (NSColor, NSCompositingOperationSourceOver,
+                                NSBezierPath)
+            from Foundation import NSMakeRect
+            src = NSImage.alloc().initWithContentsOfFile_(icon_path)
+            sz = 128
+            dock_icon = NSImage.alloc().initWithSize_((sz, sz))
+            dock_icon.lockFocus()
+            NSColor.whiteColor().setFill()
+            NSBezierPath.fillRect_(NSMakeRect(0, 0, sz, sz))
+            src.drawInRect_fromRect_operation_fraction_(
+                NSMakeRect(0, 0, sz, sz), ((0, 0), src.size()),
+                NSCompositingOperationSourceOver, 1.0)
+            dock_icon.unlockFocus()
+            NSApp.setApplicationIconImage_(dock_icon)
+        NSApp.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+        NSApp.activateIgnoringOtherApps_(True)
+        window.makeKeyAndOrderFront_(None)
+        # Poke the dock tile to refresh
+        NSApp.dockTile().display()
+        return window
+
     def open_profiles(self, _):
-        """Launch profile server as subprocess and open native webview window."""
+        """Open the model profiles pane."""
         if self.profile_window is not None:
             self.profile_window.makeKeyAndOrderFront_(None)
             from AppKit import NSApp
             NSApp.activateIgnoringOtherApps_(True)
             return
 
-        # Start Flask server as separate uv run subprocess (has its own deps)
-        if self.profile_server is None or self.profile_server.poll() is not None:
-            import socket
-            s = socket.socket()
-            s.bind(("127.0.0.1", 0))
-            self.profile_port = s.getsockname()[1]
-            s.close()
-
-            env = os.environ.copy()
-            env["PROFILE_SERVER_PORT"] = str(self.profile_port)
-            env["OLLAMA_URL"] = (
-                self.ollama_remote if self.mode == "client" else OLLAMA_LOCAL)
-            env["MLX_URL"] = (
-                self.mlx_remote if self.mode == "client" else MLX_LOCAL)
-
-            self.profile_server = subprocess.Popen(
-                ["uv", "run", "--python", "3.12",
-                 os.path.join(SCRIPT_DIR, "profile-server.py")],
-                env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-            # Wait for server to be ready
-            import urllib.request
-            for _ in range(20):
-                time.sleep(0.5)
-                try:
-                    urllib.request.urlopen(
-                        f"http://127.0.0.1:{self.profile_port}/api/system",
-                        timeout=1)
-                    break
-                except Exception:
-                    continue
-
-        # Open native WKWebView window
-        from AppKit import (NSRect, NSBackingStoreBuffered,
-                            NSWindowStyleMaskTitled, NSWindowStyleMaskClosable,
-                            NSApplicationActivationPolicyRegular,
-                            NSApplicationActivationPolicyAccessory,
-                            NSApp)
-        from WebKit import WKWebView
-        from Foundation import NSURL, NSURLRequest
-
-        frame = NSRect((200, 200), (960, 700))
-        style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
-        window = _ProfileWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            frame, style, NSBackingStoreBuffered, False)
-        window.setTitle_("Model Profiles")
-        window.center()
-        window.setReleasedWhenClosed_(False)
-
+        from AppKit import NSApp, NSApplicationActivationPolicyAccessory
+        window = self._open_webview("Model Profiles", "/")
         delegate = _ProfileWindowDelegate.alloc().init()
-        def _on_close():
-            self.profile_window = None
+        delegate.callback = lambda: (
+            setattr(self, 'profile_window', None),
             NSApp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
-        delegate.callback = _on_close
+            if not self.tools_window else None)
         self._win_delegate = delegate
         window.setDelegate_(delegate)
-
-        webview = WKWebView.alloc().initWithFrame_(window.contentView().bounds())
-        webview.setAutoresizingMask_(0x12)  # flexible width + height
-        url = NSURL.URLWithString_(f"http://127.0.0.1:{self.profile_port}")
-        webview.loadRequest_(NSURLRequest.requestWithURL_(url))
-        window.contentView().addSubview_(webview)
-
-        # Become a "real" app so key equivalents (Cmd+W) dispatch properly
-        NSApp.setActivationPolicy_(NSApplicationActivationPolicyRegular)
-        NSApp.activateIgnoringOtherApps_(True)
-        window.makeKeyAndOrderFront_(None)
-
         self.profile_window = window
+
+    def open_tools(self, _):
+        """Open the tool tester pane."""
+        if self.tools_window is not None:
+            self.tools_window.makeKeyAndOrderFront_(None)
+            from AppKit import NSApp
+            NSApp.activateIgnoringOtherApps_(True)
+            return
+
+        from AppKit import NSApp, NSApplicationActivationPolicyAccessory
+        window = self._open_webview("Playground", "/tools", size=(720, 600))
+        delegate = _ProfileWindowDelegate.alloc().init()
+        delegate.callback = lambda: (
+            setattr(self, 'tools_window', None),
+            NSApp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+            if not self.profile_window else None)
+        self._tools_delegate = delegate
+        window.setDelegate_(delegate)
+        self.tools_window = window
 
     # -------------------------------------------------------------------
     # Model discovery
