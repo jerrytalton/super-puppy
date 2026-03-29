@@ -1194,7 +1194,9 @@ class LocalModelsApp(rumps.App):
         webview.setAutoresizingMask_(0x12)
         full_url = f"http://127.0.0.1:{self.profile_port}{path}"
         url = NSURL.URLWithString_(full_url)
-        webview.loadRequest_(NSURLRequest.requestWithURL_(url))
+        req = NSURLRequest.requestWithURL_cachePolicy_timeoutInterval_(
+            url, 1, 30)  # 1 = NSURLRequestReloadIgnoringLocalCacheData
+        webview.loadRequest_(req)
         window.contentView().addSubview_(webview)
 
         # Set dock icon with white background (menu bar icon stays template)
@@ -1381,6 +1383,7 @@ def acquire_lock():
     global _lock_fd
     os.makedirs(os.path.dirname(LOCK_FILE), exist_ok=True)
     _lock_fd = open(LOCK_FILE, "w")
+    fcntl.fcntl(_lock_fd, fcntl.F_SETFD, fcntl.FD_CLOEXEC)
     try:
         fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
