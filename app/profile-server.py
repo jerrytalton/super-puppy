@@ -354,13 +354,69 @@ def get_eligible_tasks(name, model_info):
 
 # ── Profiles ─────────────────────────────────────────────────────────
 
+DEFAULT_PROFILES = {
+    "active": "everyday",
+    "profiles": {
+        "everyday": {
+            "label": "Everyday",
+            "description": "Balanced coverage across all tasks",
+            "tasks": {
+                "code": "qwen3-coder:latest",
+                "general": "qwen3.5-large",
+                "reasoning": "qwen3.5-large",
+                "long_context": "qwen3.5-large",
+                "translation": "qwen3.5-large",
+                "vision": "qwen3.5-large",
+                "image_gen": "x/z-image-turbo:latest",
+                "transcription": "whisper-v3",
+                "embedding": "all-minilm:latest",
+                "uncensored": "wizard-vicuna-uncensored:30b",
+            },
+        },
+        "light": {
+            "label": "Light & Fast",
+            "description": "Small models, quick responses, low memory",
+            "tasks": {
+                "code": "glm-4.7-flash:latest",
+                "general": "qwen3.5-fast",
+                "reasoning": "glm-4.7-flash:latest",
+                "long_context": "glm-4.7-flash:latest",
+                "translation": "qwen3.5-fast",
+                "vision": "qwen3.5:9b",
+                "image_gen": "x/flux2-klein:latest",
+                "transcription": "whisper-v3",
+                "embedding": "all-minilm:latest",
+                "uncensored": "wizard-vicuna-uncensored:30b",
+            },
+        },
+        "maximum": {
+            "label": "Maximum",
+            "description": "Biggest models for everything, damn the RAM",
+            "tasks": {
+                "code": "qwen3-coder:latest",
+                "general": "qwen3.5:latest",
+                "reasoning": "deepseek-v3.1:latest",
+                "long_context": "qwen3.5:latest",
+                "translation": "qwen3.5:latest",
+                "vision": "qwen3-vl:235b",
+                "image_gen": "x/z-image-turbo:bf16",
+                "transcription": "whisper-v3",
+                "embedding": "mxbai-embed-large:latest",
+                "uncensored": "wizard-vicuna-uncensored:30b",
+            },
+        },
+    },
+}
+
+
 def load_profiles():
     if PROFILES_FILE.exists():
         try:
             return json.loads(PROFILES_FILE.read_text())
         except Exception:
             pass
-    return {"active": None, "profiles": {}}
+    save_profiles(DEFAULT_PROFILES)
+    return {**DEFAULT_PROFILES}
 
 
 def save_profiles(data):
