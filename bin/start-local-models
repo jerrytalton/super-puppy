@@ -162,7 +162,16 @@ if is_desktop; then
 fi
 
 if pgrep -x ollama > /dev/null; then
-    echo "Ollama already running."
+    if is_desktop && ! curl -sf "http://0.0.0.0:${OLLAMA_PORT}/api/version" > /dev/null 2>&1; then
+        echo "Ollama running but not bound to 0.0.0.0 — restarting for LAN access..."
+        pkill -x ollama
+        sleep 1
+        ollama serve > /dev/null 2>&1 &
+        echo $! > "$OLLAMA_PID_FILE"
+        wait_for_service "http://localhost:${OLLAMA_PORT}/api/version" "Ollama" 10 || true
+    else
+        echo "Ollama already running."
+    fi
 else
     echo "Starting Ollama..."
     ollama serve > /dev/null 2>&1 &
