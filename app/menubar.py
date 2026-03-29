@@ -949,10 +949,14 @@ class LocalModelsApp(rumps.App):
         """Timer callback. Handles first-run initialization and periodic refresh."""
         if not self.app_ready:
             self.app_ready = True
-            self.start_services()
+            threading.Thread(target=self._start_services_bg, daemon=True).start()
             self._schedule_update_check()
             return
         self.refresh(None)
+
+    def _start_services_bg(self):
+        """Background thread: start services then trigger first refresh."""
+        self.start_services()
 
     # -------------------------------------------------------------------
     # Service management
@@ -1011,13 +1015,27 @@ class LocalModelsApp(rumps.App):
     # -------------------------------------------------------------------
 
     def refresh(self, _):
-        """Poll services and update the menu."""
-        if self.desktop:
-            self._refresh_server_mode()
-        else:
-            self._refresh_client_mode()
+        """Poll services in a background thread, then update the menu."""
+        if getattr(self, '_refresh_busy', False):
+            return
+        self._refresh_busy = True
 
-        # Periodic checks
+        def _poll():
+            try:
+                if self.desktop:
+                    self._refresh_server_mode()
+                else:
+                    self._refresh_client_mode()
+            finally:
+                rumps.Timer(self._finish_refresh, 0).start()
+
+        threading.Thread(target=_poll, daemon=True).start()
+
+    def _finish_refresh(self, timer):
+        """Main-thread callback after background poll completes."""
+        timer.stop()
+        self._refresh_busy = False
+
         if time.time() - self.last_update_check > UPDATE_CHECK_INTERVAL:
             self._schedule_update_check()
         if self._next_woof and time.time() >= self._next_woof:
