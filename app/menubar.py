@@ -1063,14 +1063,15 @@ class LocalModelsApp(rumps.App):
             # Ensure Homebrew is on PATH — launchd gives a minimal PATH
             if "/opt/homebrew/bin" not in env.get("PATH", ""):
                 env["PATH"] = f"/opt/homebrew/bin:{env.get('PATH', '')}"
-            log = open("/tmp/local-models-startup.log", "w")
+            self._startup_log = open("/tmp/local-models-startup.log", "w")
             subprocess.Popen(
                 [os.path.expanduser("~/bin/start-local-models")],
                 env=env,
-                stdout=log,
-                stderr=log,
+                stdout=self._startup_log,
+                stderr=self._startup_log,
             )
             self.servers_started = True
+            self._last_restart_attempt = time.time()
             self.mode = "server" if self.desktop else "offline"
         except Exception as e:
             rumps.notification("Local Models", "Failed to start services", str(e))
