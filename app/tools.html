@@ -416,7 +416,7 @@ function startTimer(tool, t0, status) {
     if (selected !== tool) return;
     const s = ((Date.now() - t0) / 1000).toFixed(0);
     status.innerHTML = `<span class="elapsed">${s}s</span>`;
-  }, 200);
+  }, 1000);
 }
 
 function stopTimer(tool, t0, status, model) {

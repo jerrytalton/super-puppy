@@ -48,6 +48,10 @@ body {
 .prof-btn.warm:hover { opacity: 0.85; }
 .prof-btn.go:hover { opacity: 0.85; }
 .prof-btn:disabled { opacity: 0.4; pointer-events: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: #fff; border-radius: 50%; animation: spin 0.6s linear infinite;
+  vertical-align: middle; margin-right: 6px; }
 
 /* Memory */
 .mem-box {
@@ -121,6 +125,9 @@ body {
 .think-toggle.on { background: rgba(175,82,222,0.12); color: #af52de; border-color: #af52de; }
 .think-toggle:hover { border-color: var(--accent); }
 .footer { text-align: center; color: var(--text3); font-size: 11px; margin-top: 24px; }
+.refresh-btn { background: none; border: 1px solid var(--border); border-radius: 4px;
+  padding: 2px 8px; color: var(--text3); cursor: pointer; font-size: 11px; margin-left: 8px; }
+.refresh-btn:hover { border-color: var(--accent); color: var(--text2); }
 </style>
 </head>
 <body>
@@ -173,6 +180,16 @@ async function init() {
   render();
 }
 
+async function refreshModels() {
+  const [sys, models] = await Promise.all([
+    fetch('/api/system').then(r=>r.json()),
+    fetch('/api/models?refresh=1').then(r=>r.json()),
+  ]);
+  S.sys = sys;
+  S.models = models;
+  render();
+}
+
 function switchToCustom() {
   if (S.sel === 'custom') return;
   if (!S.profiles.profiles.custom) {
@@ -208,12 +225,14 @@ function fillDefaults() {
 }
 
 function render() {
+  const modeLabel = {server: 'Server', client: 'Client', offline: 'Offline'}[S.sys?.mode] || '';
   document.getElementById('subtitle').textContent =
-    S.sys ? `${S.sys.total_ram_gb}GB unified memory · ${S.models.length} models` : '';
+    S.sys ? `${modeLabel} · ${S.sys.total_ram_gb}GB unified memory · ${S.models.length} models` : '';
   renderProfiles();
   renderMemory();
   renderTasks();
-  document.getElementById('footer').textContent = `Updated ${new Date().toLocaleTimeString()}`;
+  const footer = document.getElementById('footer');
+  footer.innerHTML = `Updated ${new Date().toLocaleTimeString()} <button class="refresh-btn" onclick="refreshModels()">Refresh</button>`;
 }
 
 function renderProfiles() {
@@ -232,7 +251,7 @@ function renderProfiles() {
     b.className = 'prof-btn' + (S.sel===name?' active':'');
     b.textContent = p.label || name;
     b.title = p.description || '';
-    b.onclick = () => { S.sel = name; S.dirty = false; S.picks = {...(p.tasks||{})}; S.thinkPicks = {...(p.thinking||{})}; fillThinkDefaults(); fillDefaults(); render(); };
+    b.onclick = () => { S.sel = name; S.dirty = false; S._warmed = false; S.picks = {...(p.tasks||{})}; S.thinkPicks = {...(p.thinking||{})}; fillThinkDefaults(); fillDefaults(); render(); };
     el.appendChild(b);
   }
   const isActive = S.sel === S.profiles.active;
@@ -246,9 +265,14 @@ function renderProfiles() {
   if (S.sel && isActive) {
     const b = document.createElement('button');
     b.className = 'prof-btn warm';
-    b.textContent = 'Pre-warm';
-    b.title = 'Load preferred models into server memory';
-    b.onclick = () => warm(S.sel);
+    if (S._warmed) {
+      b.textContent = 'Loaded \u2713';
+      b.disabled = true;
+    } else {
+      b.textContent = 'Pre-load Models';
+      b.title = 'Load preferred models into memory so they respond instantly';
+      b.onclick = () => warm(S.sel);
+    }
     el.appendChild(b);
   }
 }
@@ -424,17 +448,20 @@ async function activate(name) {
     await fetch(`/api/profiles/${name}/activate`, {method:'POST'});
     S.profiles.active = name;
     render();
+    if (window.webkit?.messageHandlers?.app)
+      window.webkit.messageHandlers.app.postMessage('profileChanged');
   } catch(e) { alert('Failed: '+e.message); }
 }
 
 async function warm(name) {
   const btn = document.querySelector('.prof-btn.warm');
-  if (btn) { btn.disabled = true; btn.textContent = 'Warming...'; }
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Loading'; }
   try {
     const resp = await fetch(`/api/profiles/${name}/warm`, {method:'POST'});
     const data = await resp.json();
+    S._warmed = true;
     if (btn) {
-      btn.textContent = data.loaded?.length ? `Loaded ${data.loaded.length}` : 'Already warm';
+      btn.innerHTML = data.loaded?.length ? `Loaded ${data.loaded.length}` : 'Already loaded';
       setTimeout(() => render(), 1500);
     }
   } catch(e) { alert('Failed: '+e.message); }

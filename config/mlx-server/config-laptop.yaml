@@ -25,7 +25,7 @@ models:
     served_model_name: qwen-coder
     context_length: 16384
     on_demand: true
-    on_demand_idle_timeout: 120
+    on_demand_idle_timeout: 300
 
   # Small model for quick subtasks — always loaded
   - model_path: mlx-community/Qwen3.5-9B-4bit
@@ -39,4 +39,4 @@ models:
     served_model_name: nemotron-super
     context_length: 32768
     on_demand: true
-    on_demand_idle_timeout: 120
+    on_demand_idle_timeout: 300

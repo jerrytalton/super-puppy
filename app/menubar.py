@@ -55,6 +55,15 @@ class _ProfileWindowDelegate(NSObject):
             self.callback()
 
 
+class _WebViewMessageHandler(NSObject):
+    """Receives postMessage calls from WKWebView JavaScript."""
+    on_message = None  # callable(body_dict)
+
+    def userContentController_didReceiveScriptMessage_(self, controller, message):
+        if self.on_message:
+            self.on_message(message.body())
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +78,7 @@ NETWORK_CONF = os.path.expanduser("~/.config/local-models/network.conf")
 MCP_TOOLS_FILE = os.path.expanduser("~/.claude.json")
 OLLAMA_LOCAL = "http://localhost:11434"
 MLX_LOCAL = "http://localhost:8000"
-POLL_INTERVAL = 15          # seconds between status refreshes
+POLL_INTERVAL = 8           # seconds between status refreshes
 UPDATE_CHECK_INTERVAL = 3600 # seconds between git update checks (1 hour)
 
 MODEL_PREFS_FILE = os.path.expanduser("~/.config/local-models/model_preferences.json")
@@ -288,32 +297,45 @@ def apply_repo_update():
     """Pull latest and re-run install.sh. Returns (success, output)."""
     try:
         # Stash any local changes (e.g. modified preferences)
-        subprocess.run(["git", "-C", REPO_DIR, "stash", "--quiet"],
-                       capture_output=True, timeout=10)
+        stash = subprocess.run(["git", "-C", REPO_DIR, "stash", "--quiet"],
+                               capture_output=True, timeout=10)
+        has_stash = stash.returncode == 0
         pull = subprocess.run(["git", "-C", REPO_DIR, "pull", "--rebase"],
                               capture_output=True, text=True, timeout=30)
-        # Restore stashed changes
-        subprocess.run(["git", "-C", REPO_DIR, "stash", "pop", "--quiet"],
-                       capture_output=True, timeout=10)
+        if has_stash:
+            pop = subprocess.run(
+                ["git", "-C", REPO_DIR, "stash", "pop", "--quiet"],
+                capture_output=True, text=True, timeout=10)
+            if pop.returncode != 0:
+                return False, f"Stash pop failed: {pop.stderr.strip()}"
         if pull.returncode != 0:
             return False, pull.stderr.strip()
-        install = subprocess.run(["bash", os.path.join(REPO_DIR, "install.sh")],
-                                 capture_output=True, text=True, timeout=30)
+        subprocess.run(["bash", os.path.join(REPO_DIR, "install.sh")],
+                       capture_output=True, text=True, timeout=30)
         return True, pull.stdout.strip()
     except Exception as e:
         return False, str(e)
 
 
+_mcp_configured_cache = {"val": None, "ts": 0}
+
+
 def is_mcp_configured():
-    """Check if local-models MCP is registered in Claude config."""
+    """Check if local-models MCP is registered in Claude config. Cached 60s."""
+    now = time.time()
+    if _mcp_configured_cache["val"] is not None and now - _mcp_configured_cache["ts"] < 60:
+        return _mcp_configured_cache["val"]
+    result = False
     if os.path.exists(MCP_TOOLS_FILE):
         try:
             with open(MCP_TOOLS_FILE) as f:
                 data = json.load(f)
-            return "local-models" in data.get("mcpServers", {})
+            result = "local-models" in data.get("mcpServers", {})
         except Exception:
             pass
-    return False
+    _mcp_configured_cache["val"] = result
+    _mcp_configured_cache["ts"] = now
+    return result
 
 
 def load_mcp_prefs():
@@ -886,7 +908,8 @@ class LocalModelsApp(rumps.App):
         self.ollama_remote = f"http://{self.desktop_host}:{self.ollama_port}"
         self.mlx_remote = f"http://{self.desktop_host}:{self.mlx_port}"
 
-        # State
+        # State (protected by _lock for cross-thread access)
+        self._lock = threading.Lock()
         self.mode = "unknown"          # server, client, offline, stopped
         self.ollama_ok = False
         self.mlx_ok = False
@@ -906,6 +929,7 @@ class LocalModelsApp(rumps.App):
 
         # Profile viewer / tool tester state
         self.profile_server = None
+        self.profile_server_mode = None
         self.profile_port = None
         self.profile_window = None
         self.tools_window = None
@@ -913,8 +937,16 @@ class LocalModelsApp(rumps.App):
         self._tools_delegate = None
 
         # Menu items
-        self.menu_status = rumps.MenuItem("Starting...")
-        self.menu_health = rumps.MenuItem("")
+        self.menu_status = rumps.MenuItem("Starting…")
+        self.menu_ollama = rumps.MenuItem("Ollama …")
+        self.menu_ollama_restart = rumps.MenuItem(
+            "Restart Ollama", callback=self._restart_ollama)
+        self.menu_ollama.add(self.menu_ollama_restart)
+        self.menu_mlx = rumps.MenuItem("MLX …")
+        self.menu_mlx_restart = rumps.MenuItem(
+            "Restart MLX", callback=self._restart_mlx)
+        self.menu_mlx.add(self.menu_mlx_restart)
+        self.menu_mcp = rumps.MenuItem("MCP …", callback=self._open_mcp_config)
         self.menu_profiles = rumps.MenuItem("Model Profiles",
                                            callback=self.open_profiles)
         self.menu_tools = rumps.MenuItem("Playground",
@@ -926,7 +958,10 @@ class LocalModelsApp(rumps.App):
 
         self.menu = [
             self.menu_status,
-            self.menu_health,
+            None,
+            self.menu_ollama,
+            self.menu_mlx,
+            self.menu_mcp,
             None,
             self.menu_profiles,
             self.menu_tools,
@@ -957,10 +992,12 @@ class LocalModelsApp(rumps.App):
     def _start_services_bg(self):
         """Background thread: start services, then do first poll inline."""
         self.start_services()
-        if self.desktop:
-            self._refresh_server_mode()
-        else:
-            self._refresh_client_mode()
+        with self._lock:
+            if self.desktop:
+                self._refresh_server_mode()
+            else:
+                self._refresh_client_mode()
+        self._main_thread_update()
 
     # -------------------------------------------------------------------
     # Service management
@@ -976,8 +1013,6 @@ class LocalModelsApp(rumps.App):
             else:
                 self._start_local_servers()
 
-        self.servers_started = True
-
     def _start_local_servers(self):
         """Launch Ollama and MLX-OpenAI-Server via start-local-models."""
         try:
@@ -990,6 +1025,7 @@ class LocalModelsApp(rumps.App):
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            self.servers_started = True
             self.mode = "server" if self.desktop else "offline"
         except Exception as e:
             rumps.notification("Local Models", "Failed to start services", str(e))
@@ -999,7 +1035,7 @@ class LocalModelsApp(rumps.App):
         try:
             subprocess.run(
                 [os.path.expanduser("~/bin/start-local-models"), "--stop"],
-                capture_output=True,
+                capture_output=True, timeout=10,
             )
             self.servers_started = False
             self.mode = "stopped"
@@ -1013,15 +1049,88 @@ class LocalModelsApp(rumps.App):
         else:
             self.stop_services()
 
+    def _restart_ollama(self, _):
+        """Restart just Ollama."""
+        self.ollama_ok = False
+        self.ollama_loading = True
+        self._update_menu()
+        def _do():
+            try:
+                subprocess.run(["pkill", "-x", "ollama"],
+                               capture_output=True, timeout=5)
+                time.sleep(2)
+                env = os.environ.copy()
+                if self.desktop:
+                    env["OLLAMA_HOST"] = f"0.0.0.0:{self.ollama_port}"
+                subprocess.Popen(
+                    ["ollama", "serve"], env=env,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    start_new_session=True)
+                for _ in range(10):
+                    time.sleep(1)
+                    if probe_service(OLLAMA_LOCAL, 2):
+                        break
+            except Exception as e:
+                rumps.notification("Local Models", "Ollama restart failed", str(e))
+            self.refresh(None)
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _restart_mlx(self, _):
+        """Restart just MLX-OpenAI-Server (kills entire process tree)."""
+        self.mlx_ok = False
+        self.mlx_loading = True
+        self._update_menu()
+        def _do():
+            try:
+                # MLX spawns child processes; kill the whole tree via pgid
+                import signal
+                pids = subprocess.run(
+                    ["pgrep", "-f", "mlx-openai-server"],
+                    capture_output=True, text=True, timeout=5)
+                for pid in pids.stdout.strip().splitlines():
+                    try:
+                        os.kill(int(pid), signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                time.sleep(2)
+                # Force-kill any survivors
+                subprocess.run(["pkill", "-9", "-f", "mlx-openai-server"],
+                               capture_output=True, timeout=3)
+                time.sleep(1)
+
+                mlx_config = os.path.expanduser("~/.config/mlx-server/config.yaml")
+                if self.ram_gb < 48:
+                    mlx_config = os.path.expanduser(
+                        "~/.config/mlx-server/config-laptop.yaml")
+                mlx_log = open("/tmp/local-models-mlx-restart.log", "w")
+                subprocess.Popen(
+                    ["mlx-openai-server", "launch", "--config", mlx_config,
+                     "--no-log-file"],
+                    stdout=mlx_log, stderr=mlx_log,
+                    cwd=os.path.expanduser("~"),
+                    start_new_session=True)
+                # Wait for it to come up
+                for _ in range(15):
+                    time.sleep(1)
+                    if probe_service(MLX_LOCAL, 2):
+                        break
+            except Exception as e:
+                rumps.notification("Local Models", "MLX restart failed", str(e))
+            self.refresh(None)
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _open_mcp_config(self, _):
+        """Open the Claude config file so the user can check MCP setup."""
+        subprocess.Popen(["open", MCP_TOOLS_FILE])
+
     # -------------------------------------------------------------------
     # Status refresh
     # -------------------------------------------------------------------
 
     def refresh(self, _):
         """Poll services in a background thread, then update the menu."""
-        if getattr(self, '_refresh_busy', False):
+        if not self._lock.acquire(blocking=False):
             return
-        self._refresh_busy = True
 
         def _poll():
             try:
@@ -1030,7 +1139,7 @@ class LocalModelsApp(rumps.App):
                 else:
                     self._refresh_client_mode()
             finally:
-                self._refresh_busy = False
+                self._lock.release()
                 self._main_thread_update()
 
         threading.Thread(target=_poll, daemon=True).start()
@@ -1049,12 +1158,41 @@ class LocalModelsApp(rumps.App):
 
         if self.app_ready:
             self._update_menu()
+            if (self.profile_server_mode is not None
+                    and self.profile_server_mode != self.mode
+                    and self.profile_window is not None):
+                self._restart_profile_server_and_reload()
+
+    def _on_webview_message(self, body):
+        """Handle messages from the profiles/tools webview."""
+        self._update_menu()
+
+    def _restart_profile_server_and_reload(self):
+        """Kill profile server, restart for new mode, reload webview."""
+        self._ensure_profile_server()
+        if self.profile_window is not None:
+            from Foundation import NSURL, NSURLRequest
+            url = NSURL.URLWithString_(
+                f"http://127.0.0.1:{self.profile_port}/")
+            req = NSURLRequest.requestWithURL_(url)
+            wv = self.profile_window.contentView().subviews()[0]
+            wv.loadRequest_(req)
 
     def _refresh_server_mode(self):
         self.ollama_ok = probe_service(OLLAMA_LOCAL, 2)
         self.mlx_ok = probe_service(MLX_LOCAL, 2)
         self.ollama_loading = not self.ollama_ok and process_is_running("ollama")
         self.mlx_loading = not self.mlx_ok and process_is_running("mlx-openai-server")
+
+        # Auto-restart downed services on desktop (at most once per 2 minutes)
+        if (self.servers_started
+                and (not self.ollama_ok and not self.ollama_loading
+                     or not self.mlx_ok and not self.mlx_loading)):
+            now = time.time()
+            if now - getattr(self, '_last_restart_attempt', 0) > 120:
+                self._last_restart_attempt = now
+                self._start_local_servers()
+
         self.ollama_models = get_ollama_models(OLLAMA_LOCAL) if self.ollama_ok else []
         self.mlx_models = get_mlx_models(MLX_LOCAL) if self.mlx_ok else []
 
@@ -1087,44 +1225,127 @@ class LocalModelsApp(rumps.App):
                 self.mode = "offline"
                 self.ollama_models = get_ollama_models(OLLAMA_LOCAL) if self.ollama_ok else []
                 self.mlx_models = get_mlx_models(MLX_LOCAL) if self.mlx_ok else []
-            elif self.servers_started:
+            elif not self.servers_started:
+                rumps.notification(
+                    "Local Models", "Desktop unreachable",
+                    "Starting local models for offline use")
+                self._start_local_servers()
+                time.sleep(3)
+                self.ollama_ok = probe_service(OLLAMA_LOCAL, 2)
+                self.mlx_ok = probe_service(MLX_LOCAL, 2)
+                self.mode = "offline"
+                self.ollama_models = (
+                    get_ollama_models(OLLAMA_LOCAL) if self.ollama_ok else [])
+                self.mlx_models = (
+                    get_mlx_models(MLX_LOCAL) if self.mlx_ok else [])
+            else:
                 self.mode = "offline"
                 self.ollama_models = []
                 self.mlx_models = []
-            else:
-                self.mode = "stopped"
-                self.ollama_models = []
-                self.mlx_models = []
+
+    @staticmethod
+    def _styled_menu(item, dot, label, detail=""):
+        """Set an NSAttributedString title with dot, label, and dim detail."""
+        from AppKit import (NSFont, NSForegroundColorAttributeName,
+                            NSFontAttributeName, NSColor,
+                            NSMutableAttributedString,
+                            NSParagraphStyleAttributeName,
+                            NSMutableParagraphStyle)
+        from Foundation import NSRange, NSString
+
+        font = NSFont.menuFontOfSize_(13)
+        detail_font = NSFont.menuFontOfSize_(12)
+
+        para = NSMutableParagraphStyle.alloc().init()
+        tab_stop_cls = __import__(
+            'AppKit', fromlist=['NSTextTab']).NSTextTab
+        tab = tab_stop_cls.alloc().initWithType_location_(0, 170)
+        para.setTabStops_([tab])
+
+        main_text = f"{dot} {label}" if dot else label
+        full_text = f"{main_text}\t{detail}" if detail else main_text
+
+        # Use NSString length (UTF-16) for correct attributed string ranges
+        ns_main = NSString.stringWithString_(main_text)
+        ns_full = NSString.stringWithString_(full_text)
+        ns_detail = NSString.stringWithString_(detail) if detail else None
+
+        s = NSMutableAttributedString.alloc().initWithString_(full_text)
+        s.addAttribute_value_range_(
+            NSFontAttributeName, font, NSRange(0, ns_full.length()))
+        s.addAttribute_value_range_(
+            NSParagraphStyleAttributeName, para,
+            NSRange(0, ns_full.length()))
+
+        if detail:
+            detail_start = ns_main.length() + 1  # +1 for tab
+            s.addAttribute_value_range_(
+                NSFontAttributeName, detail_font,
+                NSRange(detail_start, ns_detail.length()))
+            s.addAttribute_value_range_(
+                NSForegroundColorAttributeName,
+                NSColor.secondaryLabelColor(),
+                NSRange(detail_start, ns_detail.length()))
+
+        item._menuitem.setAttributedTitle_(s)
 
     def _update_menu(self):
         """Rebuild the menu to reflect current state."""
 
         self.title = None
 
-        # ── Top line: profile + model count ──
-        model_count = len(self.ollama_models) + len(self.mlx_models)
+        # ── Top line: mode — profile ──
+        ollama_n = len(self.ollama_models)
+        mlx_n = len(self.mlx_models)
         profiles_data = load_profiles()
         active = profiles_data.get("active")
         if active and active in profiles_data.get("profiles", {}):
-            label = profiles_data["profiles"][active].get("label", active)
+            profile = profiles_data["profiles"][active].get("label", active)
         else:
-            label = "No Profile"
-        self.menu_status.title = (
-            f"{label} — {model_count} models" if model_count
-            else label)
+            profile = "No Profile"
 
-        # ── Health line: compact service status ──
-        def _check(ok):
-            return "\u2713" if ok else "\u2717"
+        mode_label = {"server": "Server", "client": "Remote",
+                      "offline": "Local", "stopped": "Stopped"
+                      }.get(self.mode, "…")
+        self._styled_menu(self.menu_status, "", mode_label)
+        self._styled_menu(self.menu_profiles, "", "Model Profiles", profile)
+
+        # ── Per-service status lines ──
+        ollama_loading = getattr(self, 'ollama_loading', False)
+        mlx_loading = getattr(self, 'mlx_loading', False)
+        is_local = self.mode in ("server", "offline")
+
+        GRN, YEL, RED = "\U0001f7e2", "\U0001f7e1", "\U0001f534"
+
+        if self.ollama_ok:
+            self._styled_menu(self.menu_ollama, GRN, "Ollama",
+                              f"{ollama_n} models")
+        elif ollama_loading:
+            self._styled_menu(self.menu_ollama, YEL, "Ollama", "starting…")
+        else:
+            self._styled_menu(self.menu_ollama, RED, "Ollama", "down")
+        self.menu_ollama_restart.title = (
+            "Restart Ollama" if is_local else "Remote — restart from server")
+        self.menu_ollama_restart.set_callback(
+            self._restart_ollama if is_local else None)
+
+        if self.mlx_ok:
+            self._styled_menu(self.menu_mlx, GRN, "MLX",
+                              f"{mlx_n} models")
+        elif mlx_loading:
+            self._styled_menu(self.menu_mlx, YEL, "MLX", "starting…")
+        else:
+            self._styled_menu(self.menu_mlx, RED, "MLX", "down")
+        self.menu_mlx_restart.title = (
+            "Restart MLX" if is_local else "Remote — restart from server")
+        self.menu_mlx_restart.set_callback(
+            self._restart_mlx if is_local else None)
 
         self.mcp_configured = is_mcp_configured()
-        if self.mode == "stopped":
-            self.menu_health.title = "Stopped"
+        if self.mcp_configured:
+            self._styled_menu(self.menu_mcp, GRN, "MCP")
         else:
-            self.menu_health.title = (
-                f"Ollama {_check(self.ollama_ok)}  "
-                f"MLX {_check(self.mlx_ok)}  "
-                f"MCP {_check(self.mcp_configured)}")
+            self._styled_menu(self.menu_mcp, RED, "MCP", "not configured")
 
         # ── Update (only actionable when available) ──
         if self.update_available > 0:
@@ -1138,7 +1359,7 @@ class LocalModelsApp(rumps.App):
 
         # ── Services action (hidden in client mode) ──
         if self.mode in ("server", "offline"):
-            self.menu_action.title = "Stop Services"
+            self.menu_action.title = "Stop All Services"
             self.menu_action.set_callback(self.toggle_services)
         elif self.mode == "stopped":
             self.menu_action.title = "Start Services"
@@ -1152,11 +1373,23 @@ class LocalModelsApp(rumps.App):
     # -------------------------------------------------------------------
 
     def _ensure_profile_server(self):
-        """Start the Flask profile server if not already running."""
-        if (self.profile_server is not None
-                and self.profile_server.poll() is None
-                and self.profile_port is not None):
+        """Start (or restart) the Flask profile server."""
+        alive = (self.profile_server is not None
+                 and self.profile_server.poll() is None
+                 and self.profile_port is not None)
+        if alive and self.profile_server_mode == self.mode:
             return
+        if alive:
+            self.profile_server.terminate()
+            try:
+                self.profile_server.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.profile_server.kill()
+                self.profile_server.wait()
+            self.profile_server = None
+            if hasattr(self, '_profile_log') and self._profile_log:
+                self._profile_log.close()
+
         import socket
         s = socket.socket()
         s.bind(("127.0.0.1", 0))
@@ -1169,17 +1402,20 @@ class LocalModelsApp(rumps.App):
             self.ollama_remote if self.mode == "client" else OLLAMA_LOCAL)
         env["MLX_URL"] = (
             self.mlx_remote if self.mode == "client" else MLX_LOCAL)
-        if self.mode == "client":
-            env["SERVER_RAM_GB"] = "512"
 
+        log_path = "/tmp/local-models-profile-server.log"
+        self._profile_log = open(log_path, "a")
         self.profile_server = subprocess.Popen(
             ["uv", "run", "--python", "3.12",
              os.path.join(SCRIPT_DIR, "profile-server.py")],
-            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            env=env, stdout=subprocess.DEVNULL, stderr=self._profile_log)
+        self.profile_server_mode = self.mode
 
+        # Brief wait for server to become ready (runs on main thread,
+        # so keep it short — the webview will retry on load failure)
         import urllib.request
-        for _ in range(20):
-            time.sleep(0.5)
+        for _ in range(6):
+            time.sleep(0.3)
             try:
                 urllib.request.urlopen(
                     f"http://127.0.0.1:{self.profile_port}/api/system",
@@ -1215,6 +1451,10 @@ class LocalModelsApp(rumps.App):
             prefs.setValue_forKey_(False, "mediaCaptureRequiresSecureConnection")
         except Exception:
             pass
+        self._msg_handler = _WebViewMessageHandler.alloc().init()
+        self._msg_handler.on_message = self._on_webview_message
+        config.userContentController().addScriptMessageHandler_name_(
+            self._msg_handler, "app")
         webview = WKWebView.alloc().initWithFrame_configuration_(
             window.contentView().bounds(), config)
         webview.setAutoresizingMask_(0x12)
@@ -1394,6 +1634,11 @@ class LocalModelsApp(rumps.App):
     def quit_app(self, _):
         if self.profile_server and self.profile_server.poll() is None:
             self.profile_server.terminate()
+            try:
+                self.profile_server.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self.profile_server.kill()
+                self.profile_server.wait()
         if self.servers_started and self.mode != "client":
             self.stop_services()
         rumps.quit_application()

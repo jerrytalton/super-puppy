@@ -29,6 +29,7 @@ MLX_URL = os.environ.get("MLX_URL", "http://localhost:8000")
 MLX_CONFIG = Path("~/.config/mlx-server/config.yaml").expanduser()
 PROFILES_FILE = Path("~/.config/local-models/profiles.json").expanduser()
 MCP_PREFS_FILE = Path("~/.config/local-models/mcp_preferences.json").expanduser()
+NETWORK_CONF = Path("~/.config/local-models/network.conf").expanduser()
 HTML_FILE = Path(__file__).parent / "profiles.html"
 TOOLS_HTML = Path(__file__).parent / "tools.html"
 
@@ -103,7 +104,7 @@ def _idle_watcher():
         time.sleep(30)
         if time.time() - _last_request > IDLE_TIMEOUT:
             print("Idle timeout — shutting down.", file=sys.stderr)
-            os._exit(0)
+            sys.exit(0)
 
 
 # ── Ollama queries ───────────────────────────────────────────────────
@@ -122,16 +123,36 @@ def ollama_post(path, body, timeout=10):
         return None
 
 
+def _is_remote_ollama():
+    from urllib.parse import urlparse
+    host = urlparse(OLLAMA_URL).hostname or ""
+    return host not in ("localhost", "127.0.0.1", "::1")
+
+
+def _read_server_ram_gb():
+    """Read SERVER_RAM_GB from network.conf (set for the remote desktop)."""
+    if NETWORK_CONF.exists():
+        for line in NETWORK_CONF.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("SERVER_RAM_GB="):
+                val = line.partition("=")[2].strip().strip('"').strip("'")
+                return int(val)
+    return None
+
+
 def get_system_info():
     try:
-        server_gb = os.environ.get("SERVER_RAM_GB")
-        if server_gb:
-            gb = int(server_gb)
-            return {"total_ram_bytes": gb << 30, "total_ram_gb": gb}
+        if _is_remote_ollama():
+            gb = _read_server_ram_gb()
+            if gb:
+                return {"total_ram_bytes": gb << 30, "total_ram_gb": gb,
+                        "mode": "client"}
         raw = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"]).strip())
-        return {"total_ram_bytes": raw, "total_ram_gb": raw >> 30}  # GiB
+        gb = raw >> 30
+        mode = "server" if gb >= 256 else "offline"
+        return {"total_ram_bytes": raw, "total_ram_gb": gb, "mode": mode}
     except Exception:
-        return {"total_ram_bytes": 0, "total_ram_gb": 0}
+        return {"total_ram_bytes": 0, "total_ram_gb": 0, "mode": "unknown"}
 
 
 def compute_active_params(model_name, total_b, mi, family):
@@ -179,8 +200,25 @@ def compute_active_params(model_name, total_b, mi, family):
     return round(total_b * expert_used / expert_count)
 
 
-def get_all_models():
-    """Aggregate all Ollama + MLX models with metadata."""
+_model_cache = {"data": None, "ts": 0}
+_MODEL_CACHE_TTL = 60  # seconds
+
+
+def get_all_models(force_refresh: bool = False):
+    """Aggregate all Ollama + MLX models with metadata. Cached for 60s."""
+    now = time.time()
+    if (not force_refresh
+            and _model_cache["data"] is not None
+            and now - _model_cache["ts"] < _MODEL_CACHE_TTL):
+        return _model_cache["data"]
+    models = _fetch_all_models()
+    _model_cache["data"] = models
+    _model_cache["ts"] = now
+    return models
+
+
+def _fetch_all_models():
+    """Uncached model aggregation."""
     models = {}
 
     # Ollama installed models
@@ -209,18 +247,17 @@ def get_all_models():
                 ctx = int(v)
                 break
         has_vision = any("vision" in k for k in mi)
-        active_b = compute_active_params(name, total_b, mi, family)
 
         # For models where Ollama doesn't report params (image gen), estimate from disk
         if not total_b and disk_bytes:
-            total_b = disk_bytes / 1e9 / 0.5  # rough: 0.5 bytes per param at 4-bit
+            total_b = disk_bytes / 2e9  # rough: ~0.5 bytes per param at 4-bit
         active_b = compute_active_params(name, total_b, mi, family) if total_b else 0
 
         models[name] = {
             "name": name,
             "backend": "ollama",
             "disk_bytes": disk_bytes,
-            "vram_bytes": disk_bytes,  # estimate; overridden if loaded
+            "vram_bytes": int(disk_bytes * 1.2),  # estimate; overridden if loaded
             "total_params_b": round(total_b, 1),
             "active_params_b": round(active_b, 1),
             "context": ctx,
@@ -358,7 +395,7 @@ def get_eligible_tasks(name, model_info):
 
 # ── Profiles ─────────────────────────────────────────────────────────
 
-PROFILES_VERSION = 3  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 4  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -412,6 +449,22 @@ DEFAULT_PROFILES = {
                 "uncensored": "wizard-vicuna-uncensored:30b",
             },
         },
+        "laptop": {
+            "label": "Laptop",
+            "description": "Fits in 24GB — small models for every task",
+            "tasks": {
+                "code": "glm-4.7-flash:latest",
+                "general": "qwen3.5-fast",
+                "reasoning": "qwen3.5-fast",
+                "long_context": "glm-4.7-flash:latest",
+                "translation": "qwen3.5-fast",
+                "vision": "qwen3.5:9b",
+                "image_gen": "x/flux2-klein:latest",
+                "transcription": "whisper-v3",
+                "embedding": "all-minilm:latest",
+                "uncensored": "wizard-vicuna-uncensored:13b",
+            },
+        },
     },
 }
 
@@ -420,7 +473,7 @@ def load_profiles():
     if PROFILES_FILE.exists():
         try:
             data = json.loads(PROFILES_FILE.read_text())
-            if data.get("version", 0) >= PROFILES_VERSION:
+            if data.get("version", 0) == PROFILES_VERSION:
                 return data
             # Version bump: refresh presets, keep user's active selection
             active = data.get("active", DEFAULT_PROFILES["active"])
@@ -466,7 +519,8 @@ def api_system():
 
 @app.route("/api/models")
 def api_models():
-    models = get_all_models()
+    force = request.args.get("refresh") == "1"
+    models = get_all_models(force_refresh=force)
     for name, info in models.items():
         info["eligible_tasks"] = get_eligible_tasks(name, info)
     return jsonify(list(models.values()))
@@ -554,22 +608,50 @@ def api_profiles_warm(name):
     if not tasks:
         return jsonify({"ok": True, "loaded": []})
 
-    # Unique models to load
-    to_load = list(dict.fromkeys(tasks.values()))
+    models = get_all_models()
+    candidates = list(dict.fromkeys(tasks.values()))
 
+    ollama_to_load = []
+    mlx_to_load = []
+    for name in candidates:
+        if name not in models:
+            continue
+        backend = models[name]["backend"]
+        if backend == "ollama":
+            ollama_to_load.append(name)
+        elif backend == "mlx":
+            mlx_to_load.append(name)
+
+    # Skip Ollama models already in memory
     ps = ollama_get("/api/ps") or {}
     already = {m["name"] for m in ps.get("models", [])}
-    to_load = [m for m in to_load if m not in already]
+    ollama_to_load = [m for m in ollama_to_load if m not in already]
 
-    for model in to_load:
+    loaded = []
+
+    for model in ollama_to_load:
         try:
             requests.post(f"{OLLAMA_URL}/api/generate",
-                          json={"model": model, "prompt": "", "keep_alive": "10m"},
+                          json={"model": model, "prompt": "", "keep_alive": "5m"},
                           timeout=300)
+            loaded.append(model)
         except Exception:
             pass
 
-    return jsonify({"ok": True, "loaded": to_load})
+    # MLX on-demand models: a tiny completion request triggers loading.
+    # They persist in memory for their idle_timeout (120-300s).
+    for model in mlx_to_load:
+        try:
+            requests.post(f"{MLX_URL}/v1/chat/completions",
+                          json={"model": model, "max_tokens": 1,
+                                "messages": [{"role": "user", "content": "hi"}]},
+                          timeout=120)
+            loaded.append(model)
+        except Exception:
+            pass
+
+    _model_cache["data"] = None
+    return jsonify({"ok": True, "loaded": loaded})
 
 
 # ── Tool tester ──────────────────────────────────────────────────────
@@ -704,7 +786,10 @@ def api_test_stream():
         ]
     elif tool == "summarize":
         model, backend = _pick("long_context")
-        text = Path(body["file_path"]).read_text(errors="replace")[:50000]
+        fp = body["file_path"]
+        if not _is_safe_test_path(fp):
+            return jsonify({"error": "File path must be in /tmp/"}), 400
+        text = Path(fp).read_text(errors="replace")[:50000]
         messages = [
             {"role": "system", "content": "Summarize this content concisely."},
             {"role": "user", "content": text},
@@ -903,10 +988,19 @@ def api_test_upload():
     return jsonify({"path": dest})
 
 
+def _is_safe_test_path(path: str) -> bool:
+    """Only allow serving files from /tmp/ (test outputs, screenshots, uploads)."""
+    try:
+        resolved = str(Path(path).resolve())
+        return resolved.startswith("/tmp/") or resolved.startswith("/private/tmp/")
+    except (ValueError, OSError):
+        return False
+
+
 @app.route("/api/test/image")
 def api_test_image():
     path = request.args.get("path", "")
-    if not path or not Path(path).exists():
+    if not path or not _is_safe_test_path(path) or not Path(path).exists():
         return "Not found", 404
     return send_file(path)
 

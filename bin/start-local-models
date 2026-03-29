@@ -176,7 +176,7 @@ elif curl -sf "http://localhost:${MLX_PORT}/v1/models" > /dev/null 2>&1; then
     echo "MLX-OpenAI-Server already running."
 else
     echo "Starting MLX-OpenAI-Server with $(basename "$mlx_config")..."
-    mlx-openai-server launch --config "$mlx_config" > /dev/null 2>&1 &
+    mlx-openai-server launch --config "$mlx_config" --no-log-file > /dev/null 2>&1 &
     disown
     wait_for_service "http://localhost:${MLX_PORT}/v1/models" "MLX-OpenAI-Server" 30 || true
 fi

@@ -91,6 +91,11 @@ int main(int argc, char *argv[]) {
 
     int status;
     waitpid(pid, &status, 0);
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        fprintf(stderr, "super-puppy: uv exited with status %d\n",
+                WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+        return 1;
+    }
 
     /* Parse: line 1 = base_prefix, line 2 = libpython, line 3 = site-packages */
     char *base_prefix = buf;
@@ -120,6 +125,7 @@ int main(int argc, char *argv[]) {
 
     /* Set PYTHONHOME to base prefix (has stdlib) */
     wchar_t *whome = py_dec(base_prefix, NULL);
+    if (!whome) { fprintf(stderr, "super-puppy: Py_DecodeLocale failed for home\n"); return 1; }
     py_home(whome);
 
     /* Add venv site-packages so deps (rumps, pyobjc, etc.) are importable */
@@ -130,6 +136,7 @@ int main(int argc, char *argv[]) {
     py_init();
 
     wchar_t *wscript = py_dec(script, NULL);
+    if (!wscript) { fprintf(stderr, "super-puppy: Py_DecodeLocale failed for script\n"); return 1; }
     if (py_argv) py_argv(1, &wscript, 0);
 
     FILE *fp = fopen(script, "r");
@@ -138,5 +145,8 @@ int main(int argc, char *argv[]) {
     fclose(fp);
 
     if (py_fin) py_fin();
+
+    /* PyMem_RawFree is the correct way to free Py_DecodeLocale results,
+       but we're about to exit anyway — OS reclaims all process memory. */
     return ret;
 }
