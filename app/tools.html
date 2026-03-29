@@ -109,6 +109,14 @@ h2 { font-size: 13px; font-weight: 600; color: var(--text2); text-transform: upp
 }
 .badge.profile-badge { background: rgba(0,122,255,0.12); color: var(--accent); }
 .badge.default { background: rgba(52,199,89,0.12); color: var(--green); }
+.think-toggle {
+  font-size: 10px; padding: 2px 8px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--surface2);
+  color: var(--text3); cursor: pointer; transition: all 0.15s;
+  flex-shrink: 0; margin-left: 8px;
+}
+.think-toggle.on { background: rgba(175,82,222,0.12); color: #af52de; border-color: #af52de; }
+.think-toggle:hover { border-color: var(--accent); }
 
 .output-box.running { animation: pulse 1.5s ease-in-out infinite; }
 @keyframes pulse {
@@ -127,6 +135,7 @@ h2 { font-size: 13px; font-weight: 600; color: var(--text2); text-transform: upp
   <div class="model-picker-header" id="model-picker-header">
     <div class="model-picker-label">Model</div>
     <div class="model-picker-selected" id="model-picker-selected">Loading...</div>
+    <div class="think-toggle" id="think-toggle">think</div>
     <div class="model-picker-chevron">&#9654;</div>
   </div>
   <div class="model-picker-body" id="model-picker-body"></div>
@@ -160,13 +169,16 @@ const TOOLS = {
   ]},
   translate:   { label: 'Translate', task: 'translation', fields: [
     {id:'text', label:'Text', type:'textarea', placeholder:'Text to translate...'},
-    {id:'target', label:'Target language', type:'text', placeholder:'Spanish'},
+    {id:'target', label:'Target language', type:'text', placeholder:'Spanish', value:'Spanish'},
   ]},
   summarize:   { label: 'Summarize', task: 'long_context', fields: [
     {id:'file_path', label:'File path', type:'text', placeholder:'/path/to/large-file.py'},
   ]},
   embed:       { label: 'Embed', task: 'embedding', fields: [
     {id:'text', label:'Text', type:'textarea', placeholder:'Text to embed...'},
+  ]},
+  uncensored:  { label: 'Uncensored', task: 'uncensored', fields: [
+    {id:'prompt', label:'Prompt', type:'textarea', placeholder:'Ask anything...'},
   ]},
 };
 
@@ -177,6 +189,8 @@ let profilePicks = {};
 let selected = null;
 let selectedModel = null;
 let pickerOpen = false;
+let thinkEnabled = true;
+let taskThinkDefaults = {};
 
 const fmtP = (t,a) => t===a||!a ? t+'B' : t+'B/'+a+'B';
 const fmtC = c => c>=1e6?Math.round(c/1e6)+'M':c>=1024?Math.floor(c/1024)+'K':c>0?''+c:'';
@@ -195,8 +209,9 @@ async function init() {
     profilePicks = profiles.profiles[active].tasks;
   }
 
-  // Build task→default model from task defaults + available models
+  // Build task→default model and thinking defaults
   for (const [task, info] of Object.entries(tasks)) {
+    taskThinkDefaults[task] = info.thinking !== undefined ? info.thinking : true;
     for (const pref of (info.defaults || [])) {
       const found = allModels.find(m => m.name === pref || m.name.startsWith(pref + ':'));
       if (found) { taskDefaults[task] = found.name; break; }
@@ -205,6 +220,12 @@ async function init() {
   document.getElementById('model-picker-header').onclick = () => {
     pickerOpen = !pickerOpen;
     document.getElementById('model-picker').className = 'model-picker' + (pickerOpen ? ' open' : '');
+  };
+  document.getElementById('think-toggle').onclick = (e) => {
+    e.stopPropagation();
+    thinkEnabled = !thinkEnabled;
+    const el = document.getElementById('think-toggle');
+    el.className = 'think-toggle' + (thinkEnabled ? ' on' : '');
   };
   const grid = document.getElementById('tool-grid');
   for (const [key, tool] of Object.entries(TOOLS)) {
@@ -261,6 +282,7 @@ function selectTool(key) {
   const defaultModel = taskDefaults[task] || '';
   const profileModel = profilePicks[task] || '';
   selectedModel = profileModel || defaultModel || null;
+  thinkEnabled = taskThinkDefaults[task] !== false;
   pickerOpen = false;
   renderModelPicker(task, defaultModel, profileModel);
 
@@ -277,9 +299,10 @@ function renderModelPicker(task, defaultModel, profileModel) {
   const eligible = allModels.filter(m => m.eligible_tasks?.includes(task));
   const models = eligible.length ? eligible : allModels;
 
-  // Update header with selected model name
   const selLabel = document.getElementById('model-picker-selected');
   selLabel.textContent = selectedModel ? selectedModel.split(':')[0] : 'none';
+  const thinkEl = document.getElementById('think-toggle');
+  thinkEl.className = 'think-toggle' + (thinkEnabled ? ' on' : '');
 
   for (const m of models) {
     const card = document.createElement('div');
@@ -320,7 +343,7 @@ function getField(id) {
   return el ? el.value.trim() : '';
 }
 
-const STREAM_TOOLS = new Set(['generate', 'review', 'translate', 'summarize']);
+const STREAM_TOOLS = new Set(['generate', 'review', 'translate', 'summarize', 'uncensored']);
 let _elapsedTimer = null;
 
 function log(msg) {
@@ -345,7 +368,7 @@ function stopTimer(t0, status, model) {
 }
 
 async function buildBody() {
-  const body = {tool: selected, model: selectedModel};
+  const body = {tool: selected, model: selectedModel, think: thinkEnabled};
   for (const f of TOOLS[selected].fields) {
     if (f.type === 'file') {
       const input = document.getElementById('f_' + f.id);

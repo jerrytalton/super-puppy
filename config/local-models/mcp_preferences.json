@@ -52,5 +52,21 @@
     "snowflake-arctic-embed",
     "all-minilm",
     "bge-m3"
-  ]
+  ],
+  "uncensored": [
+    "wizard-vicuna-uncensored:30b",
+    "wizard-vicuna-uncensored"
+  ],
+  "thinking": {
+    "code": true,
+    "general": true,
+    "reasoning": true,
+    "long_context": false,
+    "translation": false,
+    "vision": false,
+    "image_gen": false,
+    "transcription": false,
+    "embedding": false,
+    "uncensored": false
+  }
 }

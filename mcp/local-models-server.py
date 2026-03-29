@@ -153,6 +153,13 @@ def load_mcp_prefs() -> dict[str, str | list[str]]:
     return {}
 
 
+def thinking_enabled(task: str) -> bool:
+    """Check if thinking mode is enabled for a task."""
+    prefs = load_mcp_prefs()
+    thinking = prefs.get("thinking", {})
+    return bool(thinking.get(task, True))
+
+
 def _resolve_model(name: str) -> tuple[str, str] | None:
     """Try exact match, then prefix match (e.g. 'qwen3-vl' → 'qwen3-vl:235b')."""
     if name in _models:
@@ -196,33 +203,36 @@ def pick_model(task: str, override: str | None = None) -> tuple[str, str]:
     raise ValueError("No local models available")
 
 
-async def chat_ollama(model: str, messages: list[dict], max_tokens: int = 4096) -> str:
+async def chat_ollama(model: str, messages: list[dict],
+                      max_tokens: int = 4096, think: bool = True) -> str:
+    body = {"model": model, "messages": messages, "stream": False,
+            "options": {"num_predict": max_tokens}}
+    if not think:
+        body["think"] = False
     async with httpx.AsyncClient(timeout=300) as client:
-        resp = await client.post(
-            f"{OLLAMA_URL}/api/chat",
-            json={"model": model, "messages": messages, "stream": False,
-                  "options": {"num_predict": max_tokens}},
-        )
+        resp = await client.post(f"{OLLAMA_URL}/api/chat", json=body)
         resp.raise_for_status()
         return resp.json()["message"]["content"]
 
 
-async def chat_mlx(model: str, messages: list[dict], max_tokens: int = 4096) -> str:
+async def chat_mlx(model: str, messages: list[dict],
+                   max_tokens: int = 4096, think: bool = True) -> str:
+    body = {"model": model, "messages": messages, "max_tokens": max_tokens,
+            "stream": False}
+    if not think:
+        # MLX OpenAI-compatible: some models respect this
+        body["temperature"] = 0.3
     async with httpx.AsyncClient(timeout=300) as client:
-        resp = await client.post(
-            f"{MLX_URL}/v1/chat/completions",
-            json={"model": model, "messages": messages, "max_tokens": max_tokens,
-                  "stream": False},
-        )
+        resp = await client.post(f"{MLX_URL}/v1/chat/completions", json=body)
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
 
 
 async def chat(model: str, backend: str, messages: list[dict],
-               max_tokens: int = 4096) -> str:
+               max_tokens: int = 4096, think: bool = True) -> str:
     if backend == "ollama":
-        return await chat_ollama(model, messages, max_tokens)
-    return await chat_mlx(model, messages, max_tokens)
+        return await chat_ollama(model, messages, max_tokens, think)
+    return await chat_mlx(model, messages, max_tokens, think)
 
 
 # ── Tools ────────────────────────────────────────────────────────────
@@ -305,7 +315,8 @@ async def local_generate(
 
     messages.append({"role": "user", "content": user_content})
 
-    result = await chat(model_name, backend, messages, max_tokens)
+    result = await chat(model_name, backend, messages, max_tokens,
+                        think=thinking_enabled(task))
     return f"[{model_name} via {backend}]\n\n{result}"
 
 
@@ -356,7 +367,8 @@ async def local_review(
          "content": f"Review this code:\n\n{review_content}"},
     ]
 
-    result = await chat(model_name, backend, messages, 4096)
+    result = await chat(model_name, backend, messages, 4096,
+                        think=thinking_enabled("reasoning"))
     return f"[{model_name} via {backend}]\n\n{result}"
 
 
@@ -392,11 +404,11 @@ async def local_vision(
     # Ollama native multimodal API
     messages = [{"role": "user", "content": prompt, "images": images}]
 
+    body = {"model": model_name, "messages": messages, "stream": False}
+    if not thinking_enabled("vision"):
+        body["think"] = False
     async with httpx.AsyncClient(timeout=300) as client:
-        resp = await client.post(
-            f"{OLLAMA_URL}/api/chat",
-            json={"model": model_name, "messages": messages, "stream": False},
-        )
+        resp = await client.post(f"{OLLAMA_URL}/api/chat", json=body)
         resp.raise_for_status()
         result = resp.json()["message"]["content"]
 
@@ -533,7 +545,8 @@ async def local_translate(
         {"role": "user", "content": content},
     ]
 
-    result = await chat(model_name, backend, messages, 8192)
+    result = await chat(model_name, backend, messages, 8192,
+                        think=thinking_enabled("translation"))
     return f"[{model_name} via {backend}]\n\n{result}"
 
 
@@ -574,7 +587,8 @@ async def local_candidates(
 
     async def query_one(model_name: str, backend: str) -> str:
         try:
-            result = await chat(model_name, backend, messages, 4096)
+            result = await chat(model_name, backend, messages, 4096,
+                                think=thinking_enabled("reasoning"))
             return f"### {model_name} [{backend}]\n\n{result}"
         except Exception as e:
             return f"### {model_name} [{backend}]\n\nError: {e}"
@@ -625,7 +639,8 @@ async def local_summarize(
          "content": f"{prompt}\n\n{full_text}"},
     ]
 
-    result = await chat(model_name, backend, messages, max_tokens)
+    result = await chat(model_name, backend, messages, max_tokens,
+                        think=thinking_enabled("long_context"))
     return f"[{model_name} via {backend}]\n\n{result}"
 
 
@@ -846,7 +861,8 @@ async def local_dispatch(
 
     async def _run():
         try:
-            result = await chat(model_name, backend, messages, 8192)
+            result = await chat(model_name, backend, messages, 8192,
+                                think=thinking_enabled(task_type))
             _jobs[job_id]["result"] = f"[{model_name} via {backend}]\n\n{result}"
             _jobs[job_id]["status"] = "done"
         except Exception as e:

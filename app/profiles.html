@@ -111,6 +111,14 @@ body {
 .badge.active-badge { background: rgba(0,122,255,0.12); color: var(--accent); }
 .card.too-large { opacity: 0.35; cursor: not-allowed; }
 .card.too-large:hover { border-color: transparent; }
+.think-toggle {
+  font-size: 10px; padding: 2px 8px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--surface2);
+  color: var(--text3); cursor: pointer; transition: all 0.15s;
+  flex-shrink: 0;
+}
+.think-toggle.on { background: rgba(175,82,222,0.12); color: #af52de; border-color: #af52de; }
+.think-toggle:hover { border-color: var(--accent); }
 .footer { text-align: center; color: var(--text3); font-size: 11px; margin-top: 24px; }
 </style>
 </head>
@@ -133,12 +141,12 @@ const TC = {
   code:'#007aff', general:'#34c759', reasoning:'#af52de',
   long_context:'#5ac8fa', translation:'#ff9f0a',
   vision:'#ff2d55', image_gen:'#ffd60a', transcription:'#ac8e68',
-  embedding:'#64d2ff',
+  embedding:'#64d2ff', uncensored:'#ff6b6b',
 };
-const TASK_ORDER = ['code','general','reasoning','long_context','translation','vision','image_gen','transcription','embedding'];
+const TASK_ORDER = ['code','general','reasoning','long_context','translation','vision','image_gen','transcription','embedding','uncensored'];
 
 let S = { sys:null, models:[], tasks:{}, profiles:{active:null,profiles:{}},
-           sel:null, picks:{}, openTasks:new Set() };
+           sel:null, picks:{}, thinkPicks:{}, openTasks:new Set() };
 
 const fmt = b => b>=1e12?(b/1e12).toFixed(1)+'TB':b>=1e9?Math.round(b/1e9)+'GB':b>=1e6?Math.round(b/1e6)+'MB':b+'B';
 const fmtP = (t,a) => t===a||!a ? t+'B' : t+'B/'+a+'B';
@@ -154,10 +162,22 @@ async function init() {
   ]);
   Object.assign(S, {sys,models,tasks,profiles});
   S.sel = profiles.active || Object.keys(profiles.profiles)[0] || null;
-  if (S.sel && S.profiles.profiles[S.sel]?.tasks)
-    S.picks = {...S.profiles.profiles[S.sel].tasks};
+  if (S.sel) {
+    const p = S.profiles.profiles[S.sel];
+    if (p?.tasks) S.picks = {...p.tasks};
+    if (p?.thinking) S.thinkPicks = {...p.thinking};
+  }
+  fillThinkDefaults();
   fillDefaults();
   render();
+}
+
+function fillThinkDefaults() {
+  for (const [key, info] of Object.entries(S.tasks)) {
+    if (S.thinkPicks[key] === undefined) {
+      S.thinkPicks[key] = info.thinking !== undefined ? info.thinking : true;
+    }
+  }
 }
 
 function fillDefaults() {
@@ -192,7 +212,7 @@ function renderProfiles() {
     b.className = 'prof-btn' + (S.sel===name?' active':'');
     b.textContent = p.label || name;
     b.title = p.description || '';
-    b.onclick = () => { S.sel = name; S.picks = {...(p.tasks||{})}; fillDefaults(); render(); };
+    b.onclick = () => { S.sel = name; S.picks = {...(p.tasks||{})}; S.thinkPicks = {...(p.thinking||{})}; fillThinkDefaults(); fillDefaults(); render(); };
     el.appendChild(b);
   }
   const isActive = S.sel === S.profiles.active;
@@ -307,16 +327,23 @@ function renderTasks() {
     const row = document.createElement('div');
     row.className = 'task-row' + (S.openTasks.has(key) ? ' open' : '');
 
+    const think = S.thinkPicks[key] !== false;
     row.innerHTML = `
       <div class="task-header" data-task="${key}">
         <div class="task-color" style="background:${color}"></div>
         <div class="task-label">${info.label}</div>
         <div class="task-selected">${selectedLabel}</div>
+        <div class="think-toggle ${think ? 'on' : ''}" data-key="${key}">think</div>
         <div class="task-chevron">&#9654;</div>
       </div>
       <div class="task-body"></div>
     `;
 
+    row.querySelector('.think-toggle').onclick = (e) => {
+      e.stopPropagation();
+      S.thinkPicks[key] = !think;
+      render();
+    };
     row.querySelector('.task-header').onclick = () => {
       if (S.openTasks.has(key)) S.openTasks.delete(key);
       else S.openTasks.add(key);
@@ -368,7 +395,7 @@ async function activate(name) {
   if (btn) { btn.disabled = true; btn.textContent = 'Activating...'; }
   try {
     const p = S.profiles.profiles[name];
-    if (p) p.tasks = {...S.picks};
+    if (p) { p.tasks = {...S.picks}; p.thinking = {...S.thinkPicks}; }
     await fetch('/api/profiles', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({name, ...p}),
