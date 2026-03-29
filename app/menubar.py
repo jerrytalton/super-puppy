@@ -1145,6 +1145,8 @@ class LocalModelsApp(rumps.App):
             self.ollama_remote if self.mode == "client" else OLLAMA_LOCAL)
         env["MLX_URL"] = (
             self.mlx_remote if self.mode == "client" else MLX_LOCAL)
+        if self.mode == "client":
+            env["SERVER_RAM_GB"] = "512"
 
         self.profile_server = subprocess.Popen(
             ["uv", "run", "--python", "3.12",
