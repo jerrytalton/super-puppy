@@ -88,7 +88,7 @@ def load_default_prefs() -> dict[str, list[str]]:
     if MCP_PREFS_FILE.exists():
         try:
             prefs = json.loads(MCP_PREFS_FILE.read_text())
-            return {k: (v if isinstance(v, list) else [v]) for k, v in prefs.items()}
+            return {k: (v if isinstance(v, (list, dict)) else [v]) for k, v in prefs.items()}
         except Exception:
             pass
     return {}
