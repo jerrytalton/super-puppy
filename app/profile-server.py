@@ -124,6 +124,10 @@ def ollama_post(path, body, timeout=10):
 
 def get_system_info():
     try:
+        server_gb = os.environ.get("SERVER_RAM_GB")
+        if server_gb:
+            gb = int(server_gb)
+            return {"total_ram_bytes": gb << 30, "total_ram_gb": gb}
         raw = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"]).strip())
         return {"total_ram_bytes": raw, "total_ram_gb": raw >> 30}  # GiB
     except Exception:
@@ -354,7 +358,10 @@ def get_eligible_tasks(name, model_info):
 
 # ── Profiles ─────────────────────────────────────────────────────────
 
+PROFILES_VERSION = 2  # bump to force-refresh preset profiles on all machines
+
 DEFAULT_PROFILES = {
+    "version": PROFILES_VERSION,
     "active": "everyday",
     "profiles": {
         "everyday": {
@@ -412,7 +419,14 @@ DEFAULT_PROFILES = {
 def load_profiles():
     if PROFILES_FILE.exists():
         try:
-            return json.loads(PROFILES_FILE.read_text())
+            data = json.loads(PROFILES_FILE.read_text())
+            if data.get("version", 0) >= PROFILES_VERSION:
+                return data
+            # Version bump: refresh presets, keep user's active selection
+            active = data.get("active", DEFAULT_PROFILES["active"])
+            refreshed = {**DEFAULT_PROFILES, "active": active}
+            save_profiles(refreshed)
+            return refreshed
         except Exception:
             pass
     save_profiles(DEFAULT_PROFILES)
