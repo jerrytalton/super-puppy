@@ -55,6 +55,7 @@ SPECIAL_TASKS = {
     "image_gen": {"label": "Image Gen", "prefixes": ["x/flux2", "x/z-image", "flux", "stable-diffusion"]},
     "transcription": {"label": "Transcription", "prefixes": ["whisper"]},
     "embedding": {"label": "Embedding", "prefixes": ["mxbai-embed", "nomic-embed", "snowflake-arctic", "all-minilm"]},
+    "uncensored": {"label": "Uncensored", "prefixes": ["wizard-vicuna-uncensored", "dolphin", "nous-hermes"]},
 }
 
 TASK_FILTERS = {
@@ -385,11 +386,15 @@ def api_models():
 @app.route("/api/tasks")
 def api_tasks():
     prefs = load_default_prefs()
+    thinking = prefs.get("thinking", {})
     all_tasks = {}
     for key, label in TASK_LABELS.items():
-        all_tasks[key] = {"label": label, "defaults": prefs.get(key, [])}
+        all_tasks[key] = {"label": label, "defaults": prefs.get(key, []),
+                          "thinking": thinking.get(key, True)}
     for key, spec in SPECIAL_TASKS.items():
-        all_tasks[key] = {"label": spec["label"], "defaults": prefs.get(key, []), "prefixes": spec["prefixes"]}
+        all_tasks[key] = {"label": spec["label"], "defaults": prefs.get(key, []),
+                          "prefixes": spec["prefixes"],
+                          "thinking": thinking.get(key, False)}
     return jsonify(all_tasks)
 
 
@@ -433,12 +438,14 @@ def api_profiles_activate(name):
     if not profile:
         return jsonify({"error": f"Profile '{name}' not found"}), 404
 
+    current = load_default_prefs()
     if profile.get("tasks"):
-        current = load_default_prefs()
         for task, pick in profile["tasks"].items():
             existing = current.get(task, [])
             current[task] = [pick] + [m for m in existing if m != pick]
-        save_mcp_prefs(current)
+    if profile.get("thinking"):
+        current.setdefault("thinking", {}).update(profile["thinking"])
+    save_mcp_prefs(current)
 
     data["active"] = name
     save_profiles(data)
@@ -520,7 +527,7 @@ def _chat(model, backend, messages, timeout=120):
         return resp.json()["message"]["content"]
 
 
-def _chat_stream(model, backend, messages):
+def _chat_stream(model, backend, messages, think=True):
     """Stream chat tokens as SSE events. Yields 'data: {...}\\n\\n' strings."""
     if backend == "mlx":
         resp = requests.post(f"{MLX_URL}/v1/chat/completions", json={
@@ -545,9 +552,11 @@ def _chat_stream(model, backend, messages):
             except (json.JSONDecodeError, IndexError, KeyError):
                 pass
     else:
-        resp = requests.post(f"{OLLAMA_URL}/api/chat", json={
-            "model": model, "messages": messages, "stream": True,
-        }, stream=True, timeout=300)
+        body = {"model": model, "messages": messages, "stream": True}
+        if not think:
+            body["think"] = False
+        resp = requests.post(f"{OLLAMA_URL}/api/chat", json=body,
+                             stream=True, timeout=300)
         resp.raise_for_status()
         yield f"data: {json.dumps({'model': model})}\n\n"
         for line in resp.iter_lines():
@@ -577,6 +586,7 @@ def api_test_stream():
     body = request.json
     tool = body.get("tool")
     override = body.get("model")
+    think = body.get("think", True)
 
     def _pick(task):
         if override:
@@ -610,12 +620,15 @@ def api_test_stream():
             {"role": "system", "content": "Summarize this content concisely."},
             {"role": "user", "content": text},
         ]
+    elif tool == "uncensored":
+        model, backend = _pick("uncensored")
+        messages = [{"role": "user", "content": body["prompt"]}]
     else:
         return jsonify({"error": "Not a streaming tool"}), 400
 
     def _safe_stream():
         try:
-            yield from _chat_stream(model, backend, messages)
+            yield from _chat_stream(model, backend, messages, think=think)
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
