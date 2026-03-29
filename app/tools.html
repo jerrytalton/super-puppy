@@ -252,6 +252,7 @@ function saveToolState() {
     fields, model: selectedModel, think: thinkEnabled,
     output: out.innerHTML, outputClass: out.className,
     log: document.getElementById('log').textContent,
+    status: document.getElementById('status').innerHTML,
   };
 }
 
@@ -338,6 +339,14 @@ function selectTool(key) {
     out.className = 'output-box';
   }
   document.getElementById('log').textContent = saved?.log || '';
+  document.getElementById('run').disabled = !!_running[key];
+  const status = document.getElementById('status');
+  if (_running[key]) {
+    const s = ((Date.now() - _running[key]) / 1000).toFixed(0);
+    status.innerHTML = `<span class="elapsed">${s}s</span>`;
+  } else {
+    status.textContent = saved?.status || '';
+  }
 }
 
 function renderModelPicker(task, defaultModel, profileModel) {
@@ -394,24 +403,29 @@ function getField(id) {
 }
 
 const STREAM_TOOLS = new Set(['generate', 'review', 'translate', 'summarize', 'uncensored']);
-let _elapsedTimer = null;
+const _timers = {};   // per-tool elapsed timers
+const _running = {};  // per-tool running flag
 
 function log(msg) {
   document.getElementById('log').textContent = msg;
 }
 
-function startTimer(t0, status) {
-  clearInterval(_elapsedTimer);
-  _elapsedTimer = setInterval(() => {
+function startTimer(tool, t0, status) {
+  clearInterval(_timers[tool]);
+  _timers[tool] = setInterval(() => {
+    if (selected !== tool) return;
     const s = ((Date.now() - t0) / 1000).toFixed(0);
     status.innerHTML = `<span class="elapsed">${s}s</span>`;
   }, 200);
 }
 
-function stopTimer(t0, status, model) {
-  clearInterval(_elapsedTimer);
-  const s = ((Date.now() - t0) / 1000).toFixed(1);
-  status.innerHTML = `<span class="elapsed">${s}s</span> · ${model || '?'}`;
+function stopTimer(tool, t0, status, model) {
+  clearInterval(_timers[tool]);
+  delete _timers[tool];
+  if (selected === tool) {
+    const s = ((Date.now() - t0) / 1000).toFixed(1);
+    status.innerHTML = `<span class="elapsed">${s}s</span> · ${model || '?'}`;
+  }
 }
 
 async function buildBody() {
@@ -453,19 +467,22 @@ async function run() {
   const btn = document.getElementById('run');
   const status = document.getElementById('status');
   const output = document.getElementById('output');
+  const runTool = selected;
+  _running[runTool] = Date.now();
   btn.disabled = true;
   output.textContent = '';
   output.className = 'output-box running';
 
   const t0 = Date.now();
-  startTimer(t0, status);
+  startTimer(runTool, t0, status);
 
   try {
-    log(`Tool: ${selected} · Model: ${selectedModel}`);
+    log(`Tool: ${runTool} · Model: ${selectedModel}`);
     const body = await buildBody();
+    if (selected !== runTool) { btn.disabled = false; return; }
     log(`Request built, sending...`);
 
-    if (STREAM_TOOLS.has(selected)) {
+    if (STREAM_TOOLS.has(runTool)) {
       log(`POST /api/test/stream`);
       const resp = await fetch('/api/test/stream', {
         method: 'POST',
@@ -504,7 +521,8 @@ async function run() {
         }
       }
       output.className = 'output-box';
-      stopTimer(t0, status, model);
+      if (selected === runTool) stopTimer(runTool, t0, status, model);
+      else saveToolState();
 
     } else {
       log(`POST /api/test`);
@@ -514,9 +532,28 @@ async function run() {
         body: JSON.stringify(body),
       });
       const data = await resp.json();
+      if (selected !== runTool) {
+        // User switched tools — stash result without touching the DOM
+        let html, cls = 'output-box';
+        if (data.error) {
+          html = data.error; cls = 'output-box error';
+        } else if (data.image_path) {
+          html = data.result +
+            `<img src="/api/test/image?path=${encodeURIComponent(data.image_path)}">`;
+        } else if (data.embeddings) {
+          const dims = data.dimensions || '?', count = data.count || '?';
+          html = `${count} embedding(s), ${dims} dimensions\n\n` +
+            `First vector (truncated): [${data.embeddings[0]?.slice(0, 8).map(v => v.toFixed(4)).join(', ')}...]`;
+        } else {
+          html = data.result || JSON.stringify(data, null, 2);
+        }
+        toolState[runTool] = {...(toolState[runTool] || {}), output: html, outputClass: cls};
+        btn.disabled = false;
+        return;
+      }
       log(`Response received · model: ${data.model || '?'}`);
       output.className = 'output-box';
-      stopTimer(t0, status, data.model);
+      stopTimer(runTool, t0, status, data.model);
 
       if (data.error) {
         log(`Error: ${data.error}`);
@@ -535,13 +572,16 @@ async function run() {
       }
     }
   } catch (e) {
-    log(`FAILED: ${e.message}`);
-    output.textContent = e.message;
-    output.className = 'output-box error';
-    stopTimer(t0, status, '');
-    status.textContent = 'Failed';
+    if (selected === runTool) {
+      log(`FAILED: ${e.message}`);
+      output.textContent = e.message;
+      output.className = 'output-box error';
+      stopTimer(runTool, t0, status, '');
+      status.textContent = 'Failed';
+    }
   }
-  btn.disabled = false;
+  delete _running[runTool];
+  if (selected === runTool) btn.disabled = false;
 }
 
 let _screenshotPath = null;
