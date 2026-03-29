@@ -131,7 +131,10 @@ if [ ! -f "$APP_SRC" ]; then
     exit 1
 fi
 mkdir -p "$APP_MACOS"
-cc -o "$APP_MACOS/super-puppy" "$APP_SRC" 2>&1
+if ! cc -o "$APP_MACOS/super-puppy" "$APP_SRC" 2>&1; then
+    echo "  ERROR: Failed to compile $APP_SRC"
+    exit 1
+fi
 echo "  Compiled launcher binary"
 
 # Generate .icns from icon.png

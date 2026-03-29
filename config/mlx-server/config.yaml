@@ -62,11 +62,11 @@ models:
     served_model_name: qwen3.5-large
     context_length: 65536
     on_demand: true
-    on_demand_idle_timeout: 120
+    on_demand_idle_timeout: 300
 
   # Speech-to-text — on demand (CACHED)
   - model_path: mlx-community/whisper-large-v3-mlx
     model_type: whisper
     served_model_name: whisper-v3
     on_demand: true
-    on_demand_idle_timeout: 120
+    on_demand_idle_timeout: 300

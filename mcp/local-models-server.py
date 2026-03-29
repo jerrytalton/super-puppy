@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import uuid
 from pathlib import Path
 
@@ -40,6 +41,7 @@ _models: dict = {}  # populated at startup
 
 # Background job store for async dispatch/collect pattern
 _jobs: dict[str, dict] = {}  # job_id -> {task, status, result, model, created}
+_JOB_TTL = 3600  # expire uncollected jobs after 1 hour
 
 
 async def discover_models():
@@ -648,6 +650,7 @@ async def local_summarize(
 
 # HuggingFace embedding models (loaded lazily)
 _hf_embed_models: dict = {}
+_hf_embed_lock = threading.Lock()
 
 HF_EMBED_MODELS = {
     "bge-m3": "BAAI/bge-m3",
@@ -661,10 +664,11 @@ OLLAMA_EMBED_NAMES = ["mxbai-embed-large", "nomic-embed-text",
 
 def _get_hf_model(name: str):
     """Lazy-load a HuggingFace embedding model."""
-    if name not in _hf_embed_models:
-        from sentence_transformers import SentenceTransformer
-        _hf_embed_models[name] = SentenceTransformer(HF_EMBED_MODELS[name])
-    return _hf_embed_models[name]
+    with _hf_embed_lock:
+        if name not in _hf_embed_models:
+            from sentence_transformers import SentenceTransformer
+            _hf_embed_models[name] = SentenceTransformer(HF_EMBED_MODELS[name])
+        return _hf_embed_models[name]
 
 
 async def embed_ollama(model: str, texts: list[str]) -> list[list[float]]:
@@ -851,12 +855,19 @@ async def local_dispatch(
 
     messages.append({"role": "user", "content": user_content})
 
+    # Evict stale jobs before adding new ones
+    now = asyncio.get_event_loop().time()
+    stale = [jid for jid, j in _jobs.items()
+             if j["status"] != "running" and now - j["created"] > _JOB_TTL]
+    for jid in stale:
+        del _jobs[jid]
+
     _jobs[job_id] = {
         "status": "running",
         "model": model_name,
         "backend": backend,
         "result": None,
-        "created": asyncio.get_event_loop().time(),
+        "created": now,
     }
 
     async def _run():
