@@ -324,7 +324,7 @@ function selectTool(key) {
   const task = TOOLS[key].task;
   const defaultModel = taskDefaults[task] || '';
   const profileModel = profilePicks[task] || '';
-  selectedModel = saved?.model ?? profileModel || defaultModel || null;
+  selectedModel = saved?.model ?? (profileModel || defaultModel || null);
   thinkEnabled = saved?.think ?? (taskThinkDefaults[task] !== false);
   pickerOpen = false;
   renderModelPicker(task, defaultModel, profileModel);
@@ -612,7 +612,10 @@ async function toggleRecord(id) {
   }
 }
 
-init();
+init().catch(e => {
+  document.getElementById('model-picker-selected').textContent = 'Error: ' + e.message;
+  console.error('init failed:', e);
+});
 </script>
 </body>
 </html>

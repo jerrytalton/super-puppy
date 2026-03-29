@@ -1,7 +1,8 @@
 #!/bin/bash
 # Launcher for the Super Puppy menu bar app.
-# Uses the .app bundle so macOS attributes permissions (screen recording, etc.)
-# to "Super Puppy" and shows the correct name in alt-tab.
+# Runs the .app binary directly so launchd owns the process and captures
+# stdout/stderr.  macOS reads CFBundleName from the surrounding bundle
+# for Cmd-Tab and permission attribution.
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0" || echo "$0")")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
-exec open -W "$REPO_DIR/app/SuperPuppy.app"
+exec "$REPO_DIR/app/SuperPuppy.app/Contents/MacOS/super-puppy"

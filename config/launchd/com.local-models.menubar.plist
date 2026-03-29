@@ -5,6 +5,10 @@
   Launches the Local Models menu bar app at login.
   Works on both desktop and laptop — the app auto-detects its role.
 
+  Runs the .app binary directly (not via `open`) so launchd owns the
+  process lifecycle and captures stdout/stderr.  The C launcher sets
+  PATH itself, so bash -l is no longer needed.
+
   Installed by install.sh to ~/Library/LaunchAgents/
   Manual control:
     launchctl load   ~/Library/LaunchAgents/com.local-models.menubar.plist
@@ -16,7 +20,6 @@
     <key>ProgramArguments</key>
     <array>
         <string>bash</string>
-        <string>-l</string>
         <string>-c</string>
         <string>exec "$HOME/bin/local-models-menubar"</string>
     </array>
