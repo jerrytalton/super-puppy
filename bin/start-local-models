@@ -164,6 +164,8 @@ fi
 if pgrep -x ollama > /dev/null; then
     if is_desktop && ! curl -sf "http://0.0.0.0:${OLLAMA_PORT}/api/version" > /dev/null 2>&1; then
         echo "Ollama running but not bound to 0.0.0.0 — restarting for LAN access..."
+        # Kill Ollama.app first — it auto-respawns ollama serve with localhost binding
+        pkill -f Ollama.app 2>/dev/null || true
         pkill -x ollama
         sleep 1
         ollama serve > /dev/null 2>&1 &
