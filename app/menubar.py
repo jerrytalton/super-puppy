@@ -1101,6 +1101,10 @@ class LocalModelsApp(rumps.App):
         self._update_menu()
         def _do():
             try:
+                # Kill Ollama.app first — it auto-respawns `ollama serve`
+                # with default (localhost) binding, racing our restart.
+                subprocess.run(["pkill", "-f", "Ollama.app"],
+                               capture_output=True, timeout=5)
                 subprocess.run(["pkill", "-x", "ollama"],
                                capture_output=True, timeout=5)
                 time.sleep(2)
