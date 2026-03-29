@@ -20,7 +20,7 @@ from pathlib import Path
 
 import requests
 import yaml
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, Response, jsonify, request, send_file
 
 # ── Config ───────────────────────────────────────────────────────────
 
@@ -30,6 +30,7 @@ MLX_CONFIG = Path("~/.config/mlx-server/config.yaml").expanduser()
 PROFILES_FILE = Path("~/.config/local-models/profiles.json").expanduser()
 MCP_PREFS_FILE = Path("~/.config/local-models/mcp_preferences.json").expanduser()
 HTML_FILE = Path(__file__).parent / "profiles.html"
+TOOLS_HTML = Path(__file__).parent / "tools.html"
 
 IDLE_TIMEOUT = 600  # 10 minutes
 PORT = int(os.environ.get("PROFILE_SERVER_PORT", "0"))  # 0 = random
@@ -473,6 +474,299 @@ def api_profiles_warm(name):
             pass
 
     return jsonify({"ok": True, "loaded": to_load})
+
+
+# ── Tool tester ──────────────────────────────────────────────────────
+
+
+@app.route("/tools")
+def tools_page():
+    return send_file(str(TOOLS_HTML))
+
+
+def _pick_model_for_task(task):
+    """Resolve preferred model for a task. Returns (model_name, backend) or (None, None)."""
+    prefs = load_default_prefs()
+    models = get_all_models()
+    for candidate in prefs.get(task, []):
+        if candidate in models:
+            return candidate, models[candidate]["backend"]
+        for name in models:
+            if name.startswith(candidate + ":"):
+                return name, models[name]["backend"]
+    return None, None
+
+
+def _chat_url(backend):
+    """Return the chat endpoint URL for a backend."""
+    if backend == "mlx":
+        return f"{MLX_URL}/v1/chat/completions"
+    return f"{OLLAMA_URL}/api/chat"
+
+
+def _chat(model, backend, messages, timeout=120):
+    """Send a chat request to the appropriate backend."""
+    if backend == "mlx":
+        resp = requests.post(f"{MLX_URL}/v1/chat/completions", json={
+            "model": model, "messages": messages,
+        }, timeout=300)
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
+    else:
+        resp = requests.post(f"{OLLAMA_URL}/api/chat", json={
+            "model": model, "messages": messages, "stream": False,
+        }, timeout=timeout)
+        resp.raise_for_status()
+        return resp.json()["message"]["content"]
+
+
+def _chat_stream(model, backend, messages):
+    """Stream chat tokens as SSE events. Yields 'data: {...}\\n\\n' strings."""
+    if backend == "mlx":
+        resp = requests.post(f"{MLX_URL}/v1/chat/completions", json={
+            "model": model, "messages": messages, "stream": True,
+        }, stream=True, timeout=300)
+        resp.raise_for_status()
+        yield f"data: {json.dumps({'model': model})}\n\n"
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            text = line.decode("utf-8", errors="replace")
+            if text.startswith("data: "):
+                text = text[6:]
+            if text.strip() == "[DONE]":
+                break
+            try:
+                chunk = json.loads(text)
+                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                token = delta.get("content", "")
+                if token:
+                    yield f"data: {json.dumps({'token': token})}\n\n"
+            except (json.JSONDecodeError, IndexError, KeyError):
+                pass
+    else:
+        resp = requests.post(f"{OLLAMA_URL}/api/chat", json={
+            "model": model, "messages": messages, "stream": True,
+        }, stream=True, timeout=300)
+        resp.raise_for_status()
+        yield f"data: {json.dumps({'model': model})}\n\n"
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            try:
+                chunk = json.loads(line)
+                msg = chunk.get("message", {})
+                token = msg.get("content", "")
+                thinking = msg.get("thinking", "")
+                if thinking:
+                    yield f"data: {json.dumps({'thinking': True})}\n\n"
+                if token:
+                    yield f"data: {json.dumps({'token': token})}\n\n"
+                if chunk.get("done"):
+                    break
+            except json.JSONDecodeError:
+                pass
+    yield "data: {\"done\": true}\n\n"
+
+
+STREAM_TOOLS = {"generate", "review", "translate", "summarize"}
+
+
+@app.route("/api/test/stream", methods=["POST"])
+def api_test_stream():
+    body = request.json
+    tool = body.get("tool")
+    override = body.get("model")
+
+    def _pick(task):
+        if override:
+            models = get_all_models()
+            if override in models:
+                return override, models[override]["backend"]
+        return _pick_model_for_task(task)
+
+    if tool == "generate":
+        model, backend = _pick("code")
+        if not model:
+            model, backend = _pick("general")
+        messages = [{"role": "user", "content": body["prompt"]}]
+    elif tool == "review":
+        model, backend = _pick("reasoning")
+        messages = [
+            {"role": "system", "content": "Review this code. Be concise."},
+            {"role": "user", "content": body["code"]},
+        ]
+    elif tool == "translate":
+        model, backend = _pick("translation")
+        messages = [
+            {"role": "system",
+             "content": f"Translate to {body['target']}. Output only the translation."},
+            {"role": "user", "content": body["text"]},
+        ]
+    elif tool == "summarize":
+        model, backend = _pick("long_context")
+        text = Path(body["file_path"]).read_text(errors="replace")[:50000]
+        messages = [
+            {"role": "system", "content": "Summarize this content concisely."},
+            {"role": "user", "content": text},
+        ]
+    else:
+        return jsonify({"error": "Not a streaming tool"}), 400
+
+    def _safe_stream():
+        try:
+            yield from _chat_stream(model, backend, messages)
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return Response(_safe_stream(), mimetype="text/event-stream")
+
+
+@app.route("/api/test", methods=["POST"])
+def api_test():
+    body = request.json
+    tool = body.get("tool")
+    override = body.get("model")
+
+    def _pick(task):
+        if override:
+            models = get_all_models()
+            if override in models:
+                return override, models[override]["backend"]
+        return _pick_model_for_task(task)
+
+    try:
+        if tool == "generate":
+            model, backend = _pick("code")
+            if not model:
+                model, backend = _pick("general")
+            result = _chat(model, backend,
+                           [{"role": "user", "content": body["prompt"]}])
+            return jsonify({"result": result, "model": model})
+
+        elif tool == "review":
+            model, backend = _pick("reasoning")
+            result = _chat(model, backend, [
+                {"role": "system", "content": "Review this code. Be concise."},
+                {"role": "user", "content": body["code"]},
+            ])
+            return jsonify({"result": result, "model": model})
+
+        elif tool == "vision":
+            import base64
+            model, backend = _pick("vision")
+            image_data = Path(body["image_path"]).read_bytes()
+            image_b64 = base64.b64encode(image_data).decode()
+            # Vision requires Ollama's native multimodal API
+            resp = requests.post(f"{OLLAMA_URL}/api/chat", json={
+                "model": model, "stream": False,
+                "messages": [{"role": "user",
+                              "content": body.get("prompt", "Describe this image."),
+                              "images": [image_b64]}],
+            }, timeout=120)
+            resp.raise_for_status()
+            return jsonify({"result": resp.json()["message"]["content"], "model": model})
+
+        elif tool == "image_gen":
+            model, backend = _pick("image_gen")
+            resp = requests.post(f"{OLLAMA_URL}/api/generate", json={
+                "model": model, "prompt": body["prompt"], "stream": False,
+            }, timeout=300)
+            resp.raise_for_status()
+            import base64, time as _time
+            image_b64 = resp.json().get("image", "")
+            if not image_b64:
+                return jsonify({"error": f"{model} did not return an image."})
+            out = f"/tmp/test_image_{int(_time.time())}.png"
+            Path(out).write_bytes(base64.b64decode(image_b64))
+            return jsonify({"result": f"Saved to {out}", "image_path": out, "model": model})
+
+        elif tool == "transcribe":
+            model, backend = _pick("transcription")
+            if not model:
+                model = "whisper-v3"
+            audio_path = Path(body["audio_path"])
+            suffix = audio_path.suffix.lstrip(".")
+
+            # Whisper needs wav/mp3/m4a — convert webm via ffmpeg
+            if suffix == "webm":
+                wav_path = audio_path.with_suffix(".wav")
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", str(audio_path), str(wav_path)],
+                    capture_output=True, timeout=30)
+                audio_path = wav_path
+                suffix = "wav"
+
+            audio_data = audio_path.read_bytes()
+            ct_map = {"mp3": "audio/mpeg", "wav": "audio/wav",
+                      "m4a": "audio/mp4", "ogg": "audio/ogg"}
+            ct = ct_map.get(suffix, "application/octet-stream")
+            resp = requests.post(f"{MLX_URL}/v1/audio/transcriptions",
+                                 files={"file": (audio_path.name, audio_data, ct)},
+                                 data={"model": model}, timeout=300)
+            resp.raise_for_status()
+            return jsonify({"result": resp.json().get("text", resp.text), "model": model})
+
+        elif tool == "translate":
+            model, backend = _pick("translation")
+            result = _chat(model, backend, [
+                {"role": "system",
+                 "content": f"Translate to {body['target']}. Output only the translation."},
+                {"role": "user", "content": body["text"]},
+            ])
+            return jsonify({"result": result, "model": model})
+
+        elif tool == "summarize":
+            model, backend = _pick("long_context")
+            text = Path(body["file_path"]).read_text(errors="replace")[:50000]
+            result = _chat(model, backend, [
+                {"role": "system", "content": "Summarize this content concisely."},
+                {"role": "user", "content": text},
+            ])
+            return jsonify({"result": result, "model": model})
+
+        elif tool == "embed":
+            model, backend = _pick("embedding")
+            if not model:
+                model = "mxbai-embed-large"
+            resp = requests.post(f"{OLLAMA_URL}/api/embed", json={
+                "model": model, "input": [body["text"]],
+            }, timeout=60)
+            resp.raise_for_status()
+            embeddings = resp.json().get("embeddings", [])
+            return jsonify({
+                "embeddings": embeddings,
+                "dimensions": len(embeddings[0]) if embeddings else 0,
+                "count": len(embeddings),
+                "model": model,
+            })
+
+        else:
+            return jsonify({"error": f"Unknown tool: {tool}"}), 400
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/test/upload", methods=["POST"])
+def api_test_upload():
+    """Save an uploaded file to /tmp and return its path."""
+    f = request.files.get("file")
+    if not f:
+        return jsonify({"error": "No file uploaded"}), 400
+    import time as _time
+    ext = Path(f.filename).suffix or ".bin"
+    dest = f"/tmp/test_upload_{int(_time.time())}{ext}"
+    f.save(dest)
+    return jsonify({"path": dest})
+
+
+@app.route("/api/test/image")
+def api_test_image():
+    path = request.args.get("path", "")
+    if not path or not Path(path).exists():
+        return "Not found", 404
+    return send_file(path)
 
 
 # ── Main ─────────────────────────────────────────────────────────────
