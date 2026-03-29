@@ -394,10 +394,10 @@ DEFAULT_PROFILES = {
             "description": "Biggest models for everything, damn the RAM",
             "tasks": {
                 "code": "qwen3-coder:latest",
-                "general": "qwen3.5:latest",
+                "general": "qwen3.5-large",
                 "reasoning": "deepseek-v3.1:latest",
-                "long_context": "qwen3.5:latest",
-                "translation": "qwen3.5:latest",
+                "long_context": "qwen3.5-large",
+                "translation": "qwen3.5-large",
                 "vision": "qwen3-vl:235b",
                 "image_gen": "x/z-image-turbo:bf16",
                 "transcription": "whisper-v3",
