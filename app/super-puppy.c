@@ -61,7 +61,7 @@ int main(int argc, char *argv[]) {
     const char *old_path = getenv("PATH");
     char new_path[PATH_MAX * 4];
     snprintf(new_path, sizeof(new_path),
-             "%s/.local/bin:%s/bin:/opt/homebrew/bin:%s",
+             "%s/.local/bin:%s/bin:/opt/homebrew/bin:/usr/local/bin:%s",
              home, home, old_path ? old_path : "/usr/bin:/bin:/usr/sbin:/sbin");
     setenv("PATH", new_path, 1);
 
