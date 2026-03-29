@@ -1040,9 +1040,9 @@ class LocalModelsApp(rumps.App):
         # Menu items
         self.menu_status = rumps.MenuItem("Starting...")
         self.menu_health = rumps.MenuItem("")
-        self.menu_profiles = rumps.MenuItem("Model Profiles...",
+        self.menu_profiles = rumps.MenuItem("Model Profiles",
                                            callback=self.open_profiles)
-        self.menu_tools = rumps.MenuItem("Playground...",
+        self.menu_tools = rumps.MenuItem("Playground",
                                         callback=self.open_tools)
         self.menu_new_models = rumps.MenuItem("New Models")
         self.menu_update = rumps.MenuItem("Update Available")
@@ -1289,7 +1289,9 @@ class LocalModelsApp(rumps.App):
 
     def _ensure_profile_server(self):
         """Start the Flask profile server if not already running."""
-        if self.profile_server is not None and self.profile_server.poll() is None:
+        if (self.profile_server is not None
+                and self.profile_server.poll() is None
+                and self.profile_port is not None):
             return
         import socket
         s = socket.socket()
@@ -1350,8 +1352,8 @@ class LocalModelsApp(rumps.App):
         webview = WKWebView.alloc().initWithFrame_configuration_(
             window.contentView().bounds(), config)
         webview.setAutoresizingMask_(0x12)
-        url = NSURL.URLWithString_(
-            f"http://127.0.0.1:{self.profile_port}{path}")
+        full_url = f"http://127.0.0.1:{self.profile_port}{path}"
+        url = NSURL.URLWithString_(full_url)
         webview.loadRequest_(NSURLRequest.requestWithURL_(url))
         window.contentView().addSubview_(webview)
 
