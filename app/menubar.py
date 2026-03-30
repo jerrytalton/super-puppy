@@ -1686,10 +1686,17 @@ class LocalModelsApp(rumps.App):
                 pass
             bundle = os.path.join(SCRIPT_DIR, "SuperPuppy.app")
             if os.path.isdir(bundle):
-                subprocess.Popen(["open", bundle])
-                rumps.quit_application()
-            else:
-                os.execv(sys.executable, [sys.executable] + sys.argv)
+                # Detached relaunch: sleep past our quit, then open the app.
+                # Must be fully detached so it survives our exit.
+                subprocess.Popen(
+                    ["bash", "-c",
+                     f"sleep 2 && open '{bundle}'"],
+                    start_new_session=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            from PyObjCTools import AppHelper
+            AppHelper.callAfter(rumps.quit_application)
         else:
             self.menu_update.title = "Update Failed"
             try:
