@@ -517,6 +517,7 @@ async function run() {
       const decoder = new TextDecoder();
       let model = '?';
       let buf = '';
+      let streamText = '';
       let loggedThinking = false;
       while (true) {
         const {done, value} = await reader.read();
@@ -529,19 +530,28 @@ async function run() {
           try {
             const evt = JSON.parse(line.slice(6));
             if (evt.error) { throw new Error(evt.error); }
-            if (evt.model) { model = evt.model; log(`Model: ${model}`); }
-            if (evt.thinking && !loggedThinking) { log(`Thinking...`); loggedThinking = true; }
+            if (evt.model) { model = evt.model; if (selected === runTool) log(`Model: ${model}`); }
+            if (evt.thinking && !loggedThinking) { if (selected === runTool) log(`Thinking...`); loggedThinking = true; }
             if (evt.token) {
-              if (loggedThinking && !output.textContent) log(`Generating output...`);
-              output.textContent += evt.token;
+              streamText += evt.token;
+              if (selected === runTool) {
+                if (loggedThinking && !output.textContent) log(`Generating output...`);
+                output.textContent = streamText;
+              }
             }
-            if (evt.done) { log(`Stream complete`); break; }
+            if (evt.done) { if (selected === runTool) log(`Stream complete`); break; }
           } catch {}
         }
       }
-      output.className = 'output-box';
-      if (selected === runTool) stopTimer(runTool, t0, status, model);
-      else saveToolState();
+      if (selected === runTool) {
+        output.textContent = streamText;
+        output.className = 'output-box';
+        stopTimer(runTool, t0, status, model);
+      } else {
+        toolState[runTool] = {...(toolState[runTool] || {}),
+          output: streamText, outputClass: 'output-box',
+          log: `Stream complete`, status: `${((Date.now() - t0) / 1000).toFixed(1)}s · ${model || '?'}`};
+      }
 
     } else {
       log(`POST /api/test`);
