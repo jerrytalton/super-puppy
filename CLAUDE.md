@@ -48,7 +48,7 @@ Qwen3.5 models (served via MLX) ARE vision-capable. The MCP server must detect t
 
 ## Local Model Tools (MCP)
 
-The `mcp/local-models-server.py` MCP server runs as a persistent SSE service on port 8100, managed by the menu bar app. It exposes Ollama, MLX, and local tool models (TTS via mlx-audio, image editing via mflux) as MCP tools. Claude connects as an SSE client to `http://127.0.0.1:8100/sse`. Wrapper script is `bin/local-models-mcp-detect`.
+The `mcp/local-models-server.py` MCP server runs as a persistent streamable-HTTP service on port 8100, managed by the menu bar app. It exposes Ollama, MLX, and local tool models (TTS via mlx-audio, image editing via mflux) as MCP tools. Claude connects via `type: "http"` to `http://127.0.0.1:8100/mcp`. Wrapper script is `bin/local-models-mcp-detect`.
 
 ## When Modifying This Repo
 
