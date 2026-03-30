@@ -1162,7 +1162,7 @@ async def _startup():
 
 def main():
     asyncio.run(_startup())
-    mcp.run(transport="sse")
+    mcp.run(transport="streamable-http")
 
 
 if __name__ == "__main__":
