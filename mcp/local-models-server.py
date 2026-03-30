@@ -177,6 +177,33 @@ async def discover_models():
         except Exception as e:
             print(f"MLX discovery failed: {e}", file=sys.stderr, flush=True)
 
+        # TTS models (mlx-audio, not served via MLX server)
+        _TTS_MODELS = [
+            ("mlx-community/Voxtral-4B-TTS-2603-mlx-bf16", 4),
+            ("mlx-community/chatterbox-fp16", 0.5),
+        ]
+        for hf_id, params_b in _TTS_MODELS:
+            cache_dir = _hf_cache / f"models--{hf_id.replace('/', '--')}"
+            if cache_dir.exists():
+                models[hf_id] = {
+                    "backend": "mlx-audio",
+                    "total_params_b": params_b,
+                    "active_params_b": params_b,
+                    "context": 0,
+                    "vision": False,
+                }
+
+        # Image edit models (mflux CLI tools)
+        import shutil
+        if shutil.which("mflux-generate-kontext"):
+            models["flux-kontext"] = {
+                "backend": "mflux",
+                "total_params_b": 9,
+                "active_params_b": 9,
+                "context": 0,
+                "vision": False,
+            }
+
     return models
 
 
@@ -233,11 +260,22 @@ def pick_model(task: str, override: str | None = None) -> tuple[str, str]:
         if key == task and candidates:
             break  # task had preferences but none matched; try general
 
-    for name, info in _models.items():
-        if info["backend"] in ("ollama", "mlx"):
-            return name, info["backend"]
+    # Task-specific backend fallbacks
+    _TASK_BACKENDS = {
+        "tts": ("mlx-audio",),
+        "image_edit": ("mflux",),
+    }
+    allowed = _TASK_BACKENDS.get(task)
+    if allowed:
+        for name, info in _models.items():
+            if info["backend"] in allowed:
+                return name, info["backend"]
+    else:
+        for name, info in _models.items():
+            if info["backend"] in ("ollama", "mlx"):
+                return name, info["backend"]
 
-    raise ValueError("No local models available")
+    raise ValueError(f"No model available for task '{task}'")
 
 
 async def chat_ollama(model: str, messages: list[dict],
@@ -523,6 +561,7 @@ async def local_image_edit(
     strength: float = 0.8,
     steps: int = 4,
     seed: int | None = None,
+    model: str | None = None,
 ) -> str:
     """Edit an image using a text prompt with Flux Kontext (local, on Apple Silicon).
 
@@ -536,7 +575,13 @@ async def local_image_edit(
         strength: How much to change the image (0.0 = no change, 1.0 = ignore input). Default 0.8.
         steps: Number of diffusion steps (more = higher quality, slower). Default 4.
         seed: Optional random seed for reproducibility.
+        model: Optional model override. Defaults to best available image edit model.
     """
+    try:
+        selected, backend = pick_model("image_edit", model)
+    except ValueError:
+        return "Error: no image editing model available. Need mflux-generate-kontext installed."
+
     if not Path(image_path).exists():
         return f"Error: input image not found at {image_path}"
 
@@ -544,8 +589,9 @@ async def local_image_edit(
         import time as _time
         output_path = f"/tmp/local_edit_{int(_time.time())}.png"
 
-    print(f"  → edit image: {prompt[:60]}", file=sys.stderr, flush=True)
+    print(f"  → edit image [{selected}]: {prompt[:60]}", file=sys.stderr, flush=True)
 
+    # mflux backend: CLI tool
     cmd = [
         "mflux-generate-kontext",
         "--image-path", image_path,
@@ -572,7 +618,7 @@ async def local_image_edit(
         return f"Error: output image was not created at {output_path}"
 
     size = Path(output_path).stat().st_size
-    return f"[flux-kontext via mflux]\n\nEdited image saved to {output_path} ({size} bytes)"
+    return f"[{selected} via {backend}]\n\nEdited image saved to {output_path} ({size} bytes)"
 
 
 @mcp.tool()
@@ -625,7 +671,7 @@ async def local_speak(
     text: str,
     output_path: str | None = None,
     voice: str = "casual_male",
-    model: str = "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
+    model: str | None = None,
     language: str = "en",
     ref_audio: str | None = None,
     ref_text: str | None = None,
@@ -643,12 +689,16 @@ async def local_speak(
                es_male, es_female, de_male, de_female, it_male, it_female,
                pt_male, pt_female, nl_male, nl_female, ar_male, hi_male, hi_female.
                Ignored when ref_audio is provided (Chatterbox voice cloning).
-        model: HuggingFace model ID. Defaults to Voxtral bf16.
+        model: Optional model override. Defaults to profile-selected TTS model.
                Use "mlx-community/chatterbox-fp16" for voice cloning.
         language: Language code (e.g. "en", "fr", "es", "de"). Default "en".
         ref_audio: Path to a reference audio file for voice cloning (Chatterbox).
         ref_text: Optional transcript of the reference audio (improves cloning).
     """
+    try:
+        model, _ = pick_model("tts", model)
+    except ValueError:
+        return "Error: no TTS model available. Need Voxtral or Chatterbox downloaded."
     if not output_path:
         import time as _time
         output_path = f"/tmp/local_tts_{int(_time.time())}.wav"
