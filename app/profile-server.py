@@ -458,7 +458,7 @@ def get_eligible_tasks(name, model_info):
 
 # ── Profiles ─────────────────────────────────────────────────────────
 
-PROFILES_VERSION = 8  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 9  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -466,7 +466,7 @@ DEFAULT_PROFILES = {
     "profiles": {
         "everyday": {
             "label": "Everyday",
-            "description": "Balanced coverage across all tasks",
+            "description": "Best balance for the 512GB Mac Studio",
             "tasks": {
                 "code": "qwen3-coder:latest",
                 "general": "qwen3.5-fast",
@@ -482,20 +482,20 @@ DEFAULT_PROFILES = {
                 "uncensored": "wizard-vicuna-uncensored:30b",
             },
         },
-        "light": {
-            "label": "Light & Fast",
-            "description": "Small models, quick responses, low memory",
+        "desktop": {
+            "label": "Desktop",
+            "description": "Fits in 64GB — capable models, reasonable VRAM",
             "tasks": {
-                "code": "glm-4.7-flash:latest",
+                "code": "qwen3-coder:latest",
                 "general": "qwen3.5-fast",
-                "reasoning": "qwen3.5-fast",
-                "long_context": "glm-4.7-flash:latest",
+                "reasoning": "nemotron-super",
+                "long_context": "qwen3.5-fast",
                 "translation": "qwen3.5-fast",
                 "vision": "qwen3.5:9b",
-                "image_gen": "x/flux2-klein:latest",
+                "image_gen": "x/z-image-turbo:latest",
                 "image_edit": "black-forest-labs/FLUX.1-Kontext-dev",
                 "transcription": "whisper-v3",
-                "tts": "mlx-community/chatterbox-fp16",
+                "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
                 "embedding": "all-minilm:latest",
                 "uncensored": "wizard-vicuna-uncensored:13b",
             },
