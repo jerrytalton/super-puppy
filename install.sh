@@ -140,30 +140,51 @@ if [ ! -f "$APP_SRC" ]; then
     exit 1
 fi
 mkdir -p "$APP_MACOS"
-if ! cc -o "$APP_MACOS/super-puppy" "$APP_SRC" 2>&1; then
-    echo "  ERROR: Failed to compile $APP_SRC"
-    exit 1
+NEEDS_SIGN=false
+APP_BIN="$APP_MACOS/super-puppy"
+if [ ! -f "$APP_BIN" ] || [ "$APP_SRC" -nt "$APP_BIN" ]; then
+    if ! cc -o "$APP_BIN" "$APP_SRC" 2>&1; then
+        echo "  ERROR: Failed to compile $APP_SRC"
+        exit 1
+    fi
+    echo "  Compiled launcher binary"
+    NEEDS_SIGN=true
+else
+    echo "  Launcher binary up to date"
 fi
-echo "  Compiled launcher binary"
 
 # Generate .icns from icon.png (1x and @2x retina variants)
 mkdir -p "$APP_RES"
-ICONSET=$(mktemp -d)/AppIcon.iconset
-mkdir -p "$ICONSET"
-for pair in "16 16" "32 16" "32 32" "64 32" "128 128" "256 128" "256 256" "512 256" "512 512" "1024 512"; do
-    px=${pair%% *}; base=${pair##* }
-    if [ "$px" = "$((base * 2))" ]; then
-        out="$ICONSET/icon_${base}x${base}@2x.png"
-    else
-        out="$ICONSET/icon_${base}x${base}.png"
-    fi
-    sips -z $px $px "$REPO_DIR/app/icon.png" --out "$out" > /dev/null 2>&1
-done
-iconutil -c icns "$ICONSET" -o "$APP_RES/AppIcon.icns" 2>/dev/null && echo "  Generated app icon" || true
+if [ ! -f "$APP_RES/AppIcon.icns" ] || [ "$REPO_DIR/app/icon.png" -nt "$APP_RES/AppIcon.icns" ]; then
+    ICONSET=$(mktemp -d)/AppIcon.iconset
+    mkdir -p "$ICONSET"
+    for pair in "16 16" "32 16" "32 32" "64 32" "128 128" "256 128" "256 256" "512 256" "512 512" "1024 512"; do
+        px=${pair%% *}; base=${pair##* }
+        if [ "$px" = "$((base * 2))" ]; then
+            out="$ICONSET/icon_${base}x${base}@2x.png"
+        else
+            out="$ICONSET/icon_${base}x${base}.png"
+        fi
+        sips -z $px $px "$REPO_DIR/app/icon.png" --out "$out" > /dev/null 2>&1
+    done
+    iconutil -c icns "$ICONSET" -o "$APP_RES/AppIcon.icns" 2>/dev/null && echo "  Generated app icon" || true
+    NEEDS_SIGN=true
+else
+    echo "  App icon up to date"
+fi
 
-# Ad-hoc code sign (required for TCC / screen recording permission)
-codesign --sign - --force "$REPO_DIR/app/SuperPuppy.app" > /dev/null 2>&1
-echo "  Signed app bundle (ad-hoc)"
+# Ad-hoc code sign — only when binary or icon changed (re-signing invalidates
+# macOS TCC permissions like Screen Recording, forcing the user to re-authorize)
+if $NEEDS_SIGN; then
+    codesign --sign - --force "$REPO_DIR/app/SuperPuppy.app" > /dev/null 2>&1
+    echo "  Signed app bundle (ad-hoc)"
+    echo "  ⚠  Re-signing may require re-enabling Screen Recording permission"
+elif ! codesign --verify "$REPO_DIR/app/SuperPuppy.app" > /dev/null 2>&1; then
+    codesign --sign - --force "$REPO_DIR/app/SuperPuppy.app" > /dev/null 2>&1
+    echo "  Signed app bundle (signature was invalid)"
+else
+    echo "  App signature valid, skipping re-sign"
+fi
 
 # Start the menu bar app
 echo ""
