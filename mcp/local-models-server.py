@@ -52,6 +52,50 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         return JSONResponse({"error": "unauthorized"}, status_code=403)
 
+# ── GPU activity tracking ────────────────────────────────────────────
+# Tracks concurrent requests per backend so tools can warn about contention.
+
+_gpu_active: dict[str, int] = {"ollama": 0, "mlx": 0}
+_gpu_active_details: dict[str, list[str]] = {"ollama": [], "mlx": []}
+_gpu_lock = threading.Lock()
+
+
+class _gpu_request:
+    """Context manager to track active GPU requests per backend."""
+
+    def __init__(self, backend: str, description: str):
+        self.backend = backend
+        self.description = description
+
+    def __enter__(self):
+        with _gpu_lock:
+            _gpu_active[self.backend] += 1
+            _gpu_active_details[self.backend].append(self.description)
+        return self
+
+    def __exit__(self, *exc):
+        with _gpu_lock:
+            _gpu_active[self.backend] -= 1
+            try:
+                _gpu_active_details[self.backend].remove(self.description)
+            except ValueError:
+                pass
+
+
+def _gpu_contention_warning(backend: str) -> str:
+    """Return a warning string if there are other active requests on the backend."""
+    with _gpu_lock:
+        # Count OTHER requests (subtract 1 for the current request)
+        others = _gpu_active[backend] - 1
+        if others <= 0:
+            return ""
+        details = [d for d in _gpu_active_details[backend]
+                   if d != "current"]
+        queue_info = f" ({', '.join(details[:3])})" if details else ""
+        return (f"⚠ GPU contention: {others} other request{'s' if others > 1 else ''} "
+                f"active on {backend}{queue_info}. Response may be slow.\n\n")
+
+
 _KNOWN_ACTIVE = {
     "nemotron_h_moe": {124: 12},
     "deepseek2": {671: 37},
@@ -311,9 +355,13 @@ async def chat_mlx(model: str, messages: list[dict],
 
 async def chat(model: str, backend: str, messages: list[dict],
                max_tokens: int = 4096, think: bool = True) -> str:
-    if backend == "ollama":
-        return await chat_ollama(model, messages, max_tokens, think)
-    return await chat_mlx(model, messages, max_tokens, think)
+    with _gpu_request(backend, f"chat:{model}"):
+        warning = _gpu_contention_warning(backend)
+        if backend == "ollama":
+            result = await chat_ollama(model, messages, max_tokens, think)
+        else:
+            result = await chat_mlx(model, messages, max_tokens, think)
+        return warning + result
 
 
 # ── Tools ────────────────────────────────────────────────────────────
@@ -485,34 +533,36 @@ async def local_vision(
     print(f"  → vision {model_name} ({backend}): {prompt[:50]}",
           file=sys.stderr, flush=True)
 
-    async with httpx.AsyncClient(timeout=300) as client:
-        if backend == "ollama":
-            messages = [{"role": "user", "content": prompt,
-                         "images": images_b64}]
-            body = {"model": model_name, "messages": messages,
-                    "stream": False}
-            if not thinking_enabled("vision"):
-                body["think"] = False
-            resp = await client.post(f"{OLLAMA_URL}/api/chat", json=body)
-            resp.raise_for_status()
-            result = resp.json()["message"]["content"]
-        else:
-            # MLX OpenAI-compatible: images as data URIs in content array
-            content = [{"type": "text", "text": prompt}]
-            for b64 in images_b64:
-                content.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/png;base64,{b64}"},
-                })
-            body = {"model": model_name,
-                    "messages": [{"role": "user", "content": content}],
-                    "max_tokens": 4096, "stream": False}
-            resp = await client.post(
-                f"{MLX_URL}/v1/chat/completions", json=body)
-            resp.raise_for_status()
-            result = resp.json()["choices"][0]["message"]["content"]
+    with _gpu_request(backend, f"vision:{model_name}"):
+        warning = _gpu_contention_warning(backend)
+        async with httpx.AsyncClient(timeout=300) as client:
+            if backend == "ollama":
+                messages = [{"role": "user", "content": prompt,
+                             "images": images_b64}]
+                body = {"model": model_name, "messages": messages,
+                        "stream": False}
+                if not thinking_enabled("vision"):
+                    body["think"] = False
+                resp = await client.post(f"{OLLAMA_URL}/api/chat", json=body)
+                resp.raise_for_status()
+                result = resp.json()["message"]["content"]
+            else:
+                # MLX OpenAI-compatible: images as data URIs in content array
+                content = [{"type": "text", "text": prompt}]
+                for b64 in images_b64:
+                    content.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{b64}"},
+                    })
+                body = {"model": model_name,
+                        "messages": [{"role": "user", "content": content}],
+                        "max_tokens": 4096, "stream": False}
+                resp = await client.post(
+                    f"{MLX_URL}/v1/chat/completions", json=body)
+                resp.raise_for_status()
+                result = resp.json()["choices"][0]["message"]["content"]
 
-    return f"[{model_name} via {backend}]\n\n{result}"
+    return f"{warning}[{model_name} via {backend}]\n\n{result}"
 
 
 @mcp.tool()
@@ -542,13 +592,15 @@ async def local_image(
 
     print(f"  → generate image {selected}: {prompt[:50]}", file=sys.stderr, flush=True)
 
-    async with httpx.AsyncClient(timeout=300) as client:
-        resp = await client.post(
-            f"{OLLAMA_URL}/api/generate",
-            json={"model": selected, "prompt": prompt, "stream": False},
-        )
-        resp.raise_for_status()
-        image_b64 = resp.json().get("image", "")
+    with _gpu_request("ollama", f"image:{selected}"):
+        warning = _gpu_contention_warning("ollama")
+        async with httpx.AsyncClient(timeout=300) as client:
+            resp = await client.post(
+                f"{OLLAMA_URL}/api/generate",
+                json={"model": selected, "prompt": prompt, "stream": False},
+            )
+            resp.raise_for_status()
+            image_b64 = resp.json().get("image", "")
 
     if not image_b64:
         return f"Error: {selected} did not return an image."
@@ -556,7 +608,7 @@ async def local_image(
     image_data = base64.b64decode(image_b64)
     Path(output_path).write_bytes(image_data)
 
-    return f"[{selected} via ollama]\n\nImage saved to {output_path} ({len(image_data)} bytes)"
+    return f"{warning}[{selected} via ollama]\n\nImage saved to {output_path} ({len(image_data)} bytes)"
 
 
 @mcp.tool()
@@ -597,34 +649,37 @@ async def local_image_edit(
 
     print(f"  → edit image [{selected}]: {prompt[:60]}", file=sys.stderr, flush=True)
 
-    # mflux backend: CLI tool
-    cmd = [
-        "mflux-generate-kontext",
-        "--image-path", image_path,
-        "--prompt", prompt,
-        "--output", output_path,
-        "--steps", str(steps),
-        "--image-strength", str(strength),
-    ]
-    if seed is not None:
-        cmd.extend(["--seed", str(seed)])
+    # mflux uses Metal/GPU directly
+    with _gpu_request("mlx", f"image_edit:{selected}"):
+        warning = _gpu_contention_warning("mlx")
 
-    loop = asyncio.get_event_loop()
-    try:
-        proc = await loop.run_in_executor(None, lambda: subprocess.run(
-            cmd, capture_output=True, text=True, timeout=600,
-            env={**os.environ, "PATH": f"/opt/homebrew/bin:{os.environ.get('PATH', '')}"},
-        ))
-        if proc.returncode != 0:
-            return f"Error: mflux-generate-kontext failed:\n{proc.stderr[-500:]}"
-    except subprocess.TimeoutExpired:
-        return "Error: image editing timed out after 10 minutes."
+        cmd = [
+            "mflux-generate-kontext",
+            "--image-path", image_path,
+            "--prompt", prompt,
+            "--output", output_path,
+            "--steps", str(steps),
+            "--image-strength", str(strength),
+        ]
+        if seed is not None:
+            cmd.extend(["--seed", str(seed)])
+
+        loop = asyncio.get_event_loop()
+        try:
+            proc = await loop.run_in_executor(None, lambda: subprocess.run(
+                cmd, capture_output=True, text=True, timeout=600,
+                env={**os.environ, "PATH": f"/opt/homebrew/bin:{os.environ.get('PATH', '')}"},
+            ))
+            if proc.returncode != 0:
+                return f"Error: mflux-generate-kontext failed:\n{proc.stderr[-500:]}"
+        except subprocess.TimeoutExpired:
+            return "Error: image editing timed out after 10 minutes."
 
     if not Path(output_path).exists():
         return f"Error: output image was not created at {output_path}"
 
     size = Path(output_path).stat().st_size
-    return f"[{selected} via {backend}]\n\nEdited image saved to {output_path} ({size} bytes)"
+    return f"{warning}[{selected} via {backend}]\n\nEdited image saved to {output_path} ({size} bytes)"
 
 
 @mcp.tool()
@@ -656,20 +711,22 @@ async def local_transcribe(
                      "flac": "audio/flac"}
     ct = content_types.get(suffix, "application/octet-stream")
 
-    async with httpx.AsyncClient(timeout=300) as client:
-        files = {"file": (Path(audio_path).name, audio_data, ct)}
-        data = {"model": whisper_model}
-        if language:
-            data["language"] = language
+    with _gpu_request("mlx", f"transcribe:{whisper_model}"):
+        warning = _gpu_contention_warning("mlx")
+        async with httpx.AsyncClient(timeout=300) as client:
+            files = {"file": (Path(audio_path).name, audio_data, ct)}
+            data = {"model": whisper_model}
+            if language:
+                data["language"] = language
 
-        resp = await client.post(
-            f"{MLX_URL}/v1/audio/transcriptions",
-            files=files, data=data,
-        )
-        resp.raise_for_status()
-        result = resp.json().get("text", resp.text)
+            resp = await client.post(
+                f"{MLX_URL}/v1/audio/transcriptions",
+                files=files, data=data,
+            )
+            resp.raise_for_status()
+            result = resp.json().get("text", resp.text)
 
-    return f"[{whisper_model} via mlx]\n\n{result}"
+    return f"{warning}[{whisper_model} via mlx]\n\n{result}"
 
 
 @mcp.tool()
@@ -734,11 +791,13 @@ async def local_speak(
             kwargs["ref_text"] = ref_text
         generate_audio(**kwargs)
 
-    loop = asyncio.get_event_loop()
-    try:
-        await loop.run_in_executor(None, _generate)
-    except Exception as e:
-        return f"Error generating speech: {e}"
+    with _gpu_request("mlx", f"tts:{model.split('/')[-1]}"):
+        warning = _gpu_contention_warning("mlx")
+        loop = asyncio.get_event_loop()
+        try:
+            await loop.run_in_executor(None, _generate)
+        except Exception as e:
+            return f"Error generating speech: {e}"
 
     # generate_audio appends _000 to the prefix
     actual_path = os.path.join(out_dir, f"{prefix}_000.{fmt}")
@@ -756,7 +815,7 @@ async def local_speak(
             return f"Error: audio file was not created at {output_path}"
 
     size = Path(final_path).stat().st_size
-    return f"[{model.split('/')[-1]} via mlx-audio]\n\nAudio saved to {final_path} ({size} bytes)"
+    return f"{warning}[{model.split('/')[-1]} via mlx-audio]\n\nAudio saved to {final_path} ({size} bytes)"
 
 
 @mcp.tool()
