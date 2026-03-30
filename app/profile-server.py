@@ -53,7 +53,7 @@ TASK_LABELS = {
 
 SPECIAL_TASKS = {
     "vision": {"label": "Vision", "prefixes": ["qwen3-vl", "llava", "moondream"]},
-    "image_gen": {"label": "Image Gen", "prefixes": ["x/flux2", "x/z-image", "flux", "stable-diffusion"]},
+    "image_gen": {"label": "Image Gen", "prefixes": ["x/flux2", "x/z-image", "FLUX.1-dev", "FLUX.2", "stable-diffusion"]},
     "transcription": {"label": "Transcription", "prefixes": ["whisper"]},
     "tts": {"label": "Text-to-Speech", "prefixes": ["voxtral", "chatterbox"]},
     "image_edit": {"label": "Image Edit", "prefixes": ["FLUX.1-Kontext", "FLUX.1-Fill"]},
@@ -61,27 +61,31 @@ SPECIAL_TASKS = {
     "uncensored": {"label": "Uncensored", "prefixes": ["wizard-vicuna-uncensored", "dolphin", "nous-hermes"]},
 }
 
+# Names excluded from ALL general LLM tasks (not language models)
+_ALWAYS_EXCLUDE = ["vl", "flux", "z-image", "whisper", "ocr", "embed", "minilm",
+                   "tinyllama", "goonsai", "nsfw"]
+
 TASK_FILTERS = {
     "code": {
         "priority_names": ["coder"],
         "include_names": ["qwen3.5", "deepseek", "cogito", "nemotron", "gpt-oss", "llama3.3", "glm"],
-        "exclude_names": ["vl", "flux", "z-image", "whisper", "ocr", "tinyllama", "goonsai", "nsfw"],
+        "exclude_names": _ALWAYS_EXCLUDE,
         "min_active_b": 3,
     },
     "general": {
-        "exclude_names": ["coder", "vl", "flux", "z-image", "whisper", "ocr", "tinyllama", "goonsai", "nsfw"],
+        "exclude_names": ["coder"] + _ALWAYS_EXCLUDE,
         "min_active_b": 3,
     },
     "reasoning": {
-        "exclude_names": ["coder", "vl", "flux", "z-image", "whisper", "ocr", "tinyllama", "goonsai", "nsfw"],
+        "exclude_names": ["coder"] + _ALWAYS_EXCLUDE,
         "min_active_b": 10,
     },
     "long_context": {
-        "exclude_names": ["vl", "flux", "z-image", "whisper", "ocr", "tinyllama", "goonsai", "nsfw"],
+        "exclude_names": _ALWAYS_EXCLUDE,
         "min_ctx": 64000,
     },
     "translation": {
-        "exclude_names": ["coder", "vl", "flux", "z-image", "whisper", "ocr", "tinyllama", "goonsai", "nsfw"],
+        "exclude_names": ["coder"] + _ALWAYS_EXCLUDE,
         "min_active_b": 3,
     },
 }
@@ -422,16 +426,31 @@ def model_matches_filter(name, model_info, task_filter):
     return True
 
 
+_LLM_BACKENDS = {"ollama", "mlx"}
+
+
 def get_eligible_tasks(name, model_info):
     """Return list of task keys this model qualifies for."""
     tasks = []
-    for task, filt in TASK_FILTERS.items():
-        if model_matches_filter(name, model_info, filt):
-            tasks.append(task)
+    backend = model_info.get("backend", "")
+
+    # TASK_FILTERS (code, general, reasoning, etc.) only apply to LLM backends
+    if backend in _LLM_BACKENDS:
+        for task, filt in TASK_FILTERS.items():
+            if model_matches_filter(name, model_info, filt):
+                tasks.append(task)
+
+    # SPECIAL_TASKS match by name prefix (vision, image_gen, tts, etc.)
     for task, spec in SPECIAL_TASKS.items():
         name_lower = name.lower()
         if any(name.startswith(p) or p.lower() in name_lower for p in spec["prefixes"]):
             tasks.append(task)
+
+    # HF-scanned models carry a task from the scanner — ensure it's included
+    family = model_info.get("family", "")
+    if family in SPECIAL_TASKS and family not in tasks:
+        tasks.append(family)
+
     if model_info.get("has_vision") and "vision" not in tasks:
         tasks.append("vision")
     return tasks
@@ -439,7 +458,7 @@ def get_eligible_tasks(name, model_info):
 
 # ── Profiles ─────────────────────────────────────────────────────────
 
-PROFILES_VERSION = 7  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 8  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -450,10 +469,10 @@ DEFAULT_PROFILES = {
             "description": "Balanced coverage across all tasks",
             "tasks": {
                 "code": "qwen3-coder:latest",
-                "general": "qwen3.5-large",
-                "reasoning": "qwen3.5-large",
+                "general": "qwen3.5-fast",
+                "reasoning": "nemotron-super",
                 "long_context": "qwen3.5-large",
-                "translation": "qwen3.5-large",
+                "translation": "qwen3.5-fast",
                 "vision": "qwen3.5-large",
                 "image_gen": "x/z-image-turbo:latest",
                 "image_edit": "black-forest-labs/FLUX.1-Kontext-dev",
@@ -469,7 +488,7 @@ DEFAULT_PROFILES = {
             "tasks": {
                 "code": "glm-4.7-flash:latest",
                 "general": "qwen3.5-fast",
-                "reasoning": "glm-4.7-flash:latest",
+                "reasoning": "qwen3.5-fast",
                 "long_context": "glm-4.7-flash:latest",
                 "translation": "qwen3.5-fast",
                 "vision": "qwen3.5:9b",
