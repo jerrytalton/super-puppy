@@ -352,26 +352,16 @@ def check_repo_update_available():
 def apply_repo_update():
     """Pull latest and re-run install.sh. Returns (success, output)."""
     try:
-        # Only stash if there are local changes
-        status = subprocess.run(
-            ["git", "-C", REPO_DIR, "status", "--porcelain"],
-            capture_output=True, text=True, timeout=5)
-        has_changes = bool(status.stdout.strip())
-        if has_changes:
-            subprocess.run(["git", "-C", REPO_DIR, "stash", "--quiet"],
-                           capture_output=True, timeout=10)
-        pull = subprocess.run(["git", "-C", REPO_DIR, "pull", "--rebase"],
-                              capture_output=True, text=True, timeout=30)
+        pull = subprocess.run(
+            ["git", "-C", REPO_DIR, "pull", "--rebase", "--autostash"],
+            capture_output=True, text=True, timeout=30)
         if pull.returncode != 0:
-            return False, pull.stderr.strip()
-        if has_changes:
-            pop = subprocess.run(
-                ["git", "-C", REPO_DIR, "stash", "pop", "--quiet"],
-                capture_output=True, text=True, timeout=10)
-            if pop.returncode != 0:
-                return False, f"Stash pop failed: {pop.stderr.strip()}"
-        subprocess.run(["bash", os.path.join(REPO_DIR, "install.sh")],
-                       capture_output=True, text=True, timeout=60)
+            return False, pull.stderr.strip() or pull.stdout.strip()
+        install = subprocess.run(
+            ["bash", os.path.join(REPO_DIR, "install.sh")],
+            capture_output=True, text=True, timeout=60)
+        if install.returncode != 0:
+            return False, f"install.sh failed: {install.stderr.strip()}"
         return True, pull.stdout.strip()
     except Exception as e:
         return False, str(e)
@@ -1770,15 +1760,14 @@ class LocalModelsApp(rumps.App):
             from PyObjCTools import AppHelper
             AppHelper.callAfter(rumps.quit_application)
         else:
-            self.menu_update.title = "Update Failed"
+            logging.error("Update failed: %s", output)
+            short = output[:80] if output else "unknown error"
+            self.menu_update.title = f"Update Failed: {short}"
+            self.menu_update.set_callback(self._update_now)
             try:
                 rumps.notification("Super Puppy", "Update failed", output[:100])
             except RuntimeError:
                 pass
-            def _restore_update_title():
-                self.menu_update.title = f"Update Available ({self.update_available} commits)"
-                self.menu_update.set_callback(self._update_now)
-            threading.Timer(5.0, _restore_update_title).start()
 
     # -------------------------------------------------------------------
     # Easter egg
