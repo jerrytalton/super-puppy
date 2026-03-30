@@ -50,11 +50,16 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         if not MCP_AUTH_TOKEN:
             return await call_next(request)
-        if request.url.path in _AUTH_EXEMPT_PATHS:
+        path = request.url.path
+        if path in _AUTH_EXEMPT_PATHS:
+            return await call_next(request)
+        # Let OAuth discovery get a clean 404 so Claude Code doesn't
+        # mistake our 403 for "auth server exists but denied access"
+        if ".well-known" in path or path in ("/register", "/sse"):
             return await call_next(request)
         # Exempt session-bound requests (SSE /messages/ with session_id).
         # These only work with sessions created via authenticated /mcp init.
-        if request.url.path.startswith("/messages") and request.query_params.get("session_id"):
+        if path.startswith("/messages") and request.query_params.get("session_id"):
             return await call_next(request)
         auth = request.headers.get("authorization", "")
         if auth == f"Bearer {MCP_AUTH_TOKEN}":
