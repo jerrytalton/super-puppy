@@ -56,7 +56,7 @@ SPECIAL_TASKS = {
     "image_gen": {"label": "Image Gen", "prefixes": ["x/flux2", "x/z-image", "flux", "stable-diffusion"]},
     "transcription": {"label": "Transcription", "prefixes": ["whisper"]},
     "tts": {"label": "Text-to-Speech", "prefixes": ["voxtral", "chatterbox"]},
-    "image_edit": {"label": "Image Edit", "prefixes": ["flux-kontext"]},
+    "image_edit": {"label": "Image Edit", "prefixes": ["FLUX.1-Kontext", "FLUX.1-Fill"]},
     "embedding": {"label": "Embedding", "prefixes": ["mxbai-embed", "nomic-embed", "snowflake-arctic", "all-minilm"]},
     "uncensored": {"label": "Uncensored", "prefixes": ["wizard-vicuna-uncensored", "dolphin", "nous-hermes"]},
 }
@@ -358,57 +358,33 @@ def _fetch_all_models():
             "on_demand": on_demand,
         }
 
-    # TTS models (loaded directly via mlx-audio, not through mlx-openai-server)
-    TTS_MODELS = [
-        {
-            "hf_id": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
-            "name": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
-            "total_params_b": 4,
-            "active_params_b": 4,
-            "vram_estimate_gb": 7.5,
-        },
-        {
-            "hf_id": "mlx-community/chatterbox-fp16",
-            "name": "mlx-community/chatterbox-fp16",
-            "total_params_b": 0.5,
-            "active_params_b": 0.5,
-            "vram_estimate_gb": 2.4,
-        },
-    ]
-    for tts in TTS_MODELS:
-        cache_dir = hf_cache / f"models--{tts['hf_id'].replace('/', '--')}"
-        is_downloaded = cache_dir.exists()
-        models[tts["name"]] = {
-            "name": tts["name"],
-            "backend": "mlx-audio",
-            "disk_bytes": int(tts["vram_estimate_gb"] * 1e9),
-            "vram_bytes": int(tts["vram_estimate_gb"] * 1e9),
-            "total_params_b": tts["total_params_b"],
-            "active_params_b": tts["active_params_b"],
+    # HuggingFace cache: TTS, transcription, image_edit, image_gen models
+    _TASK_BACKENDS = {
+        "tts": "mlx-audio",
+        "transcription": "mlx",
+        "image_edit": "mflux",
+        "image_gen": "mflux",
+    }
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+    from hf_scanner import scan_hf_cache
+    for hf_model in scan_hf_cache(_TASK_BACKENDS.keys()):
+        name = hf_model["name"]
+        if name in models:
+            continue
+        quant_str = f"{hf_model['quant_bits']}bit" if hf_model["quant_bits"] else ""
+        if not quant_str and hf_model["dtypes"]:
+            quant_str = hf_model["dtypes"][0].lower()
+        models[name] = {
+            "name": name,
+            "backend": _TASK_BACKENDS[hf_model["task"]],
+            "disk_bytes": hf_model["disk_bytes"],
+            "vram_bytes": hf_model["vram_bytes"],
+            "total_params_b": hf_model["total_params_b"],
+            "active_params_b": hf_model["total_params_b"],
             "context": 0,
             "has_vision": False,
-            "family": "tts",
-            "quant": "bf16" if "bf16" in tts["name"] else "fp16",
-            "is_loaded": False,
-            "is_downloaded": is_downloaded,
-            "on_demand": True,
-            "expires_at": None,
-        }
-
-    # Image edit models (mflux CLI tools)
-    import shutil
-    if shutil.which("mflux-generate-kontext"):
-        models["flux-kontext"] = {
-            "name": "flux-kontext",
-            "backend": "mflux",
-            "disk_bytes": int(31e9),
-            "vram_bytes": int(10e9),
-            "total_params_b": 12,
-            "active_params_b": 12,
-            "context": 0,
-            "has_vision": False,
-            "family": "image_edit",
-            "quant": "",
+            "family": hf_model["task"],
+            "quant": quant_str,
             "is_loaded": False,
             "on_demand": True,
             "expires_at": None,
@@ -454,7 +430,7 @@ def get_eligible_tasks(name, model_info):
             tasks.append(task)
     for task, spec in SPECIAL_TASKS.items():
         name_lower = name.lower()
-        if any(name.startswith(p) or p in name_lower for p in spec["prefixes"]):
+        if any(name.startswith(p) or p.lower() in name_lower for p in spec["prefixes"]):
             tasks.append(task)
     if model_info.get("has_vision") and "vision" not in tasks:
         tasks.append("vision")
@@ -463,7 +439,7 @@ def get_eligible_tasks(name, model_info):
 
 # ── Profiles ─────────────────────────────────────────────────────────
 
-PROFILES_VERSION = 6  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 7  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -480,7 +456,7 @@ DEFAULT_PROFILES = {
                 "translation": "qwen3.5-large",
                 "vision": "qwen3.5-large",
                 "image_gen": "x/z-image-turbo:latest",
-                "image_edit": "flux-kontext",
+                "image_edit": "black-forest-labs/FLUX.1-Kontext-dev",
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
                 "embedding": "all-minilm:latest",
@@ -498,7 +474,7 @@ DEFAULT_PROFILES = {
                 "translation": "qwen3.5-fast",
                 "vision": "qwen3.5:9b",
                 "image_gen": "x/flux2-klein:latest",
-                "image_edit": "flux-kontext",
+                "image_edit": "black-forest-labs/FLUX.1-Kontext-dev",
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/chatterbox-fp16",
                 "embedding": "all-minilm:latest",
@@ -516,7 +492,7 @@ DEFAULT_PROFILES = {
                 "translation": "qwen3.5-large",
                 "vision": "qwen3-vl:235b",
                 "image_gen": "x/z-image-turbo:bf16",
-                "image_edit": "flux-kontext",
+                "image_edit": "black-forest-labs/FLUX.1-Kontext-dev",
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
                 "embedding": "mxbai-embed-large:latest",
@@ -534,7 +510,7 @@ DEFAULT_PROFILES = {
                 "translation": "qwen3.5-fast",
                 "vision": "qwen3.5:9b",
                 "image_gen": "x/flux2-klein:latest",
-                "image_edit": "flux-kontext",
+                "image_edit": "black-forest-labs/FLUX.1-Kontext-dev",
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/chatterbox-fp16",
                 "embedding": "all-minilm:latest",
@@ -944,6 +920,7 @@ def api_test():
             return jsonify({"result": result, "model": model})
 
         elif tool == "image_edit":
+            model, backend = _pick("image_edit")
             image_path = body.get("image_path", "")
             prompt = body.get("prompt", "")
             import time as _time
@@ -965,7 +942,7 @@ def api_test():
                 return jsonify({
                     "result": f"Saved to {out_path}",
                     "image_path": out_path,
-                    "model": "flux-kontext",
+                    "model": model,
                 })
             except Exception as e:
                 return jsonify({"error": str(e)})
@@ -1011,7 +988,8 @@ def api_test():
             return jsonify({"result": resp.json().get("text", resp.text), "model": model})
 
         elif tool == "speak":
-            model = body.get("model") or "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16"
+            model, _ = _pick("tts")
+            model = body.get("model") or model
             voice = body.get("voice", "casual_male")
             lang = body.get("language", "en")
             text = body.get("text", "")
