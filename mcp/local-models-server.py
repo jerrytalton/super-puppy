@@ -43,9 +43,18 @@ if not MCP_AUTH_TOKEN:
 mcp = FastMCP("local-models", host="127.0.0.1", port=MCP_PORT)
 
 
+_AUTH_EXEMPT_PATHS = {"/gpu"}
+
+
 class BearerAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         if not MCP_AUTH_TOKEN:
+            return await call_next(request)
+        if request.url.path in _AUTH_EXEMPT_PATHS:
+            return await call_next(request)
+        # Exempt session-bound requests (SSE /messages/ with session_id).
+        # These only work with sessions created via authenticated /mcp init.
+        if request.url.path.startswith("/messages") and request.query_params.get("session_id"):
             return await call_next(request)
         auth = request.headers.get("authorization", "")
         if auth == f"Bearer {MCP_AUTH_TOKEN}":
@@ -1238,12 +1247,26 @@ async def _startup():
           file=sys.stderr, flush=True)
 
 
+async def _gpu_status(request):
+    """Lightweight endpoint for Playground to poll GPU activity."""
+    with _gpu_lock:
+        return JSONResponse({
+            "ollama": {"active": _gpu_active["ollama"],
+                       "tasks": list(_gpu_active_details["ollama"])},
+            "mlx": {"active": _gpu_active["mlx"],
+                    "tasks": list(_gpu_active_details["mlx"])},
+        })
+
+
 def main():
     asyncio.run(_startup())
     if MCP_AUTH_TOKEN:
         import uvicorn
+        from starlette.routing import Route
         app = mcp.streamable_http_app()
         app.add_middleware(BearerAuthMiddleware)
+        # Add unauthenticated status endpoint
+        app.routes.append(Route("/gpu", _gpu_status))
         config = uvicorn.Config(
             app, host=mcp.settings.host, port=mcp.settings.port,
             log_level=mcp.settings.log_level.lower())
