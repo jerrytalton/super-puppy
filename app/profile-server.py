@@ -820,7 +820,7 @@ def _chat_stream(model, backend, messages, think=True):
     yield "data: {\"done\": true}\n\n"
 
 
-STREAM_TOOLS = {"generate", "review", "translate", "summarize"}
+STREAM_TOOLS = {"code", "general", "review", "translate", "summarize"}
 
 
 @app.route("/api/test/stream", methods=["POST"])
@@ -837,10 +837,15 @@ def api_test_stream():
                 return override, models[override]["backend"]
         return _pick_model_for_task(task)
 
-    if tool == "generate":
+    if tool == "code":
         model, backend = _pick("code")
         if not model:
             model, backend = _pick("general")
+        messages = [{"role": "user", "content": body["prompt"]}]
+    elif tool == "general":
+        model, backend = _pick("general")
+        if not model:
+            model, backend = _pick("code")
         messages = [{"role": "user", "content": body["prompt"]}]
     elif tool == "review":
         model, backend = _pick("reasoning")
@@ -894,10 +899,11 @@ def api_test():
         return _pick_model_for_task(task)
 
     try:
-        if tool == "generate":
-            model, backend = _pick("code")
+        if tool in ("code", "general"):
+            task = "code" if tool == "code" else "general"
+            model, backend = _pick(task)
             if not model:
-                model, backend = _pick("general")
+                model, backend = _pick("code" if task == "general" else "general")
             result = _chat(model, backend,
                            [{"role": "user", "content": body["prompt"]}])
             return jsonify({"result": result, "model": model})
@@ -1144,6 +1150,21 @@ def api_test_audio():
     if not path or not _is_safe_test_path(path) or not Path(path).exists():
         return "Not found", 404
     return send_file(path, mimetype="audio/wav")
+
+
+MCP_PORT = int(os.environ.get("MCP_PORT", "8100"))
+
+
+@app.route("/api/gpu")
+def api_gpu():
+    """Proxy GPU activity status from the MCP server."""
+    try:
+        resp = requests.get(f"http://127.0.0.1:{MCP_PORT}/gpu", timeout=2)
+        return Response(resp.content, status=resp.status_code,
+                        content_type="application/json")
+    except Exception:
+        return jsonify({"ollama": {"active": 0, "tasks": []},
+                        "mlx": {"active": 0, "tasks": []}})
 
 
 # ── Main ─────────────────────────────────────────────────────────────
