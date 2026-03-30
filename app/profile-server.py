@@ -497,7 +497,7 @@ DEFAULT_PROFILES = {
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/chatterbox-fp16",
                 "embedding": "all-minilm:latest",
-                "uncensored": "wizard-vicuna-uncensored:30b",
+                "uncensored": "wizard-vicuna-uncensored:13b",
             },
         },
         "maximum": {
