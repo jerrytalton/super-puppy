@@ -137,12 +137,18 @@ if ! cc -o "$APP_MACOS/super-puppy" "$APP_SRC" 2>&1; then
 fi
 echo "  Compiled launcher binary"
 
-# Generate .icns from icon.png
+# Generate .icns from icon.png (1x and @2x retina variants)
 mkdir -p "$APP_RES"
 ICONSET=$(mktemp -d)/AppIcon.iconset
 mkdir -p "$ICONSET"
-for size in 16 32 64 128 256 512; do
-    sips -z $size $size "$REPO_DIR/app/icon.png" --out "$ICONSET/icon_${size}x${size}.png" > /dev/null 2>&1
+for pair in "16 16" "32 16" "32 32" "64 32" "128 128" "256 128" "256 256" "512 256" "512 512" "1024 512"; do
+    px=${pair%% *}; base=${pair##* }
+    if [ "$px" = "$((base * 2))" ]; then
+        out="$ICONSET/icon_${base}x${base}@2x.png"
+    else
+        out="$ICONSET/icon_${base}x${base}.png"
+    fi
+    sips -z $px $px "$REPO_DIR/app/icon.png" --out "$out" > /dev/null 2>&1
 done
 iconutil -c icns "$ICONSET" -o "$APP_RES/AppIcon.icns" 2>/dev/null && echo "  Generated app icon" || true
 
