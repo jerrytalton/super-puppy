@@ -32,6 +32,7 @@ link bin/claude-local              ~/bin/claude-local
 link bin/start-local-models        ~/bin/start-local-models
 link bin/local-models-menubar      ~/bin/local-models-menubar
 link bin/local-models-mcp-detect   ~/bin/local-models-mcp-detect
+link bin/local-models-mcp-auth     ~/bin/local-models-mcp-auth
 
 # Configs
 link config/mlx-server/config.yaml         ~/.config/mlx-server/config.yaml
@@ -62,18 +63,22 @@ fi
 # Register local-models MCP in Claude Code config
 CLAUDE_JSON="$HOME/.claude.json"
 if [ -f "$CLAUDE_JSON" ]; then
+    # Read auth token from 1Password (fall back to cache)
+    OP_REF="op://kasngocpevbljoznv5mz2equga/Super Puppy MCP/credential"
+    MCP_TOKEN=$(op read "$OP_REF" 2>/dev/null || cat "$HOME/.config/local-models/mcp_auth_token" 2>/dev/null || true)
     python3 -c "
-import json
+import json, sys
+token = sys.argv[1]
 with open('$CLAUDE_JSON') as f:
     d = json.load(f)
-d.setdefault('mcpServers', {})['local-models'] = {
-    'type': 'http',
-    'url': 'http://127.0.0.1:8100/mcp'
-}
+entry = {'type': 'http', 'url': 'http://127.0.0.1:8100/mcp'}
+if token:
+    entry['headers'] = {'Authorization': f'Bearer {token}'}
+d.setdefault('mcpServers', {})['local-models'] = entry
 with open('$CLAUDE_JSON', 'w') as f:
     json.dump(d, f, indent=2)
-"
-        echo "  Registered local-models MCP (streamable-http on port 8100) in $CLAUDE_JSON"
+" "$MCP_TOKEN"
+    echo "  Registered local-models MCP (streamable-http on port 8100) in $CLAUDE_JSON"
 else
     echo "  $CLAUDE_JSON not found — run claude once first, then re-run install.sh"
 fi
@@ -86,6 +91,15 @@ if ! command -v uv > /dev/null; then
     echo "  Installing uv..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
     source "$HOME/.local/bin/env" 2>/dev/null || export PATH="$HOME/.local/bin:$PATH"
+fi
+
+if ! command -v op > /dev/null; then
+    if command -v brew > /dev/null; then
+        echo "  Installing 1password-cli..."
+        brew install 1password-cli || true
+    else
+        echo "  WARNING: 1password-cli not found. Install manually: brew install 1password-cli"
+    fi
 fi
 
 if ! command -v ollama > /dev/null; then

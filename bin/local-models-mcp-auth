@@ -1,0 +1,16 @@
+#!/bin/bash
+#
+# Outputs MCP auth headers as JSON for Claude Code's headersHelper.
+# Reads the bearer token from 1Password.
+
+OP_REF="op://kasngocpevbljoznv5mz2equga/Super Puppy MCP/credential"
+
+TOKEN=$(op read "$OP_REF" 2>/dev/null)
+
+if [ -z "$TOKEN" ]; then
+    echo '{}' >&2
+    echo "local-models-mcp-auth: WARNING: could not read token from 1Password" >&2
+    exit 1
+fi
+
+echo "{\"Authorization\": \"Bearer ${TOKEN}\"}"

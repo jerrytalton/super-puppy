@@ -42,4 +42,21 @@ fi
 export OLLAMA_URL
 export MLX_URL
 
+# Auth token: try 1Password, fall back to cached file
+OP_REF="op://kasngocpevbljoznv5mz2equga/Super Puppy MCP/credential"
+TOKEN_CACHE="$HOME/.config/local-models/mcp_auth_token"
+
+MCP_AUTH_TOKEN=$(op read "$OP_REF" 2>/dev/null || true)
+if [ -n "$MCP_AUTH_TOKEN" ]; then
+    # Cache for next boot (in case 1Password isn't unlocked yet)
+    echo "$MCP_AUTH_TOKEN" > "$TOKEN_CACHE"
+    chmod 600 "$TOKEN_CACHE"
+elif [ -f "$TOKEN_CACHE" ]; then
+    MCP_AUTH_TOKEN=$(cat "$TOKEN_CACHE")
+    echo "local-models MCP: using cached auth token (1Password unavailable)" >&2
+else
+    echo "local-models MCP: WARNING: no auth token available" >&2
+fi
+export MCP_AUTH_TOKEN
+
 exec uv run --python 3.12 "$REPO_DIR/mcp/local-models-server.py"
