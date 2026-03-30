@@ -87,22 +87,19 @@ if [ -f "$CLAUDE_JSON" ]; then
             chmod 600 "$TOKEN_CACHE"
         fi
     fi
-    python3 -c "
-import json, sys
-token = sys.argv[1]
-with open('$CLAUDE_JSON') as f:
-    d = json.load(f)
-entry = {'type': 'http', 'url': 'http://127.0.0.1:8100/mcp'}
-if token:
-    entry['headers'] = {'Authorization': f'Bearer {token}'}
-d.setdefault('mcpServers', {})['local-models'] = entry
-with open('$CLAUDE_JSON', 'w') as f:
-    json.dump(d, f, indent=2)
-" "$MCP_TOKEN"
-    echo "  Registered local-models MCP (streamable-http on port 8100) in $CLAUDE_JSON"
-else
-    echo "  $CLAUDE_JSON not found — run claude once first, then re-run install.sh"
-fi
+    if command -v claude > /dev/null; then
+        claude mcp remove local-models -s local 2>/dev/null || true
+        claude mcp remove local-models -s user 2>/dev/null || true
+        ENTRY='{"type":"http","url":"http://127.0.0.1:8100/mcp"'
+        if [ -n "$MCP_TOKEN" ]; then
+            ENTRY="$ENTRY"',"headers":{"Authorization":"Bearer '"$MCP_TOKEN"'"}'
+        fi
+        ENTRY="$ENTRY"'}'
+        claude mcp add-json -s user local-models "$ENTRY" 2>/dev/null
+        echo "  Registered local-models MCP (streamable-http on port 8100)"
+    else
+        echo "  claude CLI not found — install Claude Code first, then re-run install.sh"
+    fi
 
 # Install dependencies
 echo ""
