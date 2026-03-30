@@ -196,6 +196,24 @@ def get_mlx_models(base_url, timeout=3):
     return []
 
 
+# Known TTS models served directly via mlx-audio (not through mlx-openai-server)
+_TTS_MODELS = [
+    "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
+    "mlx-community/chatterbox-fp16",
+]
+
+
+def get_tts_models():
+    """Get list of downloaded TTS models from HuggingFace cache."""
+    hf_cache = os.path.expanduser("~/.cache/huggingface/hub")
+    available = []
+    for model_id in _TTS_MODELS:
+        cache_dir = os.path.join(hf_cache, f"models--{model_id.replace('/', '--')}")
+        if os.path.isdir(cache_dir):
+            available.append(model_id.split("/")[-1])
+    return available
+
+
 # ---------------------------------------------------------------------------
 # MCP tool preferences
 # ---------------------------------------------------------------------------
@@ -992,6 +1010,8 @@ class LocalModelsApp(rumps.App):
         self.menu_mlx_restart = rumps.MenuItem(
             "Restart MLX", callback=self._restart_mlx)
         self.menu_mlx.add(self.menu_mlx_restart)
+        self.menu_tts = rumps.MenuItem("TTS …")
+        self.tts_models = []
         self.menu_mcp = rumps.MenuItem("MCP …", callback=self._open_mcp_config)
         self.menu_profiles = rumps.MenuItem("Model Profiles",
                                            callback=self.open_profiles)
@@ -1007,6 +1027,7 @@ class LocalModelsApp(rumps.App):
             None,
             self.menu_ollama,
             self.menu_mlx,
+            self.menu_tts,
             self.menu_mcp,
             None,
             self.menu_profiles,
@@ -1296,6 +1317,7 @@ class LocalModelsApp(rumps.App):
 
         self.ollama_models = get_ollama_models(OLLAMA_LOCAL) if self.ollama_ok else []
         self.mlx_models = get_mlx_models(MLX_LOCAL) if self.mlx_ok else []
+        self.tts_models = get_tts_models()
 
         if self.ollama_ok or self.mlx_ok:
             self.mode = "server"
@@ -1354,6 +1376,8 @@ class LocalModelsApp(rumps.App):
                 self.mode = "offline"
                 self.ollama_models = []
                 self.mlx_models = []
+
+        self.tts_models = get_tts_models()
 
     @staticmethod
     def _styled_menu(item, dot, label, detail=""):
@@ -1452,6 +1476,13 @@ class LocalModelsApp(rumps.App):
             "Restart MLX" if is_local else "Remote — restart from server")
         self.menu_mlx_restart.set_callback(
             self._restart_mlx if is_local else None)
+
+        tts_n = len(self.tts_models)
+        if tts_n > 0:
+            self._styled_menu(self.menu_tts, GRN, "TTS",
+                              f"{tts_n} model{'s' if tts_n != 1 else ''}")
+        else:
+            self._styled_menu(self.menu_tts, RED, "TTS", "no models")
 
         self.mcp_configured = is_mcp_configured()
         if self.mcp_configured:
