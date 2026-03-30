@@ -40,7 +40,7 @@ The menu bar app (`app/menubar.py`) launches via `app/SuperPuppy.app` and spawns
 
 ### Task types
 
-Profiles map these task types to models. Standard tasks: `code`, `general`, `reasoning`, `long_context`, `translation`. Special tasks (matched by model capability, not general-purpose): `vision`, `image_gen`, `transcription`, `tts`, `embedding`, `uncensored`.
+Profiles map these task types to models. Standard tasks: `code`, `general`, `reasoning`, `long_context`, `translation`. Special tasks (matched by model capability, not general-purpose): `vision`, `image_gen`, `image_edit`, `transcription`, `tts`, `embedding`, `uncensored`.
 
 ### Vision capability
 
@@ -48,7 +48,7 @@ Qwen3.5 models (served via MLX) ARE vision-capable. The MCP server must detect t
 
 ## Local Model Tools (MCP)
 
-The `mcp/local-models-server.py` MCP server exposes Ollama and MLX models as tools for Claude Code. See global CLAUDE.md for usage guidance. Wrapper script is `bin/local-models-mcp-detect`.
+The `mcp/local-models-server.py` MCP server runs as a persistent SSE service on port 8100, managed by the menu bar app. It exposes Ollama, MLX, and local tool models (TTS via mlx-audio, image editing via mflux) as MCP tools. Claude connects as an SSE client to `http://127.0.0.1:8100/sse`. Wrapper script is `bin/local-models-mcp-detect`.
 
 ## When Modifying This Repo
 

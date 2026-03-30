@@ -29,7 +29,9 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 MLX_URL = os.environ.get("MLX_URL", "http://localhost:8000")
 MCP_PREFS_FILE = Path("~/.config/local-models/mcp_preferences.json").expanduser()
 
-mcp = FastMCP("local-models")
+MCP_PORT = int(os.environ.get("MCP_PORT", "8100"))
+
+mcp = FastMCP("local-models", host="127.0.0.1", port=MCP_PORT)
 
 _KNOWN_ACTIVE = {
     "nemotron_h_moe": {124: 12},
@@ -1123,7 +1125,7 @@ async def _startup():
 
 def main():
     asyncio.run(_startup())
-    mcp.run(transport="stdio")
+    mcp.run(transport="sse")
 
 
 if __name__ == "__main__":
