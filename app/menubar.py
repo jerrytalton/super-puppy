@@ -1073,8 +1073,30 @@ class LocalModelsApp(rumps.App):
             self.servers_started = True
             self._last_restart_attempt = time.time()
             self.mode = "server" if self.desktop else "offline"
+            if self.desktop:
+                self._prevent_sleep()
         except Exception as e:
             rumps.notification("Local Models", "Failed to start services", str(e))
+
+    def _prevent_sleep(self):
+        """Prevent system sleep while serving models (display may still sleep).
+
+        Spawns caffeinate -s, which holds a power assertion until killed.
+        """
+        if getattr(self, '_caffeinate', None) is not None:
+            return
+        self._caffeinate = subprocess.Popen(
+            ["caffeinate", "-s"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    def _allow_sleep(self):
+        """Release the sleep prevention assertion."""
+        proc = getattr(self, '_caffeinate', None)
+        if proc is not None:
+            proc.terminate()
+            self._caffeinate = None
 
     def stop_services(self):
         """Stop local servers."""
@@ -1085,6 +1107,7 @@ class LocalModelsApp(rumps.App):
             )
             self.servers_started = False
             self.mode = "stopped"
+            self._allow_sleep()
             self.refresh(None)
         except Exception:
             pass
