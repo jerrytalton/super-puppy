@@ -164,6 +164,16 @@ const TOOLS = {
   image_gen:   { label: 'Image Gen', task: 'image_gen', fields: [
     {id:'prompt', label:'Prompt', type:'textarea', placeholder:'A cat wearing a space helmet...'},
   ]},
+  speak:       { label: 'Speak', task: 'tts', fields: [
+    {id:'text', label:'Text', type:'textarea', placeholder:'Hello! This is a test of text-to-speech.'},
+    {id:'voice', label:'Voice', type:'select', options: [
+      'casual_male', 'casual_female', 'cheerful_female', 'neutral_male', 'neutral_female',
+      'fr_male', 'fr_female', 'es_male', 'es_female', 'de_male', 'de_female',
+      'it_male', 'it_female', 'pt_male', 'pt_female', 'nl_male', 'nl_female',
+      'ar_male', 'hi_male', 'hi_female',
+    ]},
+    {id:'language', label:'Language', type:'text', placeholder:'en', value:'en'},
+  ]},
   transcribe:  { label: 'Transcribe', task: 'transcription', fields: [
     {id:'audio_path', label:'Audio file', type:'file', accept:'audio/*'},
     {id:'audio_rec', label:'Or record', type:'mic'},
@@ -245,7 +255,7 @@ function saveToolState() {
   const fields = {};
   for (const f of TOOLS[selected].fields) {
     const el = document.getElementById('f_' + f.id);
-    if (el && (f.type === 'text' || f.type === 'textarea')) fields[f.id] = el.value;
+    if (el && (f.type === 'text' || f.type === 'textarea' || f.type === 'select')) fields[f.id] = el.value;
   }
   const out = document.getElementById('output');
   toolState[selected] = {
@@ -305,6 +315,11 @@ function selectTool(key) {
       time.id = 'f_' + f.id + '_time';
       row.appendChild(time);
       div.appendChild(row);
+    } else if (f.type === 'select') {
+      const opts = (f.options || []).map(o =>
+        `<option value="${o}">${o.replace(/_/g, ' ')}</option>`).join('');
+      div.innerHTML = `<label>${f.label}</label>` +
+        `<select id="f_${f.id}">${opts}</select>`;
     } else if (f.type === 'textarea') {
       div.innerHTML = `<label>${f.label}</label>` +
         `<textarea id="f_${f.id}" placeholder="${f.placeholder || ''}"></textarea>`;
@@ -537,6 +552,9 @@ async function run() {
         let html, cls = 'output-box';
         if (data.error) {
           html = data.error; cls = 'output-box error';
+        } else if (data.audio_path) {
+          html = data.result +
+            `<audio controls src="/api/test/audio?path=${encodeURIComponent(data.audio_path)}" style="display:block;margin-top:8px;width:100%"></audio>`;
         } else if (data.image_path) {
           html = data.result +
             `<img src="/api/test/image?path=${encodeURIComponent(data.image_path)}">`;
@@ -559,6 +577,9 @@ async function run() {
         log(`Error: ${data.error}`);
         output.textContent = data.error;
         output.className = 'output-box error';
+      } else if (data.audio_path) {
+        output.innerHTML = data.result +
+          `<audio controls src="/api/test/audio?path=${encodeURIComponent(data.audio_path)}" style="display:block;margin-top:8px;width:100%"></audio>`;
       } else if (data.image_path) {
         output.innerHTML = data.result +
           `<img src="/api/test/image?path=${encodeURIComponent(data.image_path)}">`;

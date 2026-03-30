@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["flask>=3.0", "pyyaml", "requests"]
+# dependencies = ["flask>=3.0", "pyyaml", "requests", "mlx-audio[tts] @ git+https://github.com/Blaizzy/mlx-audio.git"]
 # ///
 """
 Model Profile Server for Super Puppy.
@@ -55,6 +55,7 @@ SPECIAL_TASKS = {
     "vision": {"label": "Vision", "prefixes": ["qwen3-vl", "llava", "moondream"]},
     "image_gen": {"label": "Image Gen", "prefixes": ["x/flux2", "x/z-image", "flux", "stable-diffusion"]},
     "transcription": {"label": "Transcription", "prefixes": ["whisper"]},
+    "tts": {"label": "Text-to-Speech", "prefixes": ["voxtral", "chatterbox"]},
     "embedding": {"label": "Embedding", "prefixes": ["mxbai-embed", "nomic-embed", "snowflake-arctic", "all-minilm"]},
     "uncensored": {"label": "Uncensored", "prefixes": ["wizard-vicuna-uncensored", "dolphin", "nous-hermes"]},
 }
@@ -395,7 +396,7 @@ def get_eligible_tasks(name, model_info):
 
 # ── Profiles ─────────────────────────────────────────────────────────
 
-PROFILES_VERSION = 4  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 5  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -413,6 +414,7 @@ DEFAULT_PROFILES = {
                 "vision": "qwen3.5-large",
                 "image_gen": "x/z-image-turbo:latest",
                 "transcription": "whisper-v3",
+                "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
                 "embedding": "all-minilm:latest",
                 "uncensored": "wizard-vicuna-uncensored:30b",
             },
@@ -429,6 +431,7 @@ DEFAULT_PROFILES = {
                 "vision": "qwen3.5:9b",
                 "image_gen": "x/flux2-klein:latest",
                 "transcription": "whisper-v3",
+                "tts": "mlx-community/chatterbox-fp16",
                 "embedding": "all-minilm:latest",
                 "uncensored": "wizard-vicuna-uncensored:30b",
             },
@@ -445,6 +448,7 @@ DEFAULT_PROFILES = {
                 "vision": "qwen3-vl:235b",
                 "image_gen": "x/z-image-turbo:bf16",
                 "transcription": "whisper-v3",
+                "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
                 "embedding": "mxbai-embed-large:latest",
                 "uncensored": "wizard-vicuna-uncensored:30b",
             },
@@ -461,6 +465,7 @@ DEFAULT_PROFILES = {
                 "vision": "qwen3.5:9b",
                 "image_gen": "x/flux2-klein:latest",
                 "transcription": "whisper-v3",
+                "tts": "mlx-community/chatterbox-fp16",
                 "embedding": "all-minilm:latest",
                 "uncensored": "wizard-vicuna-uncensored:13b",
             },
@@ -907,6 +912,33 @@ def api_test():
             resp.raise_for_status()
             return jsonify({"result": resp.json().get("text", resp.text), "model": model})
 
+        elif tool == "speak":
+            model = body.get("model") or "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16"
+            voice = body.get("voice", "casual_male")
+            lang = body.get("language", "en")
+            text = body.get("text", "")
+            import time as _time
+            out_path = f"/tmp/playground_tts_{int(_time.time())}.wav"
+            out_dir = os.path.dirname(out_path)
+            prefix = Path(out_path).stem
+            try:
+                from mlx_audio.tts.generate import generate_audio
+                generate_audio(
+                    text=text, model=model, voice=voice,
+                    lang_code=lang, output_path=out_dir,
+                    file_prefix=prefix, audio_format="wav",
+                    verbose=False, play=False,
+                )
+                actual = os.path.join(out_dir, f"{prefix}_000.wav")
+                if os.path.exists(actual):
+                    os.rename(actual, out_path)
+                return jsonify({
+                    "result": f"Audio saved to {out_path}",
+                    "audio_path": out_path, "model": model.split("/")[-1],
+                })
+            except Exception as e:
+                return jsonify({"error": str(e)})
+
         elif tool == "translate":
             model, backend = _pick("translation")
             result = _chat(model, backend, [
@@ -1003,6 +1035,14 @@ def api_test_image():
     if not path or not _is_safe_test_path(path) or not Path(path).exists():
         return "Not found", 404
     return send_file(path)
+
+
+@app.route("/api/test/audio")
+def api_test_audio():
+    path = request.args.get("path", "")
+    if not path or not _is_safe_test_path(path) or not Path(path).exists():
+        return "Not found", 404
+    return send_file(path, mimetype="audio/wav")
 
 
 # ── Main ─────────────────────────────────────────────────────────────
