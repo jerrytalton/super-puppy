@@ -1830,8 +1830,14 @@ class LocalModelsApp(rumps.App):
             os.unlink(lock_file)
         except FileNotFoundError:
             pass
-        subprocess.Popen(["open", app_path], start_new_session=True)
-        rumps.quit_application()
+        subprocess.Popen(
+            ["bash", "-c", f"sleep 2 && open '{app_path}'"],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        from PyObjCTools import AppHelper
+        AppHelper.callAfter(rumps.quit_application)
 
     def quit_app(self, _):
         if self.profile_server and self.profile_server.poll() is None:

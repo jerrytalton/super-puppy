@@ -145,14 +145,16 @@ h2 { font-size: 13px; font-weight: 600; color: var(--text2); text-transform: upp
   <span class="status" id="status"></span>
   <span id="log" style="font-size:11px; color:var(--text3); font-family:ui-monospace,monospace; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; flex:1; min-width:0;"></span>
 </div>
-<div id="gpu-status" style="display:none; font-size:11px; color:#e8a735; padding:4px 8px; font-family:ui-monospace,monospace;"></div>
 <h2>Output</h2>
 <div class="output-box" id="output">Select a tool and click Run.</div>
 
 <script>
 const TOOLS = {
-  generate:    { label: 'Generate', task: 'code', fields: [
+  code:        { label: 'Code', task: 'code', fields: [
     {id:'prompt', label:'Prompt', type:'textarea', placeholder:'Write a Python function that...'},
+  ]},
+  general:     { label: 'General', task: 'general', fields: [
+    {id:'prompt', label:'Prompt', type:'textarea', placeholder:'Explain, summarize, brainstorm...'},
   ]},
   review:      { label: 'Review', task: 'reasoning', fields: [
     {id:'code', label:'Code', type:'textarea', placeholder:'Paste code to review...'},
@@ -380,7 +382,13 @@ function renderModelPicker(task, defaultModel, profileModel) {
   const models = eligible.length ? eligible : allModels;
 
   const selLabel = document.getElementById('model-picker-selected');
-  selLabel.textContent = selectedModel ? selectedModel.split(':')[0] : 'none';
+  const selInfo = selectedModel ? allModels.find(m => m.name === selectedModel) : null;
+  const selMeta = selInfo ? [selInfo.backend,
+    selInfo.total_params_b ? fmtP(selInfo.total_params_b, selInfo.active_params_b) : null,
+    selInfo.has_vision ? 'vision' : null].filter(Boolean).join(' \u00b7 ') : '';
+  selLabel.textContent = selectedModel
+    ? selectedModel.split(':')[0] + (selMeta ? ' \u00b7 ' + selMeta : '')
+    : 'none';
   const thinkEl = document.getElementById('think-toggle');
   thinkEl.className = 'think-toggle' + (thinkEnabled ? ' on' : '');
 
@@ -423,12 +431,10 @@ function getField(id) {
   return el ? el.value.trim() : '';
 }
 
-const STREAM_TOOLS = new Set(['generate', 'review', 'translate', 'summarize', 'uncensored']);
+const STREAM_TOOLS = new Set(['code', 'general', 'review', 'translate', 'summarize', 'uncensored']);
 const _timers = {};   // per-tool elapsed timers
 const _gpuPollers = {}; // per-tool GPU status pollers
 const _running = {};  // per-tool running flag
-
-const MCP_PORT = 8100;
 
 function log(msg) {
   document.getElementById('log').textContent = msg;
@@ -439,32 +445,28 @@ function startTimer(tool, t0, status) {
   _timers[tool] = setInterval(() => {
     if (selected !== tool) return;
     const s = ((Date.now() - t0) / 1000).toFixed(0);
-    const gpu = document.getElementById('gpu-status');
-    const gpuText = gpu ? gpu.textContent : '';
-    status.innerHTML = `<span class="elapsed">${s}s</span>${gpuText ? ' · ' + gpuText : ''}`;
+    const gpu = _lastGpuInfo;
+    status.innerHTML = `<span class="elapsed">${s}s</span>${gpu ? ' · <span style="color:#e8a735">' + gpu + '</span>' : ''}`;
   }, 1000);
 }
 
+let _lastGpuInfo = '';
+
 function startGpuPoller(tool) {
   stopGpuPoller(tool);
-  const el = document.getElementById('gpu-status');
-  if (!el) return;
+  _lastGpuInfo = '';
   _gpuPollers[tool] = setInterval(async () => {
     try {
-      const resp = await fetch(`http://127.0.0.1:${MCP_PORT}/gpu`);
+      const resp = await fetch('/api/gpu');
       const data = await resp.json();
-      const total = data.ollama.active + data.mlx.active;
+      const parts = [];
       const tasks = [...data.ollama.tasks, ...data.mlx.tasks];
-      if (total > 0) {
-        el.textContent = `GPU: ${tasks.join(', ')}`;
-        el.style.display = '';
-      } else {
-        el.textContent = '';
-        el.style.display = 'none';
-      }
+      if (tasks.length > 0) parts.push(tasks.join(', '));
+      if (data.mlx.responsive === false) parts.push('MLX busy');
+      if (data.ollama.responsive === false) parts.push('Ollama busy');
+      _lastGpuInfo = parts.length > 0 ? parts.join(' · ') : '';
     } catch {
-      el.textContent = '';
-      el.style.display = 'none';
+      _lastGpuInfo = '';
     }
   }, 2000);
 }
@@ -472,8 +474,7 @@ function startGpuPoller(tool) {
 function stopGpuPoller(tool) {
   clearInterval(_gpuPollers[tool]);
   delete _gpuPollers[tool];
-  const el = document.getElementById('gpu-status');
-  if (el) { el.textContent = ''; el.style.display = 'none'; }
+  _lastGpuInfo = '';
 }
 
 function stopTimer(tool, t0, status, model) {
