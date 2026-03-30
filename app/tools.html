@@ -181,6 +181,7 @@ const TOOLS = {
   transcribe:  { label: 'Transcribe', task: 'transcription', fields: [
     {id:'audio_path', label:'Audio file', type:'file', accept:'audio/*'},
     {id:'audio_rec', label:'Or record', type:'mic'},
+    {id:'language', label:'Language', type:'text', placeholder:'en', value:'en'},
   ]},
   translate:   { label: 'Translate', task: 'translation', fields: [
     {id:'text', label:'Text', type:'textarea', placeholder:'Text to translate...'},

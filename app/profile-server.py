@@ -1085,7 +1085,12 @@ def api_test():
 
 @app.route("/api/test/screenshot", methods=["POST"])
 def api_test_screenshot():
-    """Interactive screenshot — permission attributed to the Super Puppy app bundle."""
+    """Interactive screenshot via system UI (Cmd-Shift-5 style).
+
+    Uses osascript to invoke the system screenshot, which inherits screen
+    recording permission from the frontmost app rather than requiring the
+    profile server's Python binary to be individually authorized.
+    """
     import time as _time
     dest = f"/tmp/screenshot_{int(_time.time())}.png"
     result = subprocess.run(
@@ -1093,10 +1098,11 @@ def api_test_screenshot():
         capture_output=True, text=True, timeout=60)
     if not Path(dest).exists():
         stderr = (result.stderr or "").strip()
-        if "could not create image" in stderr:
+        if "not allowed" in stderr or "could not create image" in stderr:
             return jsonify({
-                "error": "Screen recording permission not granted. Enable Super Puppy "
-                         "in System Settings → Privacy & Security → Screen Recording."
+                "error": "Screen recording permission needed. "
+                         "System Settings → Privacy & Security → Screen Recording "
+                         "→ enable the terminal or app you launched Super Puppy from."
             }), 403
         return jsonify({"error": "Screenshot cancelled."})
     return jsonify({"path": dest})
