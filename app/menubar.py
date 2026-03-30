@@ -1019,8 +1019,7 @@ class LocalModelsApp(rumps.App):
         self.menu_tools = rumps.MenuItem("Playground",
                                         callback=self.open_tools)
         self.menu_update = rumps.MenuItem("Update Available")
-        self.menu_action = rumps.MenuItem("Stop Services",
-                                         callback=self.toggle_services)
+        self.menu_restart = rumps.MenuItem("Restart", callback=self.restart_app)
         self.menu_quit = rumps.MenuItem("Quit", callback=self.quit_app)
 
         self.menu = [
@@ -1034,8 +1033,8 @@ class LocalModelsApp(rumps.App):
             self.menu_tools,
             None,
             self.menu_update,
-            self.menu_action,
             None,
+            self.menu_restart,
             self.menu_quit,
         ]
 
@@ -1550,16 +1549,8 @@ class LocalModelsApp(rumps.App):
             self.menu_update.title = "Up to date"
             self.menu_update.set_callback(None)
 
-        # ── Services action (hidden in client mode) ──
-        if self.mode in ("server", "offline"):
-            self.menu_action.title = "Stop All Services"
-            self.menu_action.set_callback(self.toggle_services)
-        elif self.mode == "stopped":
-            self.menu_action.title = "Start Services"
-            self.menu_action.set_callback(self.toggle_services)
-        else:
-            self.menu_action.title = ""
-            self.menu_action.set_callback(None)
+        # ── Restart (always available) ──
+        self.menu_restart.set_callback(self.restart_app)
 
     # -------------------------------------------------------------------
     # Profile viewer (native WKWebView window)
@@ -1836,6 +1827,22 @@ class LocalModelsApp(rumps.App):
     # -------------------------------------------------------------------
     # Quit — rumps' built-in Quit button calls this before exiting
     # -------------------------------------------------------------------
+
+    def restart_app(self, _):
+        """Restart the entire app (re-exec the app bundle)."""
+        app_path = os.path.join(os.path.dirname(__file__), "SuperPuppy.app")
+        # Clean up, then relaunch
+        if self.profile_server and self.profile_server.poll() is None:
+            self.profile_server.terminate()
+        self._stop_mcp_server()
+        # Remove lock so the new instance can start
+        lock_file = os.path.expanduser("~/.config/local-models/menubar.lock")
+        try:
+            os.unlink(lock_file)
+        except FileNotFoundError:
+            pass
+        subprocess.Popen(["open", app_path], start_new_session=True)
+        rumps.quit_application()
 
     def quit_app(self, _):
         if self.profile_server and self.profile_server.poll() is None:
