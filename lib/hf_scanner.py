@@ -93,13 +93,23 @@ def _count_safetensor_params(snap_dir: Path) -> tuple[int, set[str], int]:
 
 def _count_npz_params(snap_dir: Path) -> tuple[int, set[str], int]:
     """Count params from numpy .npz files (used by whisper-mlx etc)."""
-    import numpy as np
-
     total_params = 0
     dtypes: set[str] = set()
     total_bytes = 0
 
-    for npz_file in snap_dir.glob("*.npz"):
+    npz_files = list(snap_dir.glob("*.npz"))
+    if not npz_files:
+        return total_params, dtypes, total_bytes
+
+    try:
+        import numpy as np
+    except ImportError:
+        # numpy not available — return file sizes only
+        for npz_file in npz_files:
+            total_bytes += npz_file.stat().st_size
+        return total_params, dtypes, total_bytes
+
+    for npz_file in npz_files:
         total_bytes += npz_file.stat().st_size
         try:
             data = np.load(npz_file)
