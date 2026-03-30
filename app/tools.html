@@ -164,6 +164,10 @@ const TOOLS = {
   image_gen:   { label: 'Image Gen', task: 'image_gen', fields: [
     {id:'prompt', label:'Prompt', type:'textarea', placeholder:'A cat wearing a space helmet...'},
   ]},
+  image_edit:  { label: 'Image Edit', task: 'image_edit', fields: [
+    {id:'image_path', label:'Image', type:'file', accept:'image/*'},
+    {id:'prompt', label:'Edit prompt', type:'textarea', placeholder:'Make the background blue...'},
+  ]},
   speak:       { label: 'Speak', task: 'tts', fields: [
     {id:'text', label:'Text', type:'textarea', placeholder:'Hello! This is a test of text-to-speech.'},
     {id:'voice', label:'Voice', type:'select', options: [

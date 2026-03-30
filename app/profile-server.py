@@ -56,6 +56,7 @@ SPECIAL_TASKS = {
     "image_gen": {"label": "Image Gen", "prefixes": ["x/flux2", "x/z-image", "flux", "stable-diffusion"]},
     "transcription": {"label": "Transcription", "prefixes": ["whisper"]},
     "tts": {"label": "Text-to-Speech", "prefixes": ["voxtral", "chatterbox"]},
+    "image_edit": {"label": "Image Edit", "prefixes": ["flux-kontext"]},
     "embedding": {"label": "Embedding", "prefixes": ["mxbai-embed", "nomic-embed", "snowflake-arctic", "all-minilm"]},
     "uncensored": {"label": "Uncensored", "prefixes": ["wizard-vicuna-uncensored", "dolphin", "nous-hermes"]},
 }
@@ -918,6 +919,33 @@ def api_test():
                 resp.raise_for_status()
                 result = resp.json()["message"]["content"]
             return jsonify({"result": result, "model": model})
+
+        elif tool == "image_edit":
+            image_path = body.get("image_path", "")
+            prompt = body.get("prompt", "")
+            import time as _time
+            out_path = f"/tmp/playground_edit_{int(_time.time())}.png"
+            try:
+                result = subprocess.run(
+                    ["mflux-generate-kontext",
+                     "--image-path", image_path,
+                     "--prompt", prompt,
+                     "--output", out_path,
+                     "--steps", "8",
+                     "--image-strength", "0.75"],
+                    capture_output=True, text=True, timeout=600,
+                    env={**os.environ,
+                         "PATH": f"/opt/homebrew/bin:{os.environ.get('PATH', '')}"},
+                )
+                if result.returncode != 0:
+                    return jsonify({"error": result.stderr[-300:]})
+                return jsonify({
+                    "result": f"Saved to {out_path}",
+                    "image_path": out_path,
+                    "model": "flux-kontext",
+                })
+            except Exception as e:
+                return jsonify({"error": str(e)})
 
         elif tool == "image_gen":
             model, backend = _pick("image_gen")

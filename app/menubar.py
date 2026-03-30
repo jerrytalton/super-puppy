@@ -1010,9 +1010,11 @@ class LocalModelsApp(rumps.App):
         self.menu_mlx_restart = rumps.MenuItem(
             "Restart MLX", callback=self._restart_mlx)
         self.menu_mlx.add(self.menu_mlx_restart)
-        self.menu_tts = rumps.MenuItem("TTS …")
-        self.tts_models = []
-        self.menu_mcp = rumps.MenuItem("MCP …", callback=self._open_mcp_config)
+        self.menu_mcp = rumps.MenuItem("MCP …")
+        self.menu_mcp_restart = rumps.MenuItem(
+            "Restart MCP", callback=self._restart_mcp)
+        self.menu_mcp.add(self.menu_mcp_restart)
+        self.mcp_models = get_tts_models()  # models served directly by MCP
         self.menu_profiles = rumps.MenuItem("Model Profiles",
                                            callback=self.open_profiles)
         self.menu_tools = rumps.MenuItem("Playground",
@@ -1027,7 +1029,6 @@ class LocalModelsApp(rumps.App):
             None,
             self.menu_ollama,
             self.menu_mlx,
-            self.menu_tts,
             self.menu_mcp,
             None,
             self.menu_profiles,
@@ -1082,6 +1083,7 @@ class LocalModelsApp(rumps.App):
                 self.mode = "client"
             else:
                 self._start_local_servers()
+        self._start_mcp_server()
 
     def _start_local_servers(self):
         """Launch Ollama and MLX-OpenAI-Server via start-local-models."""
@@ -1127,6 +1129,43 @@ class LocalModelsApp(rumps.App):
             proc.terminate()
             self._caffeinate = None
 
+    def _start_mcp_server(self):
+        """Launch the MCP server (SSE on port 8100)."""
+        if getattr(self, '_mcp_proc', None) is not None:
+            if self._mcp_proc.poll() is None:
+                return
+        env = os.environ.copy()
+        if "/opt/homebrew/bin" not in env.get("PATH", ""):
+            env["PATH"] = f"/opt/homebrew/bin:{env.get('PATH', '')}"
+        self._mcp_log = open("/tmp/local-models-mcp.log", "w")
+        self._mcp_proc = subprocess.Popen(
+            [os.path.expanduser("~/bin/local-models-mcp-detect")],
+            env=env,
+            stdout=self._mcp_log,
+            stderr=self._mcp_log,
+            start_new_session=True,
+        )
+
+    def _stop_mcp_server(self):
+        """Stop the MCP server."""
+        proc = getattr(self, '_mcp_proc', None)
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        self._mcp_proc = None
+
+    def _restart_mcp(self, _):
+        """Restart the MCP server (background thread)."""
+        def _do():
+            self._stop_mcp_server()
+            time.sleep(1)
+            self._start_mcp_server()
+            self.refresh(None)
+        threading.Thread(target=_do, daemon=True).start()
+
     def stop_services(self):
         """Stop local servers."""
         try:
@@ -1137,6 +1176,7 @@ class LocalModelsApp(rumps.App):
             self.servers_started = False
             self.mode = "stopped"
             self._allow_sleep()
+            self._stop_mcp_server()
             self.refresh(None)
         except Exception:
             pass
@@ -1317,7 +1357,7 @@ class LocalModelsApp(rumps.App):
 
         self.ollama_models = get_ollama_models(OLLAMA_LOCAL) if self.ollama_ok else []
         self.mlx_models = get_mlx_models(MLX_LOCAL) if self.mlx_ok else []
-        self.tts_models = get_tts_models()
+        self.mcp_models = get_tts_models()
 
         if self.ollama_ok or self.mlx_ok:
             self.mode = "server"
@@ -1377,7 +1417,7 @@ class LocalModelsApp(rumps.App):
                 self.ollama_models = []
                 self.mlx_models = []
 
-        self.tts_models = get_tts_models()
+        self.mcp_models = get_tts_models()
 
     @staticmethod
     def _styled_menu(item, dot, label, detail=""):
@@ -1477,18 +1517,16 @@ class LocalModelsApp(rumps.App):
         self.menu_mlx_restart.set_callback(
             self._restart_mlx if is_local else None)
 
-        tts_n = len(self.tts_models)
-        if tts_n > 0:
-            self._styled_menu(self.menu_tts, GRN, "TTS",
-                              f"{tts_n} model{'s' if tts_n != 1 else ''}")
+        mcp_proc = getattr(self, '_mcp_proc', None)
+        mcp_alive = mcp_proc is not None and mcp_proc.poll() is None
+        mcp_n = len(self.mcp_models)
+        if mcp_alive:
+            self._styled_menu(self.menu_mcp, GRN, "MCP",
+                              f"{mcp_n} model{'s' if mcp_n != 1 else ''}")
         else:
-            self._styled_menu(self.menu_tts, RED, "TTS", "no models")
-
-        self.mcp_configured = is_mcp_configured()
-        if self.mcp_configured:
-            self._styled_menu(self.menu_mcp, GRN, "MCP")
-        else:
-            self._styled_menu(self.menu_mcp, RED, "MCP", "not configured")
+            self._styled_menu(self.menu_mcp, RED, "MCP", "down")
+            if self.servers_started:
+                self._start_mcp_server()
 
         # ── Update (only actionable when available) ──
         if self.update_available > 0:
