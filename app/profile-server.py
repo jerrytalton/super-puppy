@@ -479,7 +479,7 @@ DEFAULT_PROFILES = {
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
                 "embedding": "all-minilm:latest",
-                "uncensored": "dolphin3:latest",
+                "uncensored": "dolphin3:8b",
             },
         },
         "desktop": {
@@ -515,7 +515,7 @@ DEFAULT_PROFILES = {
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
                 "embedding": "mxbai-embed-large:latest",
-                "uncensored": "dolphin3:latest",
+                "uncensored": "dolphin3:8b",
             },
         },
         "laptop": {
