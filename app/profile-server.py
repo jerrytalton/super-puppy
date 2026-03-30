@@ -304,10 +304,19 @@ def _fetch_all_models():
         model_path = cfg.get("model_path", "")
 
         # Parse params from model path (e.g. "Qwen3.5-397B-A17B-4bit")
+        # Known models whose names don't contain a param count
+        _KNOWN_MLX_PARAMS = {
+            "whisper": 1.5,  # whisper-large-v3 is ~1.5B
+        }
         total_b, active_b = 0, 0
         total_match = re.search(r'(\d+)B', model_path)
         if total_match:
             total_b = int(total_match.group(1))
+        else:
+            for prefix, params in _KNOWN_MLX_PARAMS.items():
+                if prefix in model_path.lower() or prefix in mid.lower():
+                    total_b = params
+                    break
         active_match = re.search(r'A(\d+)B', model_path)
         if active_match:
             active_b = int(active_match.group(1))
@@ -346,6 +355,43 @@ def _fetch_all_models():
             "is_loaded": not on_demand,  # always-on models are loaded
             "expires_at": None,
             "on_demand": on_demand,
+        }
+
+    # TTS models (loaded directly via mlx-audio, not through mlx-openai-server)
+    TTS_MODELS = [
+        {
+            "hf_id": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
+            "name": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
+            "total_params_b": 4,
+            "active_params_b": 4,
+            "vram_estimate_gb": 9.4,
+        },
+        {
+            "hf_id": "mlx-community/chatterbox-fp16",
+            "name": "mlx-community/chatterbox-fp16",
+            "total_params_b": 0.5,
+            "active_params_b": 0.5,
+            "vram_estimate_gb": 2.6,
+        },
+    ]
+    for tts in TTS_MODELS:
+        cache_dir = hf_cache / f"models--{tts['hf_id'].replace('/', '--')}"
+        is_downloaded = cache_dir.exists()
+        models[tts["name"]] = {
+            "name": tts["name"],
+            "backend": "mlx-audio",
+            "disk_bytes": int(tts["vram_estimate_gb"] * 1e9),
+            "vram_bytes": int(tts["vram_estimate_gb"] * 1e9),
+            "total_params_b": tts["total_params_b"],
+            "active_params_b": tts["active_params_b"],
+            "context": 0,
+            "has_vision": False,
+            "family": "tts",
+            "quant": "bf16" if "bf16" in tts["name"] else "fp16",
+            "is_loaded": False,
+            "is_downloaded": is_downloaded,
+            "on_demand": True,
+            "expires_at": None,
         }
 
     return models
@@ -387,7 +433,8 @@ def get_eligible_tasks(name, model_info):
         if model_matches_filter(name, model_info, filt):
             tasks.append(task)
     for task, spec in SPECIAL_TASKS.items():
-        if any(name.startswith(p) for p in spec["prefixes"]):
+        name_lower = name.lower()
+        if any(name.startswith(p) or p in name_lower for p in spec["prefixes"]):
             tasks.append(task)
     if model_info.get("has_vision") and "vision" not in tasks:
         tasks.append("vision")

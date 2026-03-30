@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["mcp[cli]>=1.0", "httpx>=0.28", "sentence-transformers>=3.0", "torch", "mlx-audio[tts] @ git+https://github.com/Blaizzy/mlx-audio.git"]
+# dependencies = ["mcp[cli]>=1.0", "httpx>=0.28", "sentence-transformers>=3.0", "torch", "pyyaml", "mlx-audio[tts] @ git+https://github.com/Blaizzy/mlx-audio.git"]
 # ///
 """
 Local Models MCP Server for Super Puppy.
@@ -128,16 +128,48 @@ async def discover_models():
             print(f"Ollama discovery failed: {e}", file=sys.stderr, flush=True)
 
         # MLX
+        # Load MLX server config to map served names → HuggingFace paths
+        _mlx_cfg_map = {}
+        _mlx_cfg_path = Path("~/.config/mlx-server/config.yaml").expanduser()
+        if _mlx_cfg_path.exists():
+            try:
+                import yaml
+                _mcfg = yaml.safe_load(_mlx_cfg_path.read_text())
+                for entry in _mcfg.get("models", []):
+                    sn = entry.get("served_model_name", "")
+                    mp = entry.get("model_path", "")
+                    if sn and mp:
+                        _mlx_cfg_map[sn] = mp
+            except Exception:
+                pass
+        _hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
         try:
             resp = await client.get(f"{MLX_URL}/v1/models")
             for m in resp.json().get("data", []):
                 mid = m["id"]
+                has_vision = False
+                # Check HuggingFace config.json for vision_config
+                model_path = _mlx_cfg_map.get(mid, mid)
+                cache_dir = _hf_cache / f"models--{model_path.replace('/', '--')}" / "snapshots"
+                if cache_dir.exists():
+                    for snap in sorted(cache_dir.iterdir(), reverse=True):
+                        hf_cfg = snap / "config.json"
+                        if hf_cfg.exists():
+                            try:
+                                hf = json.loads(hf_cfg.read_text())
+                                has_vision = (
+                                    "vision_config" in hf
+                                    or "vision_config" in hf.get("text_config", {})
+                                )
+                            except Exception:
+                                pass
+                            break
                 models[mid] = {
                     "backend": "mlx",
                     "total_params_b": 0,
                     "active_params_b": 0,
                     "context": 0,
-                    "vision": False,
+                    "vision": has_vision,
                 }
         except Exception as e:
             print(f"MLX discovery failed: {e}", file=sys.stderr, flush=True)
@@ -395,26 +427,45 @@ async def local_vision(
     if not _models.get(model_name, {}).get("vision"):
         return f"Error: {model_name} is not vision-capable. Need a model like qwen3-vl."
 
-    images = []
+    images_b64 = []
     for ip in image_paths:
         try:
             data = Path(ip).read_bytes()
-            images.append(base64.b64encode(data).decode())
+            images_b64.append(base64.b64encode(data).decode())
         except Exception as e:
             return f"Error reading {ip}: {e}"
 
-    # Ollama native multimodal API
-    messages = [{"role": "user", "content": prompt, "images": images}]
+    print(f"  → vision {model_name} ({backend}): {prompt[:50]}",
+          file=sys.stderr, flush=True)
 
-    body = {"model": model_name, "messages": messages, "stream": False}
-    if not thinking_enabled("vision"):
-        body["think"] = False
     async with httpx.AsyncClient(timeout=300) as client:
-        resp = await client.post(f"{OLLAMA_URL}/api/chat", json=body)
-        resp.raise_for_status()
-        result = resp.json()["message"]["content"]
+        if backend == "ollama":
+            messages = [{"role": "user", "content": prompt,
+                         "images": images_b64}]
+            body = {"model": model_name, "messages": messages,
+                    "stream": False}
+            if not thinking_enabled("vision"):
+                body["think"] = False
+            resp = await client.post(f"{OLLAMA_URL}/api/chat", json=body)
+            resp.raise_for_status()
+            result = resp.json()["message"]["content"]
+        else:
+            # MLX OpenAI-compatible: images as data URIs in content array
+            content = [{"type": "text", "text": prompt}]
+            for b64 in images_b64:
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{b64}"},
+                })
+            body = {"model": model_name,
+                    "messages": [{"role": "user", "content": content}],
+                    "max_tokens": 4096, "stream": False}
+            resp = await client.post(
+                f"{MLX_URL}/v1/chat/completions", json=body)
+            resp.raise_for_status()
+            result = resp.json()["choices"][0]["message"]["content"]
 
-    return f"[{model_name} via ollama]\n\n{result}"
+    return f"[{model_name} via {backend}]\n\n{result}"
 
 
 @mcp.tool()
