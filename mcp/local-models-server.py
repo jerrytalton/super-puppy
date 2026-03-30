@@ -14,6 +14,7 @@ import base64
 import json
 import logging
 import os
+import subprocess
 import sys
 import threading
 import uuid
