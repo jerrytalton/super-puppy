@@ -8,6 +8,13 @@
 
 set -euo pipefail
 
+FORCE_TOKEN_REFRESH=false
+for arg in "$@"; do
+    case "$arg" in
+        --rotate-token) FORCE_TOKEN_REFRESH=true ;;
+    esac
+done
+
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 link() {
@@ -63,9 +70,23 @@ fi
 # Register local-models MCP in Claude Code config
 CLAUDE_JSON="$HOME/.claude.json"
 if [ -f "$CLAUDE_JSON" ]; then
-    # Read auth token from 1Password (fall back to cache)
-    OP_REF="op://kasngocpevbljoznv5mz2equga/Super Puppy MCP/credential"
-    MCP_TOKEN=$(op read "$OP_REF" 2>/dev/null || cat "$HOME/.config/local-models/mcp_auth_token" 2>/dev/null || true)
+    # Read auth token from cache, only hit 1Password if no cache exists
+    TOKEN_CACHE="$HOME/.config/local-models/mcp_auth_token"
+    if $FORCE_TOKEN_REFRESH; then
+        rm -f "$TOKEN_CACHE"
+        echo "  Cleared cached token, will read from 1Password"
+    fi
+    if [ -f "$TOKEN_CACHE" ] && [ -s "$TOKEN_CACHE" ]; then
+        MCP_TOKEN=$(cat "$TOKEN_CACHE")
+    else
+        OP_REF="op://kasngocpevbljoznv5mz2equga/Super Puppy MCP/credential"
+        MCP_TOKEN=$(op read "$OP_REF" 2>/dev/null || true)
+        if [ -n "$MCP_TOKEN" ]; then
+            mkdir -p "$(dirname "$TOKEN_CACHE")"
+            echo "$MCP_TOKEN" > "$TOKEN_CACHE"
+            chmod 600 "$TOKEN_CACHE"
+        fi
+    fi
     python3 -c "
 import json, sys
 token = sys.argv[1]
