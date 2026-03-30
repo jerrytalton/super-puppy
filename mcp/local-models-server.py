@@ -9,6 +9,7 @@ Exposes Ollama and MLX models as tools for Claude Code.
 Claude reasons; local models do heavy lifting.
 """
 
+import anyio
 import asyncio
 import base64
 import json
@@ -22,6 +23,8 @@ from pathlib import Path
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
@@ -31,7 +34,23 @@ MCP_PREFS_FILE = Path("~/.config/local-models/mcp_preferences.json").expanduser(
 
 MCP_PORT = int(os.environ.get("MCP_PORT", "8100"))
 
+# --- Bearer token auth (token comes from 1Password via wrapper) ---
+MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "")
+if not MCP_AUTH_TOKEN:
+    print("local-models MCP: WARNING: MCP_AUTH_TOKEN not set, server is unauthenticated",
+          file=sys.stderr, flush=True)
+
 mcp = FastMCP("local-models", host="127.0.0.1", port=MCP_PORT)
+
+
+class BearerAuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        if not MCP_AUTH_TOKEN:
+            return await call_next(request)
+        auth = request.headers.get("authorization", "")
+        if auth == f"Bearer {MCP_AUTH_TOKEN}":
+            return await call_next(request)
+        return JSONResponse({"error": "unauthorized"}, status_code=403)
 
 _KNOWN_ACTIVE = {
     "nemotron_h_moe": {124: 12},
@@ -1162,7 +1181,16 @@ async def _startup():
 
 def main():
     asyncio.run(_startup())
-    mcp.run(transport="streamable-http")
+    if MCP_AUTH_TOKEN:
+        import uvicorn
+        app = mcp.streamable_http_app()
+        app.add_middleware(BearerAuthMiddleware)
+        config = uvicorn.Config(
+            app, host=mcp.settings.host, port=mcp.settings.port,
+            log_level=mcp.settings.log_level.lower())
+        anyio.run(uvicorn.Server(config).serve)
+    else:
+        mcp.run(transport="streamable-http")
 
 
 if __name__ == "__main__":
