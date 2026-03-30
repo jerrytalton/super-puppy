@@ -14,6 +14,7 @@ Or via:    open app/SuperPuppy.app
 """
 
 import json
+import logging
 import os
 import re
 import socket
@@ -311,8 +312,11 @@ MCP_SPECIAL_TASKS = {
 def check_repo_update_available():
     """Check if the local repo is behind origin/main. Returns (behind, summary)."""
     try:
-        subprocess.run(["git", "-C", REPO_DIR, "fetch", "--quiet"],
-                       capture_output=True, timeout=15)
+        fetch = subprocess.run(["git", "-C", REPO_DIR, "fetch", "--quiet"],
+                               capture_output=True, text=True, timeout=15)
+        if fetch.returncode != 0:
+            logging.warning("git fetch failed: %s", fetch.stderr.strip())
+            return 0, ""
         result = subprocess.run(
             ["git", "-C", REPO_DIR, "rev-list", "--count", "HEAD..origin/main"],
             capture_output=True, text=True, timeout=5)
@@ -323,30 +327,34 @@ def check_repo_update_available():
                 capture_output=True, text=True, timeout=5)
             summary = log_result.stdout.strip()
             return behind, summary
-    except Exception:
-        pass
+    except Exception as e:
+        logging.warning("Update check failed: %s", e)
     return 0, ""
 
 
 def apply_repo_update():
     """Pull latest and re-run install.sh. Returns (success, output)."""
     try:
-        # Stash any local changes (e.g. modified preferences)
-        stash = subprocess.run(["git", "-C", REPO_DIR, "stash", "--quiet"],
-                               capture_output=True, timeout=10)
-        has_stash = stash.returncode == 0
+        # Only stash if there are local changes
+        status = subprocess.run(
+            ["git", "-C", REPO_DIR, "status", "--porcelain"],
+            capture_output=True, text=True, timeout=5)
+        has_changes = bool(status.stdout.strip())
+        if has_changes:
+            subprocess.run(["git", "-C", REPO_DIR, "stash", "--quiet"],
+                           capture_output=True, timeout=10)
         pull = subprocess.run(["git", "-C", REPO_DIR, "pull", "--rebase"],
                               capture_output=True, text=True, timeout=30)
-        if has_stash:
+        if pull.returncode != 0:
+            return False, pull.stderr.strip()
+        if has_changes:
             pop = subprocess.run(
                 ["git", "-C", REPO_DIR, "stash", "pop", "--quiet"],
                 capture_output=True, text=True, timeout=10)
             if pop.returncode != 0:
                 return False, f"Stash pop failed: {pop.stderr.strip()}"
-        if pull.returncode != 0:
-            return False, pull.stderr.strip()
         subprocess.run(["bash", os.path.join(REPO_DIR, "install.sh")],
-                       capture_output=True, text=True, timeout=30)
+                       capture_output=True, text=True, timeout=60)
         return True, pull.stdout.strip()
     except Exception as e:
         return False, str(e)
