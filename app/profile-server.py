@@ -63,7 +63,7 @@ SPECIAL_TASKS = {
 
 # Names excluded from ALL general LLM tasks (not language models)
 _ALWAYS_EXCLUDE = ["vl", "flux", "z-image", "whisper", "ocr", "embed", "minilm",
-                   "tinyllama", "goonsai", "nsfw"]
+                   "tinyllama", "goonsai", "nsfw", "dolphin"]
 
 TASK_FILTERS = {
     "code": {
@@ -458,7 +458,7 @@ def get_eligible_tasks(name, model_info):
 
 # ── Profiles ─────────────────────────────────────────────────────────
 
-PROFILES_VERSION = 9  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 10  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -468,10 +468,10 @@ DEFAULT_PROFILES = {
             "label": "Everyday",
             "description": "Best balance for the 512GB Mac Studio",
             "tasks": {
-                "code": "qwen3-coder:latest",
+                "code": "qwen3-coder-next:latest",
                 "general": "qwen3.5-fast",
                 "reasoning": "nemotron-super",
-                "long_context": "qwen3.5-large",
+                "long_context": "nemotron-super",
                 "translation": "qwen3.5-fast",
                 "vision": "qwen3.5-large",
                 "image_gen": "x/z-image-turbo:latest",
@@ -479,16 +479,16 @@ DEFAULT_PROFILES = {
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
                 "embedding": "all-minilm:latest",
-                "uncensored": "wizard-vicuna-uncensored:30b",
+                "uncensored": "dolphin3:latest",
             },
         },
         "desktop": {
             "label": "Desktop",
             "description": "Fits in 64GB — capable models, reasonable VRAM",
             "tasks": {
-                "code": "qwen3-coder:latest",
+                "code": "qwen3-coder-next:latest",
                 "general": "qwen3.5-fast",
-                "reasoning": "nemotron-super",
+                "reasoning": "qwen3.5-fast",
                 "long_context": "qwen3.5-fast",
                 "translation": "qwen3.5-fast",
                 "vision": "qwen3.5:9b",
@@ -497,16 +497,16 @@ DEFAULT_PROFILES = {
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
                 "embedding": "all-minilm:latest",
-                "uncensored": "wizard-vicuna-uncensored:13b",
+                "uncensored": "dolphin3:8b",
             },
         },
         "maximum": {
             "label": "Heavyweight",
             "description": "Biggest models for everything, damn the RAM",
             "tasks": {
-                "code": "qwen3-coder:latest",
+                "code": "qwen3-coder-next:latest",
                 "general": "qwen3.5-large",
-                "reasoning": "deepseek-v3.1:latest",
+                "reasoning": "qwen3.5-large",
                 "long_context": "qwen3.5-large",
                 "translation": "qwen3.5-large",
                 "vision": "qwen3.5-large",
@@ -515,7 +515,7 @@ DEFAULT_PROFILES = {
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
                 "embedding": "mxbai-embed-large:latest",
-                "uncensored": "wizard-vicuna-uncensored:30b",
+                "uncensored": "dolphin3:latest",
             },
         },
         "laptop": {
@@ -533,7 +533,7 @@ DEFAULT_PROFILES = {
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/chatterbox-fp16",
                 "embedding": "all-minilm:latest",
-                "uncensored": "wizard-vicuna-uncensored:13b",
+                "uncensored": "dolphin3:8b",
             },
         },
     },
