@@ -513,6 +513,66 @@ async def local_image(
 
 
 @mcp.tool()
+async def local_image_edit(
+    image_path: str,
+    prompt: str,
+    output_path: str | None = None,
+    strength: float = 0.8,
+    steps: int = 4,
+    seed: int | None = None,
+) -> str:
+    """Edit an image using a text prompt with Flux Kontext (local, on Apple Silicon).
+
+    Takes an existing image and modifies it according to the prompt.
+    Good for recoloring, adding/removing elements, style transfer, etc.
+
+    Args:
+        image_path: Absolute path to the input image to edit.
+        prompt: Description of the desired changes (e.g. "make the dog white with a red cape").
+        output_path: Where to save the result. Defaults to /tmp/local_edit_<timestamp>.png.
+        strength: How much to change the image (0.0 = no change, 1.0 = ignore input). Default 0.8.
+        steps: Number of diffusion steps (more = higher quality, slower). Default 4.
+        seed: Optional random seed for reproducibility.
+    """
+    if not Path(image_path).exists():
+        return f"Error: input image not found at {image_path}"
+
+    if not output_path:
+        import time as _time
+        output_path = f"/tmp/local_edit_{int(_time.time())}.png"
+
+    print(f"  → edit image: {prompt[:60]}", file=sys.stderr, flush=True)
+
+    cmd = [
+        "mflux-generate-kontext",
+        "--image-path", image_path,
+        "--prompt", prompt,
+        "--output", output_path,
+        "--steps", str(steps),
+        "--image-strength", str(strength),
+    ]
+    if seed is not None:
+        cmd.extend(["--seed", str(seed)])
+
+    loop = asyncio.get_event_loop()
+    try:
+        proc = await loop.run_in_executor(None, lambda: subprocess.run(
+            cmd, capture_output=True, text=True, timeout=600,
+            env={**os.environ, "PATH": f"/opt/homebrew/bin:{os.environ.get('PATH', '')}"},
+        ))
+        if proc.returncode != 0:
+            return f"Error: mflux-generate-kontext failed:\n{proc.stderr[-500:]}"
+    except subprocess.TimeoutExpired:
+        return "Error: image editing timed out after 10 minutes."
+
+    if not Path(output_path).exists():
+        return f"Error: output image was not created at {output_path}"
+
+    size = Path(output_path).stat().st_size
+    return f"[flux-kontext via mflux]\n\nEdited image saved to {output_path} ({size} bytes)"
+
+
+@mcp.tool()
 async def local_transcribe(
     audio_path: str,
     language: str | None = None,
