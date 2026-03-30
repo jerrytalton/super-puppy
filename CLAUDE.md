@@ -42,6 +42,10 @@ The menu bar app (`app/menubar.py`) launches via `app/SuperPuppy.app` and spawns
 
 Profiles map these task types to models. Standard tasks: `code`, `general`, `reasoning`, `long_context`, `translation`. Special tasks (matched by model capability, not general-purpose): `vision`, `image_gen`, `transcription`, `tts`, `embedding`, `uncensored`.
 
+### Vision capability
+
+Qwen3.5 models (served via MLX) ARE vision-capable. The MCP server must detect this correctly for `local_vision` to work. Vision detection for MLX models cannot rely on Ollama's `model_info` — it must check the model name or HuggingFace config. The `local_vision` tool must dispatch to the correct backend (Ollama `/api/chat` vs MLX `/v1/chat/completions` with OpenAI-style image content).
+
 ## Local Model Tools (MCP)
 
 The `mcp/local-models-server.py` MCP server exposes Ollama and MLX models as tools for Claude Code. See global CLAUDE.md for usage guidance. Wrapper script is `bin/local-models-mcp-detect`.
