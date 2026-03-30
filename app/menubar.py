@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import re
+import signal
 import socket
 import subprocess
 import sys
@@ -90,7 +91,7 @@ class _WebViewUIDelegate(NSObject):
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_DIR = os.path.dirname(SCRIPT_DIR)
-ICON_PATH = os.path.join(SCRIPT_DIR, "icon.png")
+ICON_PATH = os.path.join(SCRIPT_DIR, "icon-menubar.png")
 ICONS_DIR = os.path.join(SCRIPT_DIR, "icons")
 NETWORK_CONF = os.path.expanduser("~/.config/local-models/network.conf")
 MCP_TOOLS_FILE = os.path.expanduser("~/.claude.json")
@@ -167,6 +168,15 @@ def probe_service(base_url, timeout=2):
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status == 200
     except Exception:
+        return False
+
+
+def probe_port(port, host="127.0.0.1", timeout=1):
+    """Check if something is listening on a TCP port."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
         return False
 
 
@@ -1134,6 +1144,17 @@ class LocalModelsApp(rumps.App):
         if getattr(self, '_mcp_proc', None) is not None:
             if self._mcp_proc.poll() is None:
                 return
+        # Kill any orphaned process holding port 8100
+        try:
+            out = subprocess.check_output(
+                ["lsof", "-ti", "tcp:8100"], text=True, stderr=subprocess.DEVNULL)
+            for pid_str in out.strip().split():
+                pid = int(pid_str)
+                if pid != os.getpid():
+                    os.kill(pid, signal.SIGTERM)
+            time.sleep(0.5)
+        except (subprocess.CalledProcessError, ValueError):
+            pass
         env = os.environ.copy()
         if "/opt/homebrew/bin" not in env.get("PATH", ""):
             env["PATH"] = f"/opt/homebrew/bin:{env.get('PATH', '')}"
@@ -1518,7 +1539,9 @@ class LocalModelsApp(rumps.App):
             self._restart_mlx if is_local else None)
 
         mcp_proc = getattr(self, '_mcp_proc', None)
-        mcp_alive = mcp_proc is not None and mcp_proc.poll() is None
+        mcp_proc_alive = mcp_proc is not None and mcp_proc.poll() is None
+        mcp_port_alive = probe_port(8100)
+        mcp_alive = mcp_proc_alive or mcp_port_alive
         mcp_n = len(self.mcp_models)
         if mcp_alive:
             self._styled_menu(self.menu_mcp, GRN, "MCP",
