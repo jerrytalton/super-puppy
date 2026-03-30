@@ -509,7 +509,7 @@ DEFAULT_PROFILES = {
                 "reasoning": "deepseek-v3.1:latest",
                 "long_context": "qwen3.5-large",
                 "translation": "qwen3.5-large",
-                "vision": "qwen3-vl:235b",
+                "vision": "qwen3.5-large",
                 "image_gen": "x/z-image-turbo:bf16",
                 "image_edit": "black-forest-labs/FLUX.1-Kontext-dev",
                 "transcription": "whisper-v3",
