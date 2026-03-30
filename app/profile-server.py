@@ -395,6 +395,25 @@ def _fetch_all_models():
             "expires_at": None,
         }
 
+    # Image edit models (mflux CLI tools)
+    import shutil
+    if shutil.which("mflux-generate-kontext"):
+        models["flux-kontext"] = {
+            "name": "flux-kontext",
+            "backend": "mflux",
+            "disk_bytes": int(9e9),
+            "vram_bytes": int(9e9),
+            "total_params_b": 9,
+            "active_params_b": 9,
+            "context": 0,
+            "has_vision": False,
+            "family": "image_edit",
+            "quant": "",
+            "is_loaded": False,
+            "on_demand": True,
+            "expires_at": None,
+        }
+
     return models
 
 
@@ -444,7 +463,7 @@ def get_eligible_tasks(name, model_info):
 
 # ── Profiles ─────────────────────────────────────────────────────────
 
-PROFILES_VERSION = 5  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 6  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -461,6 +480,7 @@ DEFAULT_PROFILES = {
                 "translation": "qwen3.5-large",
                 "vision": "qwen3.5-large",
                 "image_gen": "x/z-image-turbo:latest",
+                "image_edit": "flux-kontext",
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
                 "embedding": "all-minilm:latest",
@@ -478,6 +498,7 @@ DEFAULT_PROFILES = {
                 "translation": "qwen3.5-fast",
                 "vision": "qwen3.5:9b",
                 "image_gen": "x/flux2-klein:latest",
+                "image_edit": "flux-kontext",
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/chatterbox-fp16",
                 "embedding": "all-minilm:latest",
@@ -495,6 +516,7 @@ DEFAULT_PROFILES = {
                 "translation": "qwen3.5-large",
                 "vision": "qwen3-vl:235b",
                 "image_gen": "x/z-image-turbo:bf16",
+                "image_edit": "flux-kontext",
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
                 "embedding": "mxbai-embed-large:latest",
@@ -512,6 +534,7 @@ DEFAULT_PROFILES = {
                 "translation": "qwen3.5-fast",
                 "vision": "qwen3.5:9b",
                 "image_gen": "x/flux2-klein:latest",
+                "image_edit": "flux-kontext",
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/chatterbox-fp16",
                 "embedding": "all-minilm:latest",
