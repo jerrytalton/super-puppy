@@ -206,22 +206,11 @@ def get_mlx_models(base_url, timeout=3):
     return []
 
 
-# Known TTS models served directly via mlx-audio (not through mlx-openai-server)
-_TTS_MODELS = [
-    "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
-    "mlx-community/chatterbox-fp16",
-]
-
-
 def get_tts_models():
     """Get list of downloaded TTS models from HuggingFace cache."""
-    hf_cache = os.path.expanduser("~/.cache/huggingface/hub")
-    available = []
-    for model_id in _TTS_MODELS:
-        cache_dir = os.path.join(hf_cache, f"models--{model_id.replace('/', '--')}")
-        if os.path.isdir(cache_dir):
-            available.append(model_id.split("/")[-1])
-    return available
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
+    from hf_scanner import scan_hf_cache
+    return [m["name"].split("/")[-1] for m in scan_hf_cache({"tts"})]
 
 
 # ---------------------------------------------------------------------------

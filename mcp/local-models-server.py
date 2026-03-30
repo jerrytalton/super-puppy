@@ -177,32 +177,26 @@ async def discover_models():
         except Exception as e:
             print(f"MLX discovery failed: {e}", file=sys.stderr, flush=True)
 
-        # TTS models (mlx-audio, not served via MLX server)
-        _TTS_MODELS = [
-            ("mlx-community/Voxtral-4B-TTS-2603-mlx-bf16", 4),
-            ("mlx-community/chatterbox-fp16", 0.5),
-        ]
-        for hf_id, params_b in _TTS_MODELS:
-            cache_dir = _hf_cache / f"models--{hf_id.replace('/', '--')}"
-            if cache_dir.exists():
-                models[hf_id] = {
-                    "backend": "mlx-audio",
-                    "total_params_b": params_b,
-                    "active_params_b": params_b,
+        # HuggingFace cache: TTS, transcription, image_edit, image_gen
+        _TASK_BACKENDS = {
+            "tts": "mlx-audio",
+            "transcription": "mlx",
+            "image_edit": "mflux",
+            "image_gen": "mflux",
+        }
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+        from hf_scanner import scan_hf_cache
+        for hf_model in scan_hf_cache(_TASK_BACKENDS.keys()):
+            name = hf_model["name"]
+            if name not in models:
+                models[name] = {
+                    "backend": _TASK_BACKENDS[hf_model["task"]],
+                    "total_params_b": hf_model["total_params_b"],
+                    "active_params_b": hf_model["total_params_b"],
                     "context": 0,
                     "vision": False,
+                    "task": hf_model["task"],
                 }
-
-        # Image edit models (mflux CLI tools)
-        import shutil
-        if shutil.which("mflux-generate-kontext"):
-            models["flux-kontext"] = {
-                "backend": "mflux",
-                "total_params_b": 12,
-                "active_params_b": 12,
-                "context": 0,
-                "vision": False,
-            }
 
     return models
 
@@ -260,20 +254,13 @@ def pick_model(task: str, override: str | None = None) -> tuple[str, str]:
         if key == task and candidates:
             break  # task had preferences but none matched; try general
 
-    # Task-specific backend fallbacks
-    _TASK_BACKENDS = {
-        "tts": ("mlx-audio",),
-        "image_edit": ("mflux",),
-    }
-    allowed = _TASK_BACKENDS.get(task)
-    if allowed:
-        for name, info in _models.items():
-            if info["backend"] in allowed:
-                return name, info["backend"]
-    else:
-        for name, info in _models.items():
-            if info["backend"] in ("ollama", "mlx"):
-                return name, info["backend"]
+    # Fall back: models tagged with a specific task, then any LLM
+    for name, info in _models.items():
+        if info.get("task") == task:
+            return name, info["backend"]
+    for name, info in _models.items():
+        if info["backend"] in ("ollama", "mlx"):
+            return name, info["backend"]
 
     raise ValueError(f"No model available for task '{task}'")
 
