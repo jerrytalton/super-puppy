@@ -55,7 +55,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         # Let OAuth discovery get a clean 404 so Claude Code doesn't
         # mistake our 403 for "auth server exists but denied access"
-        if ".well-known" in path or path in ("/register", "/sse"):
+        if ".well-known" in path or path == "/register":
             return await call_next(request)
         # Exempt session-bound requests (SSE /messages/ with session_id).
         # These only work with sessions created via authenticated /mcp init.
