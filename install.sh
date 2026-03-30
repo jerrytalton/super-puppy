@@ -177,8 +177,48 @@ else
     echo "     Create it and add the '## Local Model Cluster' section from the README."
 fi
 
+# Pull models appropriate for this machine's memory tier
+# Server (512GB+) manages its own models — only pull for laptop/desktop.
+echo ""
+if [ "$RAM_GB" -lt 256 ]; then
+    echo "Pulling models for local use..."
+
+    # Shared across all non-server tiers
+    MODELS=(
+        "qwen3.5:9b"
+        "glm-4.7-flash:latest"
+        "all-minilm:latest"
+        "dolphin3:8b"
+        "x/flux2-klein:latest"
+    )
+
+    if [ "$RAM_GB" -ge 48 ]; then
+        # Desktop tier (64GB+): add larger models
+        MODELS+=(
+            "qwen3-coder-next:latest"
+            "x/z-image-turbo:latest"
+        )
+        echo "  Detected desktop ($RAM_GB GB) — pulling desktop + laptop models"
+    else
+        echo "  Detected laptop ($RAM_GB GB) — pulling laptop models"
+    fi
+
+    total=${#MODELS[@]}
+    current=0
+    for model in "${MODELS[@]}"; do
+        current=$((current + 1))
+        echo "  [$current/$total] $model"
+        ollama pull "$model" 2>&1 | tail -1
+    done
+
+    # MLX models are on-demand (downloaded on first use via mlx-openai-server)
+    echo "  MLX models (qwen3.5-fast, whisper-v3, etc.) download on first use."
+else
+    echo "Server detected ($RAM_GB GB) — skipping model pull."
+    echo "Manage models via the menu bar app or ollama pull."
+fi
+
 echo ""
 echo "Done! Next steps:"
-echo "  1. ollama pull qwen3.5          # pull a model"
-echo "  2. start-local-models           # start servers"
-echo "  3. claude                        # start coding (local-models MCP auto-connects)"
+echo "  1. start-local-models           # start servers"
+echo "  2. claude                        # start coding (local-models MCP auto-connects)"
