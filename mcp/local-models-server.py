@@ -198,8 +198,8 @@ async def discover_models():
         if shutil.which("mflux-generate-kontext"):
             models["flux-kontext"] = {
                 "backend": "mflux",
-                "total_params_b": 9,
-                "active_params_b": 9,
+                "total_params_b": 12,
+                "active_params_b": 12,
                 "context": 0,
                 "vision": False,
             }

@@ -365,14 +365,14 @@ def _fetch_all_models():
             "name": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
             "total_params_b": 4,
             "active_params_b": 4,
-            "vram_estimate_gb": 9.4,
+            "vram_estimate_gb": 7.5,
         },
         {
             "hf_id": "mlx-community/chatterbox-fp16",
             "name": "mlx-community/chatterbox-fp16",
             "total_params_b": 0.5,
             "active_params_b": 0.5,
-            "vram_estimate_gb": 2.6,
+            "vram_estimate_gb": 2.4,
         },
     ]
     for tts in TTS_MODELS:
@@ -401,10 +401,10 @@ def _fetch_all_models():
         models["flux-kontext"] = {
             "name": "flux-kontext",
             "backend": "mflux",
-            "disk_bytes": int(9e9),
-            "vram_bytes": int(9e9),
-            "total_params_b": 9,
-            "active_params_b": 9,
+            "disk_bytes": int(31e9),
+            "vram_bytes": int(10e9),
+            "total_params_b": 12,
+            "active_params_b": 12,
             "context": 0,
             "has_vision": False,
             "family": "image_edit",
