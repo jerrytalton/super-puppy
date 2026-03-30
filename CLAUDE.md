@@ -40,7 +40,7 @@ The menu bar app (`app/menubar.py`) launches via `app/SuperPuppy.app` and spawns
 
 ### Task types
 
-Profiles map these task types to models. Standard tasks: `code`, `general`, `reasoning`, `long_context`, `translation`. Special tasks (matched by model capability, not general-purpose): `vision`, `image_gen`, `transcription`, `embedding`, `uncensored`.
+Profiles map these task types to models. Standard tasks: `code`, `general`, `reasoning`, `long_context`, `translation`. Special tasks (matched by model capability, not general-purpose): `vision`, `image_gen`, `transcription`, `tts`, `embedding`, `uncensored`.
 
 ## Local Model Tools (MCP)
 

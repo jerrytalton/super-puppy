@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["mcp[cli]>=1.0", "httpx>=0.28", "sentence-transformers>=3.0", "torch"]
+# dependencies = ["mcp[cli]>=1.0", "httpx>=0.28", "sentence-transformers>=3.0", "torch", "mlx-audio[tts] @ git+https://github.com/Blaizzy/mlx-audio.git"]
 # ///
 """
 Local Models MCP Server for Super Puppy.
@@ -504,6 +504,89 @@ async def local_transcribe(
         result = resp.json().get("text", resp.text)
 
     return f"[{whisper_model} via mlx]\n\n{result}"
+
+
+@mcp.tool()
+async def local_speak(
+    text: str,
+    output_path: str | None = None,
+    voice: str = "casual_male",
+    model: str = "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
+    language: str = "en",
+    ref_audio: str | None = None,
+    ref_text: str | None = None,
+) -> str:
+    """Generate speech from text using a local TTS model.
+
+    Supports Voxtral (20 preset voices, 9 languages) and Chatterbox
+    (voice cloning, 23 languages). Audio is saved to disk.
+
+    Args:
+        text: Text to speak.
+        output_path: Where to save audio. Defaults to /tmp/local_tts_<timestamp>.wav.
+        voice: Voice preset. Voxtral voices: casual_male, casual_female,
+               cheerful_female, neutral_male, neutral_female, fr_male, fr_female,
+               es_male, es_female, de_male, de_female, it_male, it_female,
+               pt_male, pt_female, nl_male, nl_female, ar_male, hi_male, hi_female.
+               Ignored when ref_audio is provided (Chatterbox voice cloning).
+        model: HuggingFace model ID. Defaults to Voxtral bf16.
+               Use "mlx-community/chatterbox-fp16" for voice cloning.
+        language: Language code (e.g. "en", "fr", "es", "de"). Default "en".
+        ref_audio: Path to a reference audio file for voice cloning (Chatterbox).
+        ref_text: Optional transcript of the reference audio (improves cloning).
+    """
+    if not output_path:
+        import time as _time
+        output_path = f"/tmp/local_tts_{int(_time.time())}.wav"
+
+    out_dir = os.path.dirname(output_path) or "/tmp"
+    prefix = Path(output_path).stem
+    fmt = Path(output_path).suffix.lstrip(".") or "wav"
+
+    print(f"  → TTS {model.split('/')[-1]}: {text[:60]}", file=sys.stderr, flush=True)
+
+    def _generate():
+        from mlx_audio.tts.generate import generate_audio
+        kwargs = dict(
+            text=text,
+            model=model,
+            voice=voice,
+            lang_code=language,
+            output_path=out_dir,
+            file_prefix=prefix,
+            audio_format=fmt,
+            verbose=False,
+            play=False,
+        )
+        if ref_audio:
+            kwargs["ref_audio"] = ref_audio
+        if ref_text:
+            kwargs["ref_text"] = ref_text
+        generate_audio(**kwargs)
+
+    loop = asyncio.get_event_loop()
+    try:
+        await loop.run_in_executor(None, _generate)
+    except Exception as e:
+        return f"Error generating speech: {e}"
+
+    # generate_audio appends _000 to the prefix
+    actual_path = os.path.join(out_dir, f"{prefix}_000.{fmt}")
+    if os.path.exists(actual_path):
+        final_path = output_path
+        os.rename(actual_path, final_path)
+    elif os.path.exists(output_path):
+        final_path = output_path
+    else:
+        import glob
+        candidates = glob.glob(os.path.join(out_dir, f"{prefix}*"))
+        if candidates:
+            final_path = max(candidates, key=os.path.getmtime)
+        else:
+            return f"Error: audio file was not created at {output_path}"
+
+    size = Path(final_path).stat().st_size
+    return f"[{model.split('/')[-1]} via mlx-audio]\n\nAudio saved to {final_path} ({size} bytes)"
 
 
 @mcp.tool()
