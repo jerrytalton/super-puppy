@@ -355,21 +355,25 @@ function selectTool(key) {
   renderModelPicker(task, defaultModel, profileModel);
 
   const out = document.getElementById('output');
+  const isRunning = !!_running[key];
   if (saved?.output) {
     out.innerHTML = saved.output;
-    out.className = saved.outputClass || 'output-box';
+    out.className = isRunning ? 'output-box running' : (saved.outputClass || 'output-box');
+  } else if (isRunning) {
+    out.textContent = '';
+    out.className = 'output-box running';
   } else {
     out.textContent = 'Select a tool and click Run.';
     out.className = 'output-box';
   }
   document.getElementById('log').textContent = saved?.log || '';
-  document.getElementById('run').disabled = !!_running[key];
+  document.getElementById('run').disabled = isRunning;
   const status = document.getElementById('status');
-  if (_running[key]) {
+  if (isRunning) {
     const s = ((Date.now() - _running[key]) / 1000).toFixed(0);
     status.innerHTML = `<span class="elapsed">${s}s</span>`;
   } else {
-    status.textContent = saved?.status || '';
+    status.innerHTML = saved?.status || '';
   }
 }
 
