@@ -25,27 +25,52 @@ elif [ -f "$CONF" ]; then
     # shellcheck source=/dev/null
     source "$CONF"
 
+    DESKTOP_FOUND=false
+
+    # Try 1: mDNS (LAN)
     if [ -n "${MODEL_SERVER_HOST:-}" ]; then
-        # Resolve .local mDNS to IP (Python/Node can't do mDNS)
         HOST_IP=$(python3 -c "import socket; print(socket.gethostbyname('${MODEL_SERVER_HOST}'))" 2>/dev/null || echo "")
 
-        if [ -z "$HOST_IP" ]; then
-            echo "local-models MCP: WARNING: could not resolve ${MODEL_SERVER_HOST}" >&2
-        else
+        if [ -n "$HOST_IP" ]; then
             if curl -sf --connect-timeout "${PROBE_TIMEOUT:-2}" \
                  "http://${HOST_IP}:${OLLAMA_PORT:-11434}/api/version" > /dev/null 2>&1; then
                 OLLAMA_URL="http://${HOST_IP}:${OLLAMA_PORT:-11434}"
                 echo "local-models MCP: using desktop Ollama at ${MODEL_SERVER_HOST} (${HOST_IP})" >&2
-            else
-                echo "local-models MCP: desktop Ollama unreachable, using localhost" >&2
+                DESKTOP_FOUND=true
             fi
 
             if curl -sf --connect-timeout "${PROBE_TIMEOUT:-2}" \
                  "http://${HOST_IP}:${MLX_PORT:-8000}/v1/models" > /dev/null 2>&1; then
                 MLX_URL="http://${HOST_IP}:${MLX_PORT:-8000}"
                 echo "local-models MCP: using desktop MLX at ${MODEL_SERVER_HOST} (${HOST_IP})" >&2
+                DESKTOP_FOUND=true
             fi
         fi
+    fi
+
+    # Try 2: Tailscale (off-LAN)
+    if [ "$DESKTOP_FOUND" = "false" ]; then
+        # shellcheck source=/dev/null
+        source "$REPO_DIR/bin/tailscale-status"
+        if [ "$TS_AVAILABLE" = "true" ] && [ -n "$TS_IP" ]; then
+            if curl -sf --connect-timeout "${PROBE_TIMEOUT:-2}" \
+                 "http://${TS_IP}:${OLLAMA_PORT:-11434}/api/version" > /dev/null 2>&1; then
+                OLLAMA_URL="http://${TS_IP}:${OLLAMA_PORT:-11434}"
+                echo "local-models MCP: using desktop Ollama via Tailscale (${TS_FQDN})" >&2
+                DESKTOP_FOUND=true
+            fi
+
+            if curl -sf --connect-timeout "${PROBE_TIMEOUT:-2}" \
+                 "http://${TS_IP}:${MLX_PORT:-8000}/v1/models" > /dev/null 2>&1; then
+                MLX_URL="http://${TS_IP}:${MLX_PORT:-8000}"
+                echo "local-models MCP: using desktop MLX via Tailscale (${TS_FQDN})" >&2
+                DESKTOP_FOUND=true
+            fi
+        fi
+    fi
+
+    if [ "$DESKTOP_FOUND" = "false" ]; then
+        echo "local-models MCP: desktop unreachable (LAN + Tailscale), using localhost" >&2
     fi
 fi
 
