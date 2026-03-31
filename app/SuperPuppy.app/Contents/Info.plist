@@ -12,6 +12,8 @@
     <string>AppIcon</string>
     <key>CFBundleVersion</key>
     <string>1.0</string>
+    <key>LSUIElement</key>
+    <true/>
     <key>NSScreenCaptureUsageDescription</key>
     <string>Super Puppy needs screen capture to analyze screenshots with local vision models.</string>
     <key>NSMicrophoneUsageDescription</key>
