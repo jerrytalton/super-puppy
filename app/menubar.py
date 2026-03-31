@@ -432,6 +432,32 @@ def load_profiles():
     return {"active": None, "profiles": {}}
 
 
+def save_profiles(data):
+    os.makedirs(os.path.dirname(PROFILES_FILE), exist_ok=True)
+    with open(PROFILES_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def pick_profile_for_ram(ram_gb, profiles):
+    """Pick the best profile for the given RAM.
+
+    Parses the description field for RAM hints like '64GB' and picks the
+    largest profile that fits. Falls back to 'laptop' or the first profile.
+    """
+    candidates = []
+    for name, prof in profiles.items():
+        desc = prof.get("description", "")
+        match = re.search(r'(\d+)\s*GB', desc, re.IGNORECASE)
+        if match:
+            profile_ram = int(match.group(1))
+            if profile_ram <= ram_gb:
+                candidates.append((profile_ram, name))
+    if candidates:
+        candidates.sort(reverse=True)
+        return candidates[0][1]
+    return "laptop" if "laptop" in profiles else next(iter(profiles), None)
+
+
 def save_mcp_prefs(prefs):
     """Save MCP task→model preferences."""
     os.makedirs(os.path.dirname(MCP_PREFS_FILE), exist_ok=True)
@@ -1238,19 +1264,42 @@ class LocalModelsApp(rumps.App):
             return
         self.force_local = False
         save_force_local(False)
+        self._activate_profile("everyday")
         self._restart_mcp(_)
-        # Refresh immediately so mode label and models update
         self.refresh(None)
 
     def _select_local(self, _):
         """User selected Local mode."""
         self.force_local = True
         save_force_local(True)
-        # Start local servers if not already running
+        data = load_profiles()
+        best = pick_profile_for_ram(self.ram_gb, data.get("profiles", {}))
+        if best:
+            self._activate_profile(best)
         if not self.servers_started:
             self._start_local_servers()
         self._restart_mcp(_)
         self.refresh(None)
+
+    def _activate_profile(self, name):
+        """Set the active profile and update MCP preferences to match."""
+        data = load_profiles()
+        profiles = data.get("profiles", {})
+        if name not in profiles:
+            return
+        data["active"] = name
+        save_profiles(data)
+        # Sync task→model preferences from the profile
+        profile = profiles[name]
+        tasks = profile.get("tasks", {})
+        prefs = load_mcp_prefs()
+        for task, model in tasks.items():
+            existing = prefs.get(task, [])
+            if isinstance(existing, list):
+                prefs[task] = [model] + [m for m in existing if m != model]
+            else:
+                prefs[task] = [model]
+        save_mcp_prefs(prefs)
 
     def stop_services(self):
         """Stop local servers."""
