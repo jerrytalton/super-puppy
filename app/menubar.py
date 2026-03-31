@@ -97,10 +97,29 @@ NETWORK_CONF = os.path.expanduser("~/.config/local-models/network.conf")
 MCP_TOOLS_FILE = os.path.expanduser("~/.claude.json")
 OLLAMA_LOCAL = "http://localhost:11434"
 MLX_LOCAL = "http://localhost:8000"
+MODE_CONF = os.path.expanduser("~/.config/local-models/mode.conf")
 POLL_INTERVAL = 8           # seconds between status refreshes
 UPDATE_CHECK_INTERVAL = 3600 # seconds between git update checks (1 hour)
 
 MODEL_PREFS_FILE = os.path.expanduser("~/.config/local-models/model_preferences.json")
+
+
+def load_force_local():
+    """Read the FORCE_LOCAL flag from mode.conf."""
+    if os.path.exists(MODE_CONF):
+        with open(MODE_CONF) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("FORCE_LOCAL="):
+                    return line.split("=", 1)[1].strip('"').strip("'") == "true"
+    return False
+
+
+def save_force_local(force: bool):
+    """Write the FORCE_LOCAL flag to mode.conf."""
+    os.makedirs(os.path.dirname(MODE_CONF), exist_ok=True)
+    with open(MODE_CONF, "w") as f:
+        f.write(f'FORCE_LOCAL={"true" if force else "false"}\n')
 
 
 def load_network_conf():
@@ -206,11 +225,12 @@ def get_mlx_models(base_url, timeout=3):
     return []
 
 
-def get_tts_models():
-    """Get list of downloaded TTS models from HuggingFace cache."""
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
-    from hf_scanner import scan_hf_cache
-    return [m["name"].split("/")[-1] for m in scan_hf_cache({"tts"})]
+def get_mcp_models(mcp_url="http://127.0.0.1:8100", timeout=3):
+    """Get HF-backed model names from the MCP server."""
+    data = http_get_json(f"{mcp_url}/api/mcp-models", timeout=timeout)
+    if data and "models" in data:
+        return data["models"]
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -961,6 +981,11 @@ class LocalModelsApp(rumps.App):
         self.ollama_remote = f"http://{remote_addr}:{self.ollama_port}"
         self.mlx_remote = f"http://{remote_addr}:{self.mlx_port}"
 
+        # Mode preference (laptops only): user can force local even when
+        # the desktop is reachable.  On startup, if not forced, prefer remote.
+        self.force_local = load_force_local() if not self.desktop else False
+        self.remote_reachable = False  # tracked every poll for greying out
+
         # State (protected by _lock for cross-thread access)
         self._lock = threading.Lock()
         self.mode = "unknown"          # server, client, offline, stopped
@@ -991,6 +1016,10 @@ class LocalModelsApp(rumps.App):
 
         # Menu items
         self.menu_status = rumps.MenuItem("Starting…")
+        self.menu_mode_remote = rumps.MenuItem(
+            "Remote", callback=self._select_remote)
+        self.menu_mode_local = rumps.MenuItem(
+            "Local", callback=self._select_local)
         self.menu_ollama = rumps.MenuItem("Ollama …")
         self.menu_ollama_restart = rumps.MenuItem(
             "Restart Ollama", callback=self._restart_ollama)
@@ -1003,7 +1032,7 @@ class LocalModelsApp(rumps.App):
         self.menu_mcp_restart = rumps.MenuItem(
             "Restart MCP", callback=self._restart_mcp)
         self.menu_mcp.add(self.menu_mcp_restart)
-        self.mcp_models = get_tts_models()  # models served directly by MCP
+        self.mcp_models = []  # populated on first refresh from MCP server
         self.menu_profiles = rumps.MenuItem("Model Profiles",
                                            callback=self.open_profiles)
         self.menu_tools = rumps.MenuItem("Playground",
@@ -1012,8 +1041,12 @@ class LocalModelsApp(rumps.App):
         self.menu_restart = rumps.MenuItem("Restart", callback=self.restart_app)
         self.menu_quit = rumps.MenuItem("Quit", callback=self.quit_app)
 
-        self.menu = [
+        menu_items = [
             self.menu_status,
+        ]
+        if not self.desktop:
+            menu_items += [self.menu_mode_remote, self.menu_mode_local]
+        menu_items += [
             None,
             self.menu_ollama,
             self.menu_mlx,
@@ -1027,6 +1060,7 @@ class LocalModelsApp(rumps.App):
             self.menu_restart,
             self.menu_quit,
         ]
+        self.menu = menu_items
 
         # Easter egg: periodic cute notifications (only for non-Jerry machines)
         self._next_woof = 0
@@ -1064,11 +1098,15 @@ class LocalModelsApp(rumps.App):
         if self.desktop:
             self._start_local_servers()
         else:
-            if self.desktop_host and (
-                probe_service(self.ollama_remote, self.probe_timeout)
-                or probe_service(self.mlx_remote, self.probe_timeout)
-            ):
+            remote_ok = (
+                not self.force_local
+                and self.desktop_host
+                and (probe_service(self.ollama_remote, self.probe_timeout)
+                     or probe_service(self.mlx_remote, self.probe_timeout))
+            )
+            if remote_ok:
                 self.mode = "client"
+                self.remote_reachable = True
             else:
                 self._start_local_servers()
         self._start_mcp_server()
@@ -1118,7 +1156,13 @@ class LocalModelsApp(rumps.App):
             self._caffeinate = None
 
     def _start_mcp_server(self):
-        """Launch the MCP server (SSE on port 8100)."""
+        """Launch the local MCP server, or point Claude Code at the desktop's."""
+        if not self.desktop and not self.force_local and self.remote_reachable:
+            # Remote mode: don't run a local server, point at the desktop
+            self._stop_mcp_server()
+            self._configure_claude_mcp(
+                f"http://{self.desktop_ip}:8100/mcp")
+            return
         if getattr(self, '_mcp_proc', None) is not None:
             if self._mcp_proc.poll() is None:
                 return
@@ -1136,6 +1180,8 @@ class LocalModelsApp(rumps.App):
         env = os.environ.copy()
         if "/opt/homebrew/bin" not in env.get("PATH", ""):
             env["PATH"] = f"/opt/homebrew/bin:{env.get('PATH', '')}"
+        if self.desktop:
+            env["MCP_HOST"] = "0.0.0.0"
         self._mcp_log = open("/tmp/local-models-mcp.log", "w")
         self._mcp_proc = subprocess.Popen(
             [os.path.expanduser("~/bin/local-models-mcp-detect")],
@@ -1144,6 +1190,27 @@ class LocalModelsApp(rumps.App):
             stderr=self._mcp_log,
             start_new_session=True,
         )
+        self._configure_claude_mcp("http://127.0.0.1:8100/mcp")
+
+    def _configure_claude_mcp(self, url):
+        """Update ~/.claude.json to point local-models MCP at the given URL."""
+        try:
+            with open(MCP_TOOLS_FILE) as f:
+                data = json.load(f)
+            servers = data.setdefault("mcpServers", {})
+            entry = servers.get("local-models", {})
+            if entry.get("url") == url:
+                return
+            entry["type"] = "http"
+            entry["url"] = url
+            # Preserve existing auth headers
+            servers["local-models"] = entry
+            with open(MCP_TOOLS_FILE, "w") as f:
+                json.dump(data, f, indent=2)
+                f.write("\n")
+            logging.info("MCP config updated: %s", url)
+        except Exception as e:
+            logging.warning("Failed to update Claude MCP config: %s", e)
 
     def _stop_mcp_server(self):
         """Stop the MCP server."""
@@ -1164,6 +1231,26 @@ class LocalModelsApp(rumps.App):
             self._start_mcp_server()
             self.refresh(None)
         threading.Thread(target=_do, daemon=True).start()
+
+    def _select_remote(self, _):
+        """User selected Remote mode."""
+        if not self.remote_reachable:
+            return
+        self.force_local = False
+        save_force_local(False)
+        self._restart_mcp(_)
+        # Refresh immediately so mode label and models update
+        self.refresh(None)
+
+    def _select_local(self, _):
+        """User selected Local mode."""
+        self.force_local = True
+        save_force_local(True)
+        # Start local servers if not already running
+        if not self.servers_started:
+            self._start_local_servers()
+        self._restart_mcp(_)
+        self.refresh(None)
 
     def stop_services(self):
         """Stop local servers."""
@@ -1356,7 +1443,7 @@ class LocalModelsApp(rumps.App):
 
         self.ollama_models = get_ollama_models(OLLAMA_LOCAL) if self.ollama_ok else []
         self.mlx_models = get_mlx_models(MLX_LOCAL) if self.mlx_ok else []
-        self.mcp_models = get_tts_models()
+        self.mcp_models = get_mcp_models()
 
         if self.ollama_ok or self.mlx_ok:
             self.mode = "server"
@@ -1366,12 +1453,11 @@ class LocalModelsApp(rumps.App):
             self.mode = "stopped"
 
     def _refresh_client_mode(self):
+        # Always probe desktop so we know whether to enable the Remote option
         desktop_ollama = False
         desktop_mlx = False
 
         if self.desktop_host:
-            # Re-resolve mDNS if we don't have an IP yet (server may have
-            # been down when we booted)
             if not self.desktop_ip:
                 self.desktop_ip = resolve_mdns(self.desktop_host)
                 if self.desktop_ip:
@@ -1382,7 +1468,12 @@ class LocalModelsApp(rumps.App):
             desktop_ollama = probe_service(self.ollama_remote, self.probe_timeout)
             desktop_mlx = probe_service(self.mlx_remote, self.probe_timeout)
 
-        if desktop_ollama or desktop_mlx:
+        self.remote_reachable = desktop_ollama or desktop_mlx
+
+        # Use remote if reachable AND user hasn't forced local
+        use_remote = self.remote_reachable and not self.force_local
+
+        if use_remote:
             self.mode = "client"
             self.ollama_ok = desktop_ollama
             self.mlx_ok = desktop_mlx
@@ -1390,6 +1481,8 @@ class LocalModelsApp(rumps.App):
                 get_ollama_models(self.ollama_remote) if desktop_ollama else [])
             self.mlx_models = (
                 get_mlx_models(self.mlx_remote) if desktop_mlx else [])
+            self.mcp_models = get_mcp_models(f"http://{self.desktop_ip}:8100")
+            return
         else:
             self.ollama_ok = probe_service(OLLAMA_LOCAL, 2)
             self.mlx_ok = probe_service(MLX_LOCAL, 2)
@@ -1416,7 +1509,7 @@ class LocalModelsApp(rumps.App):
                 self.ollama_models = []
                 self.mlx_models = []
 
-        self.mcp_models = get_tts_models()
+        self.mcp_models = get_mcp_models()
 
     @staticmethod
     def _styled_menu(item, dot, label, detail=""):
@@ -1485,6 +1578,19 @@ class LocalModelsApp(rumps.App):
         self._styled_menu(self.menu_status, "", mode_label)
         self._styled_menu(self.menu_profiles, "", "Model Profiles", profile)
 
+        # ── Mode toggle (laptops only) ──
+        if not self.desktop:
+            is_remote = self.mode == "client"
+            self.menu_mode_remote.state = is_remote
+            self.menu_mode_local.state = not is_remote
+            # Grey out Remote when desktop is unreachable
+            if self.remote_reachable:
+                self.menu_mode_remote.set_callback(self._select_remote)
+                self.menu_mode_remote.title = "Remote"
+            else:
+                self.menu_mode_remote.set_callback(None)
+                self.menu_mode_remote.title = "Remote (unavailable)"
+
         # ── Per-service status lines ──
         ollama_loading = getattr(self, 'ollama_loading', False)
         mlx_loading = getattr(self, 'mlx_loading', False)
@@ -1518,15 +1624,19 @@ class LocalModelsApp(rumps.App):
 
         mcp_proc = getattr(self, '_mcp_proc', None)
         mcp_proc_alive = mcp_proc is not None and mcp_proc.poll() is None
-        mcp_port_alive = probe_port(8100)
-        mcp_alive = mcp_proc_alive or mcp_port_alive
+        if self.mode == "client":
+            # Remote mode: MCP runs on the desktop, check its port
+            mcp_alive = probe_port(8100, host=self.desktop_ip or "127.0.0.1")
+        else:
+            mcp_port_alive = probe_port(8100)
+            mcp_alive = mcp_proc_alive or mcp_port_alive
         mcp_n = len(self.mcp_models)
         if mcp_alive:
             self._styled_menu(self.menu_mcp, GRN, "MCP",
                               f"{mcp_n} model{'s' if mcp_n != 1 else ''}")
         else:
             self._styled_menu(self.menu_mcp, RED, "MCP", "down")
-            if self.servers_started:
+            if self.mode != "client" and self.servers_started:
                 self._start_mcp_server()
 
         # ── Update (only actionable when available) ──

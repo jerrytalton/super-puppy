@@ -32,6 +32,7 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 MLX_URL = os.environ.get("MLX_URL", "http://localhost:8000")
 MCP_PREFS_FILE = Path("~/.config/local-models/mcp_preferences.json").expanduser()
 
+MCP_HOST = os.environ.get("MCP_HOST", "127.0.0.1")
 MCP_PORT = int(os.environ.get("MCP_PORT", "8100"))
 
 # --- Bearer token auth (token comes from 1Password via wrapper) ---
@@ -40,10 +41,10 @@ if not MCP_AUTH_TOKEN:
     print("local-models MCP: WARNING: MCP_AUTH_TOKEN not set, server is unauthenticated",
           file=sys.stderr, flush=True)
 
-mcp = FastMCP("local-models", host="127.0.0.1", port=MCP_PORT)
+mcp = FastMCP("local-models", host=MCP_HOST, port=MCP_PORT)
 
 
-_AUTH_EXEMPT_PATHS = {"/gpu"}
+_AUTH_EXEMPT_PATHS = {"/gpu", "/api/mcp-models"}
 
 
 class BearerAuthMiddleware(BaseHTTPMiddleware):
@@ -1263,6 +1264,14 @@ async def _gpu_status(request):
         })
 
 
+async def _mcp_models(request):
+    """Return HF-cache models (TTS, image gen/edit, transcription)."""
+    hf_backends = {"mlx-audio", "mflux"}
+    names = [name for name, info in _models.items()
+             if info.get("backend") in hf_backends]
+    return JSONResponse({"models": names})
+
+
 def main():
     asyncio.run(_startup())
     if MCP_AUTH_TOKEN:
@@ -1272,6 +1281,7 @@ def main():
         app.add_middleware(BearerAuthMiddleware)
         # Add unauthenticated status endpoint
         app.routes.append(Route("/gpu", _gpu_status))
+        app.routes.append(Route("/api/mcp-models", _mcp_models))
         config = uvicorn.Config(
             app, host=mcp.settings.host, port=mcp.settings.port,
             log_level=mcp.settings.log_level.lower())
