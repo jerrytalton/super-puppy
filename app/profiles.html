@@ -332,17 +332,17 @@ function renderMemory() {
     const limit = document.createElement('div');
     limit.className = 'mem-bar-limit';
     limit.style.display = 'block';
-    limit.style.left = ((ram / barMax) * 100) + '%';
+    limit.style.left = ((targetRam / barMax) * 100) + '%';
     bar.appendChild(limit);
   } else {
-    const freePct = ((ram - totalUsed) / barMax) * 100;
+    const freePct = ((targetRam - totalUsed) / barMax) * 100;
     if (freePct > 0.5) {
       const free = document.createElement('div');
       free.className = 'mem-seg';
       free.style.width = freePct + '%';
       free.style.background = 'var(--surface2)';
       free.style.color = 'var(--text3)';
-      if (freePct > 10) free.innerHTML = `<span>${fmt(ram - totalUsed)} free</span>`;
+      if (freePct > 10) free.innerHTML = `<span>${fmt(targetRam - totalUsed)} free</span>`;
       bar.appendChild(free);
     }
   }
