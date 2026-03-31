@@ -373,7 +373,8 @@ function renderTasks() {
       .filter(m => m.eligible_tasks?.includes(key))
       .sort((a,b) => b.total_params_b - a.total_params_b);
 
-    const selectedName = picked || def;
+    const isPreset = S.sel && S.sel !== 'custom';
+    const selectedName = picked || (isPreset ? null : def);
     const selectedLabel = selectedName ? selectedName.split(':')[0] : 'none';
 
     const row = document.createElement('div');
