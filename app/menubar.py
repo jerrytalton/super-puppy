@@ -1633,16 +1633,16 @@ class LocalModelsApp(rumps.App):
             self._styled_menu(self.menu_status, "", mode_label)
         else:
             is_remote = self.mode == "client"
+            self.menu_mode_remote.state = is_remote
+            self.menu_mode_local.state = not is_remote
             if self.remote_reachable:
-                self._styled_menu(self.menu_mode_remote, "", "Remote",
-                                  bold=is_remote)
+                self._styled_menu(self.menu_mode_remote, "", "Remote")
                 self.menu_mode_remote.set_callback(self._select_remote)
             else:
                 self._styled_menu(self.menu_mode_remote, "", "Remote",
                                   "unavailable")
                 self.menu_mode_remote.set_callback(None)
-            self._styled_menu(self.menu_mode_local, "", "Local",
-                              bold=not is_remote)
+            self._styled_menu(self.menu_mode_local, "", "Local")
 
         self._styled_menu(self.menu_profiles, "", "Model Profiles", profile)
 
