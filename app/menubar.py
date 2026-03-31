@@ -996,6 +996,7 @@ class LocalModelsApp(rumps.App):
         self.ollama_port = self.conf["OLLAMA_PORT"]
         self.mlx_port = self.conf["MLX_PORT"]
         self.probe_timeout = int(self.conf["PROBE_TIMEOUT"])
+        self._profile_fixed_port = int(self.conf.get("PROFILE_PORT", "8101"))
 
         # Resolve mDNS hostname to IP once (avoids repeated cold-cache
         # lookups that eat into the probe timeout window)
@@ -1060,13 +1061,20 @@ class LocalModelsApp(rumps.App):
                                            callback=self.open_profiles)
         self.menu_tools = rumps.MenuItem("Playground",
                                         callback=self.open_tools)
+        self.menu_remote_access = rumps.MenuItem("Remote Access",
+                                                callback=self._toggle_remote_access)
+        self.menu_share_url = rumps.MenuItem("Copy Playground URL",
+                                             callback=self._copy_playground_url)
         self.menu_update = rumps.MenuItem("Update Available")
         self.menu_restart = rumps.MenuItem("Restart", callback=self.restart_app)
         self.menu_quit = rumps.MenuItem("Quit", callback=self.quit_app)
 
+        self.remote_access_enabled = self._load_remote_access_pref()
+
         menu_items = []
         if self.desktop:
             menu_items.append(self.menu_status)
+            menu_items.append(self.menu_remote_access)
         else:
             menu_items += [self.menu_mode_remote, self.menu_mode_local]
         menu_items += [
@@ -1077,6 +1085,7 @@ class LocalModelsApp(rumps.App):
             None,
             self.menu_profiles,
             self.menu_tools,
+            ] + ([self.menu_share_url] if self.desktop else []) + [
             None,
             self.menu_update,
             None,
@@ -1247,6 +1256,79 @@ class LocalModelsApp(rumps.App):
             logging.info("MCP config updated: %s", url)
         except Exception as e:
             logging.warning("Failed to update Claude MCP config: %s", e)
+
+    def _tailscale_available(self):
+        """Check if Tailscale is connected."""
+        try:
+            result = subprocess.run(
+                ["tailscale", "status", "--json"],
+                capture_output=True, text=True, timeout=3)
+            if result.returncode != 0:
+                return False
+            import json as _json
+            data = _json.loads(result.stdout)
+            return data.get("BackendState") == "Running"
+        except Exception:
+            return False
+
+    def _load_remote_access_pref(self):
+        conf = os.path.expanduser("~/.config/local-models/remote_access.conf")
+        if os.path.exists(conf):
+            try:
+                with open(conf) as f:
+                    for line in f:
+                        if line.strip() == "REMOTE_ACCESS=true":
+                            return True
+            except Exception:
+                pass
+        return False
+
+    def _save_remote_access_pref(self, enabled):
+        conf = os.path.expanduser("~/.config/local-models/remote_access.conf")
+        os.makedirs(os.path.dirname(conf), exist_ok=True)
+        with open(conf, "w") as f:
+            f.write(f"REMOTE_ACCESS={'true' if enabled else 'false'}\n")
+
+    def _toggle_remote_access(self, _):
+        self.remote_access_enabled = not self.remote_access_enabled
+        self._save_remote_access_pref(self.remote_access_enabled)
+        # Restart profile server with new bind settings
+        self._restart_profile_server_and_reload()
+        status = "enabled" if self.remote_access_enabled else "disabled"
+        try:
+            rumps.notification("Super Puppy", f"Remote access {status}",
+                               "Profile server restarted")
+        except RuntimeError:
+            pass
+        self._update_menu()
+
+    def _copy_playground_url(self, _):
+        """Copy the Playground URL to clipboard for phone/tablet setup."""
+        if not self.profile_port:
+            rumps.notification("Super Puppy", "No URL", "Profile server not running")
+            return
+        # Prefer Tailscale HTTPS URL if available
+        cert_dir = os.path.expanduser("~/.config/local-models/certs")
+        has_certs = os.path.isdir(cert_dir) and any(
+            f.endswith(".crt") for f in os.listdir(cert_dir))
+        if has_certs and self._tailscale_available():
+            try:
+                result = subprocess.run(
+                    ["tailscale", "status", "--json"],
+                    capture_output=True, text=True, timeout=3)
+                data = json.loads(result.stdout)
+                fqdn = data.get("Self", {}).get("DNSName", "").rstrip(".")
+                if fqdn:
+                    url = f"https://{fqdn}:{self.profile_port}/tools"
+                else:
+                    url = f"http://127.0.0.1:{self.profile_port}/tools"
+            except Exception:
+                url = f"http://127.0.0.1:{self.profile_port}/tools"
+        else:
+            url = f"http://127.0.0.1:{self.profile_port}/tools"
+
+        subprocess.run(["pbcopy"], input=url.encode(), check=True)
+        rumps.notification("Super Puppy", "URL copied", url)
 
     def _stop_mcp_server(self):
         """Stop the MCP server."""
@@ -1654,6 +1736,15 @@ class LocalModelsApp(rumps.App):
                 self.menu_mode_remote.set_callback(None)
             self._styled_menu(self.menu_mode_local, "", "Local")
 
+        # ── Remote Access toggle (desktop only) ──
+        if self.desktop:
+            if self.remote_access_enabled:
+                self.menu_remote_access.title = "\u2705 Remote Access"
+                self.menu_share_url.set_callback(self._copy_playground_url)
+            else:
+                self.menu_remote_access.title = "\u274c Remote Access"
+                self.menu_share_url.set_callback(None)
+
         self._styled_menu(self.menu_profiles, "", "Model Profiles", profile)
 
         # ── Per-service status lines ──
@@ -1737,14 +1828,21 @@ class LocalModelsApp(rumps.App):
             if hasattr(self, '_profile_log') and self._profile_log:
                 self._profile_log.close()
 
-        import socket
-        s = socket.socket()
-        s.bind(("127.0.0.1", 0))
-        self.profile_port = s.getsockname()[1]
-        s.close()
+        # Use fixed port + 0.0.0.0 when remote access is enabled
+        if self.desktop and getattr(self, 'remote_access_enabled', False):
+            self.profile_port = int(getattr(self, '_profile_fixed_port', 8101))
+            profile_host = "0.0.0.0"
+        else:
+            import socket
+            s = socket.socket()
+            s.bind(("127.0.0.1", 0))
+            self.profile_port = s.getsockname()[1]
+            s.close()
+            profile_host = "127.0.0.1"
 
         env = os.environ.copy()
         env["PROFILE_SERVER_PORT"] = str(self.profile_port)
+        env["PROFILE_HOST"] = profile_host
         env["OLLAMA_URL"] = (
             self.ollama_remote if self.mode == "client" else OLLAMA_LOCAL)
         env["MLX_URL"] = (
