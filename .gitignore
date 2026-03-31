@@ -8,3 +8,7 @@ logs/
 app/SuperPuppy.app/Contents/MacOS/super-puppy
 app/SuperPuppy.app/Contents/Resources/AppIcon.icns
 app/SuperPuppy.app/Contents/_CodeSignature/
+
+# Web landing page (built by Vite)
+web/node_modules/
+web/dist/
