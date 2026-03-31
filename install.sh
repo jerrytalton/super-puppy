@@ -97,6 +97,14 @@ if [ -f "$CLAUDE_JSON" ]; then
         ENTRY="$ENTRY"'}'
         claude mcp add-json -s user local-models "$ENTRY" 2>/dev/null
         echo "  Registered local-models MCP (streamable-http on port 8100)"
+        # Register open-websearch if not already present
+        if ! claude mcp get open-websearch -s user > /dev/null 2>&1; then
+            claude mcp add-json -s user open-websearch \
+                '{"type":"stdio","command":"npx","args":["-y","open-websearch@latest"],"env":{"MODE":"stdio"}}' 2>/dev/null
+            echo "  Registered open-websearch MCP"
+        else
+            echo "  open-websearch MCP already registered"
+        fi
     else
         echo "  claude CLI not found — install Claude Code first, then re-run install.sh"
     fi
