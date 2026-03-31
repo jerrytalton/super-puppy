@@ -235,16 +235,16 @@ else
 fi
 
 # Pull models appropriate for this machine's memory tier.
-# Model lists match the DEFAULT_PROFILES in app/profile-server.py.
+# Model lists are derived from the MLX server config and profiles.json.
 # Server (512GB+) manages its own models — only pull for laptop/desktop.
 echo ""
 if [ "$RAM_GB" -lt 256 ]; then
     echo "Pulling models for local use..."
 
     # Derive model lists from configs instead of hardcoding them.
-    # MLX server config → HuggingFace model_path entries (LLMs, whisper)
-    # profiles.json → task values with "/" are HuggingFace, with ":" are Ollama
-    REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+    # 1. MLX server config YAML → HuggingFace model_path entries (LLMs, whisper)
+    # 2. profiles.json → task values with "/" (no ":") are HuggingFace (TTS etc.),
+    #    values with ":" are Ollama.
     PROFILES_FILE="$HOME/.config/local-models/profiles.json"
 
     if [ "$RAM_GB" -ge 48 ]; then
@@ -267,13 +267,19 @@ if [ "$RAM_GB" -lt 256 ]; then
     # (contain "/" but not ":" — distinguishes "org/model" from "ollama/ns:tag").
     # Models with neither (e.g. "qwen3.5-fast") are MLX served names, already
     # covered by the MLX config parse above.
+    #
+    # Wait for profiles.json — the menu bar app (started above) writes it on launch.
     OLLAMA_MODELS=()
+    for i in $(seq 1 30); do
+        [ -f "$PROFILES_FILE" ] && break
+        sleep 1
+    done
     if [ -f "$PROFILES_FILE" ]; then
         while IFS= read -r model; do
             HF_MODELS+=("$model")
         done < <(python3 -c "
-import json
-data = json.load(open('$PROFILES_FILE'))
+import json, pathlib
+data = json.loads(pathlib.Path('$PROFILES_FILE').read_text())
 profile = data.get('profiles', {}).get('$PROFILE_NAME', {})
 seen = set()
 for model in profile.get('tasks', {}).values():
@@ -284,8 +290,8 @@ for model in profile.get('tasks', {}).values():
         while IFS= read -r model; do
             OLLAMA_MODELS+=("$model")
         done < <(python3 -c "
-import json
-data = json.load(open('$PROFILES_FILE'))
+import json, pathlib
+data = json.loads(pathlib.Path('$PROFILES_FILE').read_text())
 profile = data.get('profiles', {}).get('$PROFILE_NAME', {})
 seen = set()
 for model in profile.get('tasks', {}).values():
@@ -293,6 +299,8 @@ for model in profile.get('tasks', {}).values():
         seen.add(model)
         print(model)
 ")
+    else
+        echo "  WARNING: profiles.json not found after 30s — pulling MLX models only"
     fi
 
     # Deduplicate HF_MODELS
@@ -303,26 +311,24 @@ for model in profile.get('tasks', {}).values():
     for model in "${OLLAMA_MODELS[@]}"; do
         current=$((current + 1))
         echo "  [$current/$total] ollama: $model"
-        ollama pull "$model" 2>&1 | tail -1
+        ollama pull "$model"
     done
 
-    # Download HuggingFace models (TTS etc.)
-    if command -v hf > /dev/null; then
-        for model in "${HF_MODELS[@]}"; do
-            echo "  huggingface: $model"
-            hf download "$model" --quiet 2>&1 | tail -1 || true
-        done
-    else
+    # Download HuggingFace models
+    if ! command -v hf > /dev/null; then
         echo "  Installing hf..."
         brew install hf 2>/dev/null || true
-        if command -v hf > /dev/null; then
-            for model in "${HF_MODELS[@]}"; do
-                echo "  huggingface: $model"
-                hf download "$model" --quiet 2>&1 | tail -1 || true
-            done
-        else
-            echo "  WARNING: hf install failed. TTS models will download on first use."
-        fi
+    fi
+    if command -v hf > /dev/null; then
+        total=${#HF_MODELS[@]}
+        current=0
+        for model in "${HF_MODELS[@]}"; do
+            current=$((current + 1))
+            echo "  [$current/$total] huggingface: $model"
+            hf download "$model" || true
+        done
+    else
+        echo "  WARNING: hf install failed. HuggingFace models will download on first use."
     fi
 
 else
