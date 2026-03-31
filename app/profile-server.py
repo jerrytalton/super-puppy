@@ -458,7 +458,7 @@ def get_eligible_tasks(name, model_info):
 
 # ── Profiles ─────────────────────────────────────────────────────────
 
-PROFILES_VERSION = 12  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 13  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -519,7 +519,7 @@ DEFAULT_PROFILES = {
         },
         "laptop": {
             "label": "Laptop",
-            "description": "Fits in 24GB — ~19GB VRAM",
+            "description": "Fits in 24GB — ~25GB VRAM",
             "tasks": {
                 "code": "qwen3.5-small",
                 "general": "qwen3.5-small",
@@ -527,6 +527,7 @@ DEFAULT_PROFILES = {
                 "long_context": "qwen3.5-small",
                 "translation": "qwen3.5-small",
                 "vision": "qwen3.5:9b",
+                "image_gen": "x/flux2-klein:latest",
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/Kokoro-82M-bf16",
                 "embedding": "all-minilm:latest",
