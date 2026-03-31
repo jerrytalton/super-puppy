@@ -76,6 +76,7 @@ class _WebViewUIDelegate(NSObject):
     method trampoline is created.
     """
 
+    @objc.typedSelector(b"v@:@@@q@?")
     def webView_requestMediaCapturePermissionForOrigin_initiatedByFrame_type_decisionHandler_(
         self, webView, origin, frame, mediaType, decisionHandler
     ):
@@ -1311,6 +1312,7 @@ class LocalModelsApp(rumps.App):
         cert_dir = os.path.expanduser("~/.config/local-models/certs")
         has_certs = os.path.isdir(cert_dir) and any(
             f.endswith(".crt") for f in os.listdir(cert_dir))
+        scheme = getattr(self, '_profile_scheme', 'http')
         if has_certs and self._tailscale_available():
             try:
                 result = subprocess.run(
@@ -1321,11 +1323,11 @@ class LocalModelsApp(rumps.App):
                 if fqdn:
                     url = f"https://{fqdn}:{self.profile_port}/tools"
                 else:
-                    url = f"http://127.0.0.1:{self.profile_port}/tools"
+                    url = f"{scheme}://127.0.0.1:{self.profile_port}/tools"
             except Exception:
-                url = f"http://127.0.0.1:{self.profile_port}/tools"
+                url = f"{scheme}://127.0.0.1:{self.profile_port}/tools"
         else:
-            url = f"http://127.0.0.1:{self.profile_port}/tools"
+            url = f"{scheme}://127.0.0.1:{self.profile_port}/tools"
 
         subprocess.run(["pbcopy"], input=url.encode(), check=True)
         rumps.notification("Super Puppy", "URL copied", url)
@@ -1546,8 +1548,9 @@ class LocalModelsApp(rumps.App):
         self._ensure_profile_server()
         if self.profile_window is not None:
             from Foundation import NSURL, NSURLRequest
+            scheme = getattr(self, '_profile_scheme', 'http')
             url = NSURL.URLWithString_(
-                f"http://127.0.0.1:{self.profile_port}/")
+                f"{scheme}://127.0.0.1:{self.profile_port}/")
             req = NSURLRequest.requestWithURL_(url)
             wv = self.profile_window.contentView().subviews()[0]
             wv.loadRequest_(req)
@@ -1848,6 +1851,10 @@ class LocalModelsApp(rumps.App):
         env["MLX_URL"] = (
             self.mlx_remote if self.mode == "client" else MLX_LOCAL)
 
+        # HTTPS only when remote access is on (profile server binds 0.0.0.0
+        # with Tailscale certs). On localhost the cert's FQDN won't match.
+        self._profile_scheme = "https" if profile_host == "0.0.0.0" else "http"
+
         log_path = "/tmp/local-models-profile-server.log"
         self._profile_log = open(log_path, "a")
         self.profile_server = subprocess.Popen(
@@ -1859,12 +1866,11 @@ class LocalModelsApp(rumps.App):
         # Brief wait for server to become ready (runs on main thread,
         # so keep it short — the webview will retry on load failure)
         import urllib.request
+        base = f"{self._profile_scheme}://127.0.0.1:{self.profile_port}"
         for _ in range(6):
             time.sleep(0.3)
             try:
-                urllib.request.urlopen(
-                    f"http://127.0.0.1:{self.profile_port}/api/system",
-                    timeout=1)
+                urllib.request.urlopen(f"{base}/api/system", timeout=1)
                 break
             except Exception:
                 continue
@@ -1905,7 +1911,8 @@ class LocalModelsApp(rumps.App):
         self._ui_delegate = _WebViewUIDelegate.alloc().init()
         webview.setUIDelegate_(self._ui_delegate)
         webview.setAutoresizingMask_(0x12)
-        full_url = f"http://127.0.0.1:{self.profile_port}{path}"
+        scheme = getattr(self, '_profile_scheme', 'http')
+        full_url = f"{scheme}://127.0.0.1:{self.profile_port}{path}"
         url = NSURL.URLWithString_(full_url)
         req = NSURLRequest.requestWithURL_cachePolicy_timeoutInterval_(
             url, 1, 30)  # 1 = NSURLRequestReloadIgnoringLocalCacheData

@@ -1213,11 +1213,15 @@ if __name__ == "__main__":
         PORT = s.getsockname()[1]
         s.close()
 
-    # HTTPS if Tailscale certs exist
-    cert_dir = Path("~/.config/local-models/certs").expanduser()
-    cert_file = next(cert_dir.glob("*.crt"), None) if cert_dir.exists() else None
-    key_file = next(cert_dir.glob("*.key"), None) if cert_dir.exists() else None
-    ssl_ctx = (str(cert_file), str(key_file)) if cert_file and key_file else None
+    # HTTPS only when binding to all interfaces (remote access).
+    # Tailscale certs are issued for the FQDN, not 127.0.0.1, so TLS
+    # on localhost would fail with a hostname mismatch.
+    ssl_ctx = None
+    if HOST == "0.0.0.0":
+        cert_dir = Path("~/.config/local-models/certs").expanduser()
+        cert_file = next(cert_dir.glob("*.crt"), None) if cert_dir.exists() else None
+        key_file = next(cert_dir.glob("*.key"), None) if cert_dir.exists() else None
+        ssl_ctx = (str(cert_file), str(key_file)) if cert_file and key_file else None
 
     scheme = "https" if ssl_ctx else "http"
     print(f"{scheme}://{HOST}:{PORT}", flush=True)  # menu bar reads this
