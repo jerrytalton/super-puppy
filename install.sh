@@ -284,6 +284,7 @@ if [ "$RAM_GB" -lt 256 ]; then
     else
         echo "  Installing huggingface-cli..."
         uv tool install --python 3.12 huggingface_hub[cli] 2>/dev/null || true
+        export PATH="$(uv tool dir --bin 2>/dev/null):$PATH"
         if command -v huggingface-cli > /dev/null; then
             for model in "${HF_MODELS[@]}"; do
                 echo "  huggingface: $model"
