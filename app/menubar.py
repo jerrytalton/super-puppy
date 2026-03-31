@@ -1136,6 +1136,19 @@ class LocalModelsApp(rumps.App):
             else:
                 self._start_local_servers()
         self._start_mcp_server()
+        self._ensure_active_profile()
+
+    def _ensure_active_profile(self):
+        """Make sure a valid profile is active on startup."""
+        data = load_profiles()
+        active = data.get("active")
+        profiles = data.get("profiles", {})
+        if active and active in profiles:
+            self._activate_profile(active)
+            return
+        best = pick_profile_for_ram(self.ram_gb, profiles)
+        if best:
+            self._activate_profile(best)
 
     def _start_local_servers(self):
         """Launch Ollama and MLX-OpenAI-Server via start-local-models."""
