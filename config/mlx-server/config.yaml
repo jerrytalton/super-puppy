@@ -10,7 +10,7 @@
 # Run:      mlx-openai-server launch --config ~/.config/mlx-server/config.yaml
 
 server:
-  host: "0.0.0.0"
+  host: "127.0.0.1"
   port: 8000
   log_level: INFO
 
