@@ -98,9 +98,9 @@ if [ -f "$CLAUDE_JSON" ]; then
         claude mcp add-json -s user local-models "$ENTRY" 2>/dev/null
         echo "  Registered local-models MCP (streamable-http on port 8100)"
         # Register open-websearch if not already present
-        if ! claude mcp get open-websearch -s user > /dev/null 2>&1; then
+        if ! grep -q '"open-websearch"' ~/.claude.json 2>/dev/null; then
             claude mcp add-json -s user open-websearch \
-                '{"type":"stdio","command":"npx","args":["-y","open-websearch@latest"],"env":{"MODE":"stdio"}}' 2>/dev/null
+                '{"type":"stdio","command":"npx","args":["-y","open-websearch@latest"],"env":{"MODE":"stdio"}}' 2>/dev/null || true
             echo "  Registered open-websearch MCP"
         else
             echo "  open-websearch MCP already registered"
@@ -241,31 +241,62 @@ echo ""
 if [ "$RAM_GB" -lt 256 ]; then
     echo "Pulling models for local use..."
 
-    # Ollama models for the Laptop profile (~19GB total)
-    OLLAMA_MODELS=(
-        "qwen3.5:9b"
-        "dolphin3:8b"
-        "all-minilm:latest"
-    )
-
-    # HuggingFace models (downloaded via huggingface-cli for MLX/mlx-audio)
-    HF_MODELS=(
-        "mlx-community/Kokoro-82M-bf16"
-    )
+    # Derive model lists from configs instead of hardcoding them.
+    # MLX server config → HuggingFace model_path entries (LLMs, whisper)
+    # profiles.json → task values with "/" are HuggingFace, with ":" are Ollama
+    REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+    PROFILES_FILE="$HOME/.config/local-models/profiles.json"
 
     if [ "$RAM_GB" -ge 48 ]; then
-        # Desktop profile (~63GB total): add larger models
-        OLLAMA_MODELS+=(
-            "glm-4.7-flash:latest"
-            "x/flux2-klein:latest"
-        )
-        HF_MODELS=(
-            "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit"
-        )
+        MLX_CONFIG="$REPO_DIR/config/mlx-server/config.yaml"
+        PROFILE_NAME="desktop"
         echo "  Detected desktop ($RAM_GB GB) — pulling Desktop profile models"
     else
+        MLX_CONFIG="$REPO_DIR/config/mlx-server/config-laptop.yaml"
+        PROFILE_NAME="laptop"
         echo "  Detected laptop ($RAM_GB GB) — pulling Laptop profile models"
     fi
+
+    # MLX models from server config
+    HF_MODELS=()
+    while IFS= read -r path; do
+        HF_MODELS+=("$path")
+    done < <(grep 'model_path:' "$MLX_CONFIG" | sed 's/.*model_path: *//')
+
+    # Parse profile tasks into Ollama models (contain ":") and HuggingFace repos
+    # (contain "/" but not ":" — distinguishes "org/model" from "ollama/ns:tag").
+    # Models with neither (e.g. "qwen3.5-fast") are MLX served names, already
+    # covered by the MLX config parse above.
+    OLLAMA_MODELS=()
+    if [ -f "$PROFILES_FILE" ]; then
+        while IFS= read -r model; do
+            HF_MODELS+=("$model")
+        done < <(python3 -c "
+import json
+data = json.load(open('$PROFILES_FILE'))
+profile = data.get('profiles', {}).get('$PROFILE_NAME', {})
+seen = set()
+for model in profile.get('tasks', {}).values():
+    if model and '/' in model and ':' not in model and model not in seen:
+        seen.add(model)
+        print(model)
+")
+        while IFS= read -r model; do
+            OLLAMA_MODELS+=("$model")
+        done < <(python3 -c "
+import json
+data = json.load(open('$PROFILES_FILE'))
+profile = data.get('profiles', {}).get('$PROFILE_NAME', {})
+seen = set()
+for model in profile.get('tasks', {}).values():
+    if model and ':' in model and model not in seen:
+        seen.add(model)
+        print(model)
+")
+    fi
+
+    # Deduplicate HF_MODELS
+    HF_MODELS=($(printf '%s\n' "${HF_MODELS[@]}" | awk '!seen[$0]++'))
 
     total=${#OLLAMA_MODELS[@]}
     current=0
@@ -276,27 +307,24 @@ if [ "$RAM_GB" -lt 256 ]; then
     done
 
     # Download HuggingFace models (TTS etc.)
-    if command -v huggingface-cli > /dev/null; then
+    if command -v hf > /dev/null; then
         for model in "${HF_MODELS[@]}"; do
             echo "  huggingface: $model"
-            huggingface-cli download "$model" --quiet 2>&1 | tail -1 || true
+            hf download "$model" --quiet 2>&1 | tail -1 || true
         done
     else
-        echo "  Installing huggingface-cli..."
-        uv tool install --python 3.12 huggingface_hub[cli] 2>/dev/null || true
-        export PATH="$(uv tool dir --bin 2>/dev/null):$PATH"
-        if command -v huggingface-cli > /dev/null; then
+        echo "  Installing hf..."
+        brew install hf 2>/dev/null || true
+        if command -v hf > /dev/null; then
             for model in "${HF_MODELS[@]}"; do
                 echo "  huggingface: $model"
-                huggingface-cli download "$model" --quiet 2>&1 | tail -1 || true
+                hf download "$model" --quiet 2>&1 | tail -1 || true
             done
         else
-            echo "  WARNING: huggingface-cli install failed. TTS models will download on first use."
+            echo "  WARNING: hf install failed. TTS models will download on first use."
         fi
     fi
 
-    # MLX LLM models are on-demand (downloaded on first use via mlx-openai-server)
-    echo "  MLX models (qwen3.5-fast, qwen3.5-small, whisper-v3) download on first use."
 else
     echo "Server detected ($RAM_GB GB) — skipping model pull."
     echo "Manage models via the menu bar app or ollama pull."
