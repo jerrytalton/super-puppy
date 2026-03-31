@@ -301,7 +301,8 @@ function renderMemory() {
   const overflows = totalUsed > ram;
   const barMax = overflows ? totalUsed : ram;
 
-  usage.textContent = fmt(totalUsed) + ' / ' + fmt(ram) +
+  const ramLabel = (S.sys?.total_ram_gb || Math.round(ram/(1<<30))) + 'GB';
+  usage.textContent = fmt(totalUsed) + ' / ' + ramLabel +
     (overflows ? ` (${fmt(totalUsed - ram)} swap)` : '');
 
   segs.forEach(seg => {
