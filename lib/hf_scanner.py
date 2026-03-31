@@ -152,6 +152,10 @@ def _classify_model(config: dict, hf_id: str) -> str | None:
                 task = "tts"
                 break
 
+    # Kokoro TTS: no model_type, but has istftnet + plbert vocoder config
+    if not task and "istftnet" in config and "plbert" in config:
+        task = "tts"
+
     if not task:
         return None
 

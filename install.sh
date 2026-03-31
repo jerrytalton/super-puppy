@@ -100,6 +100,7 @@ if [ -f "$CLAUDE_JSON" ]; then
     else
         echo "  claude CLI not found — install Claude Code first, then re-run install.sh"
     fi
+fi
 
 # Install dependencies
 echo ""
@@ -225,42 +226,68 @@ else
     echo "     Create it and add the '## Local Model Cluster' section from the README."
 fi
 
-# Pull models appropriate for this machine's memory tier
+# Pull models appropriate for this machine's memory tier.
+# Model lists match the DEFAULT_PROFILES in app/profile-server.py.
 # Server (512GB+) manages its own models — only pull for laptop/desktop.
 echo ""
 if [ "$RAM_GB" -lt 256 ]; then
     echo "Pulling models for local use..."
 
-    # Shared across all non-server tiers
-    MODELS=(
+    # Ollama models for the Laptop profile (~19GB total)
+    OLLAMA_MODELS=(
         "qwen3.5:9b"
-        "glm-4.7-flash:latest"
-        "all-minilm:latest"
         "dolphin3:8b"
-        "x/flux2-klein:latest"
+        "all-minilm:latest"
+    )
+
+    # HuggingFace models (downloaded via huggingface-cli for MLX/mlx-audio)
+    HF_MODELS=(
+        "mlx-community/Kokoro-82M-bf16"
     )
 
     if [ "$RAM_GB" -ge 48 ]; then
-        # Desktop tier (64GB+): add larger models
-        MODELS+=(
-            "qwen3-coder-next:latest"
-            "x/z-image-turbo:latest"
+        # Desktop profile (~63GB total): add larger models
+        OLLAMA_MODELS+=(
+            "glm-4.7-flash:latest"
+            "x/flux2-klein:latest"
         )
-        echo "  Detected desktop ($RAM_GB GB) — pulling desktop + laptop models"
+        HF_MODELS=(
+            "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit"
+        )
+        echo "  Detected desktop ($RAM_GB GB) — pulling Desktop profile models"
     else
-        echo "  Detected laptop ($RAM_GB GB) — pulling laptop models"
+        echo "  Detected laptop ($RAM_GB GB) — pulling Laptop profile models"
     fi
 
-    total=${#MODELS[@]}
+    total=${#OLLAMA_MODELS[@]}
     current=0
-    for model in "${MODELS[@]}"; do
+    for model in "${OLLAMA_MODELS[@]}"; do
         current=$((current + 1))
-        echo "  [$current/$total] $model"
+        echo "  [$current/$total] ollama: $model"
         ollama pull "$model" 2>&1 | tail -1
     done
 
-    # MLX models are on-demand (downloaded on first use via mlx-openai-server)
-    echo "  MLX models (qwen3.5-fast, whisper-v3, etc.) download on first use."
+    # Download HuggingFace models (TTS etc.)
+    if command -v huggingface-cli > /dev/null; then
+        for model in "${HF_MODELS[@]}"; do
+            echo "  huggingface: $model"
+            huggingface-cli download "$model" --quiet 2>&1 | tail -1 || true
+        done
+    else
+        echo "  Installing huggingface-cli..."
+        uv tool install --python 3.12 huggingface_hub[cli] 2>/dev/null || true
+        if command -v huggingface-cli > /dev/null; then
+            for model in "${HF_MODELS[@]}"; do
+                echo "  huggingface: $model"
+                huggingface-cli download "$model" --quiet 2>&1 | tail -1 || true
+            done
+        else
+            echo "  WARNING: huggingface-cli install failed. TTS models will download on first use."
+        fi
+    fi
+
+    # MLX LLM models are on-demand (downloaded on first use via mlx-openai-server)
+    echo "  MLX models (qwen3.5-fast, qwen3.5-small, whisper-v3) download on first use."
 else
     echo "Server detected ($RAM_GB GB) — skipping model pull."
     echo "Manage models via the menu bar app or ollama pull."
