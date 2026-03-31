@@ -255,7 +255,7 @@ async function init() {
     b.onclick = () => selectTool(key);
     grid.appendChild(b);
   }
-  selectTool('generate');
+  selectTool('code');
 }
 
 function saveToolState() {
@@ -275,6 +275,7 @@ function saveToolState() {
 }
 
 function selectTool(key) {
+  if (!TOOLS[key]) key = Object.keys(TOOLS)[0];
   saveToolState();
   selected = key;
   document.querySelectorAll('.tool-btn').forEach((b, i) => {
