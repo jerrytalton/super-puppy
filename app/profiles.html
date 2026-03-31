@@ -408,7 +408,7 @@ function renderTasks() {
     const ram = S.sys?.total_ram_bytes || 512*(1<<30);
 
     for (const m of eligible) {
-      const isSelected = m.name === (picked || def);
+      const isSelected = m.name === selectedName;
       const isDef = m.name === def;
       const tooLarge = (m.vram_bytes || m.disk_bytes) > ram;
 
