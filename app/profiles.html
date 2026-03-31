@@ -210,6 +210,10 @@ function fillThinkDefaults() {
 }
 
 function fillDefaults() {
+  // Only fill defaults for the Custom profile (user is building from scratch).
+  // Preset profiles intentionally omit tasks that don't fit in their RAM budget.
+  const isPreset = S.sel && S.sel !== 'custom';
+  if (isPreset) return;
   for (const [key, info] of Object.entries(S.tasks)) {
     if (S.picks[key]) continue;
     for (const pref of (info.defaults||[])) {
