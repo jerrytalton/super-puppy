@@ -1041,10 +1041,10 @@ class LocalModelsApp(rumps.App):
         self.menu_restart = rumps.MenuItem("Restart", callback=self.restart_app)
         self.menu_quit = rumps.MenuItem("Quit", callback=self.quit_app)
 
-        menu_items = [
-            self.menu_status,
-        ]
-        if not self.desktop:
+        menu_items = []
+        if self.desktop:
+            menu_items.append(self.menu_status)
+        else:
             menu_items += [self.menu_mode_remote, self.menu_mode_local]
         menu_items += [
             None,
@@ -1512,16 +1512,20 @@ class LocalModelsApp(rumps.App):
         self.mcp_models = get_mcp_models()
 
     @staticmethod
-    def _styled_menu(item, dot, label, detail=""):
+    def _styled_menu(item, dot, label, detail="", bold=False):
         """Set an NSAttributedString title with dot, label, and dim detail."""
         from AppKit import (NSFont, NSForegroundColorAttributeName,
                             NSFontAttributeName, NSColor,
                             NSMutableAttributedString,
                             NSParagraphStyleAttributeName,
-                            NSMutableParagraphStyle)
+                            NSMutableParagraphStyle,
+                            NSFontManager)
         from Foundation import NSRange, NSString
 
         font = NSFont.menuFontOfSize_(13)
+        if bold:
+            font = NSFontManager.sharedFontManager().convertFont_toHaveTrait_(
+                font, 2)  # 2 = NSBoldFontMask
         detail_font = NSFont.menuFontOfSize_(12)
 
         para = NSMutableParagraphStyle.alloc().init()
@@ -1562,7 +1566,7 @@ class LocalModelsApp(rumps.App):
 
         self.title = None
 
-        # ── Top line: mode — profile ──
+        # ── Top line ──
         ollama_n = len(self.ollama_models)
         mlx_n = len(self.mlx_models)
         profiles_data = load_profiles()
@@ -1572,31 +1576,31 @@ class LocalModelsApp(rumps.App):
         else:
             profile = "No Profile"
 
-        mode_label = {"server": "Server", "client": "Remote",
-                      "offline": "Local", "stopped": "Stopped"
-                      }.get(self.mode, "…")
-        self._styled_menu(self.menu_status, "", mode_label)
-        self._styled_menu(self.menu_profiles, "", "Model Profiles", profile)
+        GRN, YEL, RED = "\U0001f7e2", "\U0001f7e1", "\U0001f534"
 
-        # ── Mode toggle (laptops only) ──
-        if not self.desktop:
+        if self.desktop:
+            mode_label = {"server": "Server", "stopped": "Stopped"
+                          }.get(self.mode, "…")
+            self._styled_menu(self.menu_status, "", mode_label)
+        else:
             is_remote = self.mode == "client"
-            self.menu_mode_remote.state = is_remote
-            self.menu_mode_local.state = not is_remote
-            # Grey out Remote when desktop is unreachable
             if self.remote_reachable:
+                self._styled_menu(self.menu_mode_remote, "", "Remote",
+                                  bold=is_remote)
                 self.menu_mode_remote.set_callback(self._select_remote)
-                self.menu_mode_remote.title = "Remote"
             else:
+                self._styled_menu(self.menu_mode_remote, "", "Remote",
+                                  "unavailable")
                 self.menu_mode_remote.set_callback(None)
-                self.menu_mode_remote.title = "Remote (unavailable)"
+            self._styled_menu(self.menu_mode_local, "", "Local",
+                              bold=not is_remote)
+
+        self._styled_menu(self.menu_profiles, "", "Model Profiles", profile)
 
         # ── Per-service status lines ──
         ollama_loading = getattr(self, 'ollama_loading', False)
         mlx_loading = getattr(self, 'mlx_loading', False)
         is_local = self.mode in ("server", "offline")
-
-        GRN, YEL, RED = "\U0001f7e2", "\U0001f7e1", "\U0001f534"
 
         if self.ollama_ok:
             self._styled_menu(self.menu_ollama, GRN, "Ollama",
