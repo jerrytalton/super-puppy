@@ -1225,7 +1225,7 @@ class LocalModelsApp(rumps.App):
         env = os.environ.copy()
         if "/opt/homebrew/bin" not in env.get("PATH", ""):
             env["PATH"] = f"/opt/homebrew/bin:{env.get('PATH', '')}"
-        if self.desktop:
+        if self.desktop and getattr(self, 'remote_access_enabled', False):
             env["MCP_HOST"] = "0.0.0.0"
         self._mcp_log = open("/tmp/local-models-mcp.log", "w")
         self._mcp_proc = subprocess.Popen(

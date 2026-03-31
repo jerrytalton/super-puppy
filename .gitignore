@@ -12,3 +12,6 @@ app/SuperPuppy.app/Contents/_CodeSignature/
 # Web landing page (built by Vite)
 web/node_modules/
 web/dist/
+
+# Generated PWA icons (built by install.sh from icon.png)
+app/pwa/
