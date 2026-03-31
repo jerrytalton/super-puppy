@@ -2,8 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Super Puppy — Playground</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/pwa/icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
 <style>
 :root {
   --bg: #f5f5f7; --surface: #fff; --surface2: #f0f0f2;
@@ -124,6 +130,20 @@ h2 { font-size: 13px; font-weight: 600; color: var(--text2); text-transform: upp
   50% { border-color: var(--accent); }
 }
 .elapsed { font-variant-numeric: tabular-nums; }
+
+/* Mobile responsive */
+@media (max-width: 600px) {
+  body { padding: 16px; padding-bottom: calc(16px + env(safe-area-inset-bottom)); min-height: 100dvh; }
+  h1 { font-size: 20px; }
+  h2 { font-size: 15px; }
+  .tool-btn { padding: 10px 14px; font-size: 13px; }
+  .run-btn { width: 100%; padding: 12px; }
+  .run-row { flex-wrap: wrap; }
+  .field textarea { min-height: 100px; }
+  .output-box { font-size: 13px; max-height: 50dvh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  .model-picker-body { max-height: 40dvh; -webkit-overflow-scrolling: touch; }
+  button, .tool-btn, .run-btn, .think-toggle { touch-action: manipulation; }
+}
 </style>
 </head>
 <body>
@@ -710,11 +730,13 @@ async function toggleRecord(id) {
       throw new Error('Microphone access not available (mediaDevices API missing)');
     }
     const stream = await navigator.mediaDevices.getUserMedia({audio: true});
-    _recorder = new MediaRecorder(stream);
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm'
+      : MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '';
+    _recorder = mimeType ? new MediaRecorder(stream, {mimeType}) : new MediaRecorder(stream);
     _recorder.ondataavailable = e => { if (e.data.size) _recChunks.push(e.data); };
     _recorder.onstop = () => {
       stream.getTracks().forEach(t => t.stop());
-      _recBlob = new Blob(_recChunks, {type: 'audio/webm'});
+      _recBlob = new Blob(_recChunks, {type: _recorder.mimeType || 'audio/webm'});
       time.textContent = `${((Date.now() - _recStart) / 1000).toFixed(1)}s recorded`;
     };
     _recorder.start();
@@ -733,6 +755,10 @@ init().catch(e => {
   document.getElementById('model-picker-selected').textContent = 'Error: ' + e.message;
   console.error('init failed:', e);
 });
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
 </script>
 </body>
 </html>

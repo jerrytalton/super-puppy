@@ -1,0 +1,51 @@
+#!/bin/bash
+#
+# Tailscale status helper. Source this to get:
+#   TS_AVAILABLE=true/false
+#   TS_FQDN=super-puppy.tail1234.ts.net (or empty)
+#   TS_IP=100.x.y.z (or empty)
+#
+# Caches results in /tmp for 30 seconds to avoid repeated slow calls.
+
+CACHE="/tmp/tailscale-status-cache"
+CACHE_TTL=30
+
+_ts_refresh() {
+    TS_AVAILABLE=false
+    TS_FQDN=""
+    TS_IP=""
+
+    if ! command -v tailscale > /dev/null 2>&1; then
+        return
+    fi
+
+    local json
+    json=$(tailscale status --json 2>/dev/null) || return
+
+    local state
+    state=$(echo "$json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('BackendState',''))" 2>/dev/null)
+    if [ "$state" != "Running" ]; then
+        return
+    fi
+
+    TS_AVAILABLE=true
+    TS_FQDN=$(echo "$json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('Self',{}).get('DNSName','').rstrip('.'))" 2>/dev/null)
+    TS_IP=$(echo "$json" | python3 -c "import json,sys; d=json.load(sys.stdin); addrs=d.get('Self',{}).get('TailscaleIPs',[]); print(addrs[0] if addrs else '')" 2>/dev/null)
+
+    # Write cache
+    echo "TS_AVAILABLE=$TS_AVAILABLE" > "$CACHE"
+    echo "TS_FQDN=$TS_FQDN" >> "$CACHE"
+    echo "TS_IP=$TS_IP" >> "$CACHE"
+}
+
+# Use cache if fresh
+if [ -f "$CACHE" ]; then
+    cache_age=$(( $(date +%s) - $(stat -f %m "$CACHE" 2>/dev/null || echo 0) ))
+    if [ "$cache_age" -lt "$CACHE_TTL" ]; then
+        # shellcheck source=/dev/null
+        source "$CACHE"
+        return 0 2>/dev/null || true
+    fi
+fi
+
+_ts_refresh

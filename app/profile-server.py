@@ -1171,6 +1171,35 @@ def api_gpu():
                         "mlx": {"active": 0, "tasks": []}})
 
 
+# ── PWA assets ───────────────────────────────────────────────────────
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+@app.route("/manifest.json")
+def pwa_manifest():
+    return send_file(os.path.join(SCRIPT_DIR, "manifest.json"),
+                     mimetype="application/manifest+json")
+
+
+@app.route("/sw.js")
+def pwa_service_worker():
+    resp = send_file(os.path.join(SCRIPT_DIR, "sw.js"),
+                     mimetype="application/javascript")
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["Service-Worker-Allowed"] = "/"
+    return resp
+
+
+@app.route("/pwa/<path:filename>")
+def pwa_assets(filename):
+    pwa_dir = os.path.join(SCRIPT_DIR, "pwa")
+    fpath = os.path.join(pwa_dir, filename)
+    if not os.path.exists(fpath):
+        return "Not found", 404
+    return send_file(fpath)
+
+
 # ── Main ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
