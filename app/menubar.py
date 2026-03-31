@@ -441,17 +441,14 @@ def save_profiles(data):
 def pick_profile_for_ram(ram_gb, profiles):
     """Pick the best profile for the given RAM.
 
-    Parses the description field for RAM hints like '64GB' and picks the
-    largest profile that fits. Falls back to 'laptop' or the first profile.
+    Uses max_ram_gb from each profile and picks the largest that fits.
+    Falls back to 'laptop' or the first profile.
     """
     candidates = []
     for name, prof in profiles.items():
-        desc = prof.get("description", "")
-        match = re.search(r'(\d+)\s*GB', desc, re.IGNORECASE)
-        if match:
-            profile_ram = int(match.group(1))
-            if profile_ram <= ram_gb:
-                candidates.append((profile_ram, name))
+        max_ram = prof.get("max_ram_gb", 0)
+        if max_ram and max_ram <= ram_gb:
+            candidates.append((max_ram, name))
     if candidates:
         candidates.sort(reverse=True)
         return candidates[0][1]

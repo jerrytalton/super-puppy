@@ -287,7 +287,11 @@ function renderMemory() {
   const usage = document.getElementById('mem-usage');
   bar.innerHTML = ''; legend.innerHTML = '';
 
-  const ram = S.sys?.total_ram_bytes || 512*(1<<30);
+  const sysRam = S.sys?.total_ram_bytes || 512*(1<<30);
+  // Use profile's target RAM if available, otherwise system RAM
+  const profile = S.sel && S.profiles?.profiles?.[S.sel];
+  const targetRamGb = profile?.max_ram_gb || Math.round(sysRam / (1<<30));
+  const targetRam = targetRamGb * (1<<30);
 
   const seen = new Set();
   const segs = [];
@@ -302,12 +306,11 @@ function renderMemory() {
   }
 
   const totalUsed = segs.reduce((s,x) => s + x.bytes, 0);
-  const overflows = totalUsed > ram;
-  const barMax = overflows ? totalUsed : ram;
+  const overflows = totalUsed > targetRam;
+  const barMax = overflows ? totalUsed : targetRam;
 
-  const ramLabel = (S.sys?.total_ram_gb || Math.round(ram/(1<<30))) + 'GB';
-  usage.textContent = fmt(totalUsed) + ' / ' + ramLabel +
-    (overflows ? ` (${fmt(totalUsed - ram)} swap)` : '');
+  usage.textContent = fmt(totalUsed) + ' / ' + targetRamGb + 'GB' +
+    (overflows ? ` (${fmt(totalUsed - targetRam)} over!)` : '');
 
   segs.forEach(seg => {
     const pct = (seg.bytes / barMax) * 100;

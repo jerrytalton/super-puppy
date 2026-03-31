@@ -458,7 +458,7 @@ def get_eligible_tasks(name, model_info):
 
 # ── Profiles ─────────────────────────────────────────────────────────
 
-PROFILES_VERSION = 14  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 15  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -466,7 +466,8 @@ DEFAULT_PROFILES = {
     "profiles": {
         "everyday": {
             "label": "Everyday",
-            "description": "Best balance for the 512GB Mac Studio — ~354GB VRAM",
+            "description": "Best balance for the 512GB Mac Studio",
+            "max_ram_gb": 512,
             "tasks": {
                 "code": "qwen3-coder-next:latest",
                 "general": "qwen3.5-fast",
@@ -484,7 +485,8 @@ DEFAULT_PROFILES = {
         },
         "desktop": {
             "label": "Desktop",
-            "description": "Fits in 64GB — ~63GB VRAM",
+            "description": "Fits in 64GB",
+            "max_ram_gb": 64,
             "tasks": {
                 "code": "qwen3.5-fast",
                 "general": "qwen3.5-fast",
@@ -502,6 +504,7 @@ DEFAULT_PROFILES = {
         "maximum": {
             "label": "Heavyweight",
             "description": "Biggest models for everything, damn the RAM",
+            "max_ram_gb": 512,
             "tasks": {
                 "code": "qwen3-coder-next:latest",
                 "general": "qwen3.5-large",
@@ -519,7 +522,8 @@ DEFAULT_PROFILES = {
         },
         "laptop": {
             "label": "Laptop",
-            "description": "Fits in 24GB — ~25GB VRAM",
+            "description": "Fits in 32GB",
+            "max_ram_gb": 32,
             "tasks": {
                 "code": "qwen3.5-small",
                 "general": "qwen3.5-small",
