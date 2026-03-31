@@ -1256,12 +1256,26 @@ async def _startup():
 async def _gpu_status(request):
     """Lightweight endpoint for Playground to poll GPU activity."""
     with _gpu_lock:
-        return JSONResponse({
+        data = {
             "ollama": {"active": _gpu_active["ollama"],
                        "tasks": list(_gpu_active_details["ollama"])},
             "mlx": {"active": _gpu_active["mlx"],
                     "tasks": list(_gpu_active_details["mlx"])},
-        })
+        }
+    # Quick liveness probe: is MLX actually responsive?
+    try:
+        async with httpx.AsyncClient(timeout=2) as client:
+            await client.get(f"{MLX_URL}/v1/models")
+            data["mlx"]["responsive"] = True
+    except Exception:
+        data["mlx"]["responsive"] = False
+    try:
+        async with httpx.AsyncClient(timeout=2) as client:
+            await client.get(f"{OLLAMA_URL}/api/tags")
+            data["ollama"]["responsive"] = True
+    except Exception:
+        data["ollama"]["responsive"] = False
+    return JSONResponse(data)
 
 
 async def _mcp_models(request):
