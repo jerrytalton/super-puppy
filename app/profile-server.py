@@ -458,7 +458,7 @@ def get_eligible_tasks(name, model_info):
 
 # ── Profiles ─────────────────────────────────────────────────────────
 
-PROFILES_VERSION = 13  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 14  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -544,8 +544,10 @@ def load_profiles():
             data = json.loads(PROFILES_FILE.read_text())
             if data.get("version", 0) == PROFILES_VERSION:
                 return data
-            # Version bump: refresh presets, keep user's active selection
+            # Version bump: refresh presets, keep user's selection if it's a preset
             active = data.get("active", DEFAULT_PROFILES["active"])
+            if active not in DEFAULT_PROFILES["profiles"]:
+                active = DEFAULT_PROFILES["active"]
             refreshed = {**DEFAULT_PROFILES, "active": active}
             save_profiles(refreshed)
             return refreshed
