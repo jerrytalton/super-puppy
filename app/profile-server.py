@@ -35,6 +35,7 @@ TOOLS_HTML = Path(__file__).parent / "tools.html"
 
 IDLE_TIMEOUT = 600  # 10 minutes
 PORT = int(os.environ.get("PROFILE_SERVER_PORT", "0"))  # 0 = random
+HOST = os.environ.get("PROFILE_HOST", "127.0.0.1")
 
 # ── Shared constants (mirrored from MCP server + menubar) ───────────
 
@@ -1208,9 +1209,16 @@ if __name__ == "__main__":
     import socket
     if PORT == 0:
         s = socket.socket()
-        s.bind(("127.0.0.1", 0))
+        s.bind((HOST, 0))
         PORT = s.getsockname()[1]
         s.close()
 
-    print(f"http://127.0.0.1:{PORT}", flush=True)  # menu bar reads this
-    app.run(host="127.0.0.1", port=PORT, debug=False)
+    # HTTPS if Tailscale certs exist
+    cert_dir = Path("~/.config/local-models/certs").expanduser()
+    cert_file = next(cert_dir.glob("*.crt"), None) if cert_dir.exists() else None
+    key_file = next(cert_dir.glob("*.key"), None) if cert_dir.exists() else None
+    ssl_ctx = (str(cert_file), str(key_file)) if cert_file and key_file else None
+
+    scheme = "https" if ssl_ctx else "http"
+    print(f"{scheme}://{HOST}:{PORT}", flush=True)  # menu bar reads this
+    app.run(host=HOST, port=PORT, debug=False, ssl_context=ssl_ctx)

@@ -996,6 +996,7 @@ class LocalModelsApp(rumps.App):
         self.ollama_port = self.conf["OLLAMA_PORT"]
         self.mlx_port = self.conf["MLX_PORT"]
         self.probe_timeout = int(self.conf["PROBE_TIMEOUT"])
+        self._profile_fixed_port = int(self.conf.get("PROFILE_PORT", "8101"))
 
         # Resolve mDNS hostname to IP once (avoids repeated cold-cache
         # lookups that eat into the probe timeout window)
@@ -1247,6 +1248,20 @@ class LocalModelsApp(rumps.App):
             logging.info("MCP config updated: %s", url)
         except Exception as e:
             logging.warning("Failed to update Claude MCP config: %s", e)
+
+    def _tailscale_available(self):
+        """Check if Tailscale is connected."""
+        try:
+            result = subprocess.run(
+                ["tailscale", "status", "--json"],
+                capture_output=True, text=True, timeout=3)
+            if result.returncode != 0:
+                return False
+            import json as _json
+            data = _json.loads(result.stdout)
+            return data.get("BackendState") == "Running"
+        except Exception:
+            return False
 
     def _stop_mcp_server(self):
         """Stop the MCP server."""
@@ -1737,14 +1752,22 @@ class LocalModelsApp(rumps.App):
             if hasattr(self, '_profile_log') and self._profile_log:
                 self._profile_log.close()
 
-        import socket
-        s = socket.socket()
-        s.bind(("127.0.0.1", 0))
-        self.profile_port = s.getsockname()[1]
-        s.close()
+        # Use fixed port + 0.0.0.0 on desktop with Tailscale for remote access
+        ts_available = self._tailscale_available()
+        if self.desktop and ts_available:
+            self.profile_port = int(getattr(self, '_profile_fixed_port', 8101))
+            profile_host = "0.0.0.0"
+        else:
+            import socket
+            s = socket.socket()
+            s.bind(("127.0.0.1", 0))
+            self.profile_port = s.getsockname()[1]
+            s.close()
+            profile_host = "127.0.0.1"
 
         env = os.environ.copy()
         env["PROFILE_SERVER_PORT"] = str(self.profile_port)
+        env["PROFILE_HOST"] = profile_host
         env["OLLAMA_URL"] = (
             self.ollama_remote if self.mode == "client" else OLLAMA_LOCAL)
         env["MLX_URL"] = (

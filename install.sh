@@ -40,6 +40,7 @@ link bin/start-local-models        ~/bin/start-local-models
 link bin/local-models-menubar      ~/bin/local-models-menubar
 link bin/local-models-mcp-detect   ~/bin/local-models-mcp-detect
 link bin/local-models-mcp-auth     ~/bin/local-models-mcp-auth
+link bin/tailscale-status          ~/bin/tailscale-status
 
 # Configs
 link config/mlx-server/config.yaml         ~/.config/mlx-server/config.yaml
@@ -129,6 +130,32 @@ if ! command -v op > /dev/null; then
     fi
 fi
 
+if ! command -v tailscale > /dev/null; then
+    if command -v brew > /dev/null; then
+        echo "  Installing tailscale..."
+        brew install --cask tailscale || true
+    else
+        echo "  WARNING: tailscale not found. Install manually: brew install --cask tailscale"
+    fi
+fi
+
+# Generate Tailscale certs for HTTPS (if Tailscale is up on the desktop)
+if command -v tailscale > /dev/null && [ "$RAM_GB" -ge 256 ]; then
+    TS_STATUS=$(tailscale status --json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('BackendState',''))" 2>/dev/null || true)
+    if [ "$TS_STATUS" = "Running" ]; then
+        TS_FQDN=$(tailscale status --json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('Self',{}).get('DNSName','').rstrip('.'))" 2>/dev/null || true)
+        if [ -n "$TS_FQDN" ]; then
+            CERT_DIR="$HOME/.config/local-models/certs"
+            mkdir -p "$CERT_DIR"
+            tailscale cert --cert-file "$CERT_DIR/$TS_FQDN.crt" --key-file "$CERT_DIR/$TS_FQDN.key" "$TS_FQDN" 2>/dev/null \
+                && echo "  Generated Tailscale HTTPS cert for $TS_FQDN" \
+                || echo "  WARNING: could not generate Tailscale cert (run 'tailscale up' first)"
+        fi
+    else
+        echo "  Tailscale installed but not running — run 'tailscale up' to enable remote access"
+    fi
+fi
+
 if ! command -v ollama > /dev/null; then
     if command -v brew > /dev/null; then
         echo "  Installing ollama..."
@@ -198,6 +225,18 @@ if [ ! -f "$APP_RES/AppIcon.icns" ] || [ "$REPO_DIR/app/icon.png" -nt "$APP_RES/
     NEEDS_SIGN=true
 else
     echo "  App icon up to date"
+fi
+
+# Generate PWA icons
+PWA_DIR="$REPO_DIR/app/pwa"
+mkdir -p "$PWA_DIR"
+if [ ! -f "$PWA_DIR/icon-512.png" ] || [ "$REPO_DIR/app/icon.png" -nt "$PWA_DIR/icon-512.png" ]; then
+    for size in 152 180 192 512; do
+        sips -z $size $size "$REPO_DIR/app/icon.png" --out "$PWA_DIR/icon-${size}.png" > /dev/null 2>&1
+    done
+    echo "  Generated PWA icons"
+else
+    echo "  PWA icons up to date"
 fi
 
 # Ad-hoc code sign — only when binary or icon changed (re-signing invalidates
