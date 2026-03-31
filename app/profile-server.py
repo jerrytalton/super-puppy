@@ -458,7 +458,7 @@ def get_eligible_tasks(name, model_info):
 
 # ── Profiles ─────────────────────────────────────────────────────────
 
-PROFILES_VERSION = 10  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 11  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -466,7 +466,7 @@ DEFAULT_PROFILES = {
     "profiles": {
         "everyday": {
             "label": "Everyday",
-            "description": "Best balance for the 512GB Mac Studio",
+            "description": "Best balance for the 512GB Mac Studio — ~354GB VRAM",
             "tasks": {
                 "code": "qwen3-coder-next:latest",
                 "general": "qwen3.5-fast",
@@ -484,18 +484,17 @@ DEFAULT_PROFILES = {
         },
         "desktop": {
             "label": "Desktop",
-            "description": "Fits in 64GB — capable models, reasonable VRAM",
+            "description": "Fits in 64GB — ~63GB VRAM",
             "tasks": {
-                "code": "qwen3-coder-next:latest",
+                "code": "qwen3.5-fast",
                 "general": "qwen3.5-fast",
                 "reasoning": "qwen3.5-fast",
-                "long_context": "qwen3.5-fast",
+                "long_context": "glm-4.7-flash:latest",
                 "translation": "qwen3.5-fast",
                 "vision": "qwen3.5:9b",
-                "image_gen": "x/z-image-turbo:latest",
-                "image_edit": "black-forest-labs/FLUX.1-Kontext-dev",
+                "image_gen": "x/flux2-klein:latest",
                 "transcription": "whisper-v3",
-                "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
+                "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
                 "embedding": "all-minilm:latest",
                 "uncensored": "dolphin3:8b",
             },
@@ -520,18 +519,16 @@ DEFAULT_PROFILES = {
         },
         "laptop": {
             "label": "Laptop",
-            "description": "Fits in 24GB — small models for every task",
+            "description": "Fits in 24GB — ~19GB VRAM",
             "tasks": {
-                "code": "glm-4.7-flash:latest",
-                "general": "qwen3.5-fast",
-                "reasoning": "qwen3.5-fast",
-                "long_context": "glm-4.7-flash:latest",
-                "translation": "qwen3.5-fast",
+                "code": "qwen3.5-small",
+                "general": "qwen3.5-small",
+                "reasoning": "qwen3.5-small",
+                "long_context": "qwen3.5-small",
+                "translation": "qwen3.5-small",
                 "vision": "qwen3.5:9b",
-                "image_gen": "x/flux2-klein:latest",
-                "image_edit": "black-forest-labs/FLUX.1-Kontext-dev",
                 "transcription": "whisper-v3",
-                "tts": "mlx-community/chatterbox-fp16",
+                "tts": "mlx-community/Kokoro-82M-bf16",
                 "embedding": "all-minilm:latest",
                 "uncensored": "dolphin3:8b",
             },
