@@ -1694,14 +1694,13 @@ class LocalModelsApp(rumps.App):
             self.mode = "stopped"
 
     def _refresh_client_mode(self):
-        # Probe desktop via Tailscale
-        found = (self.ts_hostname
-                 and not self.force_local
-                 and self._resolve_desktop())
+        # Always probe desktop so the menu shows accurate availability
+        desktop_up = self.ts_hostname and self._resolve_desktop()
         was_remote = self.remote_reachable
-        self.remote_reachable = found
+        self.remote_reachable = desktop_up
 
-        if found:
+        # Use remote only if available AND user hasn't forced local
+        if desktop_up and not self.force_local:
             self.mode = "client"
             self.ollama_ok = False
             self.mlx_ok = False
