@@ -16,13 +16,14 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import requests
 import yaml
-from flask import Flask, Response, jsonify, request, send_file
+from flask import Flask, Response, after_this_request, jsonify, request, send_file
 
 from lib.models import (
     ALWAYS_EXCLUDE,
@@ -45,6 +46,10 @@ HTML_FILE = Path(__file__).parent / "profiles.html"
 TOOLS_HTML = Path(__file__).parent / "tools.html"
 
 IDLE_TIMEOUT = int(os.environ.get("PROFILE_IDLE_TIMEOUT", "600"))
+
+# Playground request tracking — keyed by thread ID so overlapping requests don't clobber
+_playground_lock = threading.Lock()
+_playground_active: dict[int, dict] = {}  # thread_id → {tool, model, backend, started}
 PORT = int(os.environ.get("PROFILE_SERVER_PORT", "0"))  # 0 = random
 HOST = os.environ.get("PROFILE_HOST", "127.0.0.1")
 
@@ -608,12 +613,30 @@ def api_profiles_activate(name):
             current[task] = [pick] + [m for m in existing if m != pick]
     if profile.get("thinking"):
         current.setdefault("thinking", {}).update(profile["thinking"])
+
+    # Prune model references that don't exist in any backend
+    # Skip pruning if no models discovered — backends probably aren't up yet
+    models = get_all_models()
+    stale_warnings = []
+    if models:
+        def _model_exists(name):
+            return name in models or any(n.startswith(name + ":") for n in models)
+
+        for task, candidates in list(current.items()):
+            if task == "thinking" or not isinstance(candidates, list):
+                continue
+            alive = [c for c in candidates if _model_exists(c)]
+            pruned = [c for c in candidates if not _model_exists(c)]
+            if pruned:
+                stale_warnings.append(f"{task}: {', '.join(pruned)}")
+            current[task] = alive
+
     save_mcp_prefs(current)
 
     data["active"] = name
     save_profiles(data)
 
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "warnings": stale_warnings})
 
 
 @app.route("/api/profiles/<name>/warm", methods=["POST"])
@@ -682,17 +705,36 @@ def tools_page():
     return send_file(str(TOOLS_HTML))
 
 
+@contextmanager
+def _track_playground(tool, model, backend):
+    """Track what the playground is currently doing so /api/gpu can report it."""
+    tid = threading.get_ident()
+    with _playground_lock:
+        _playground_active[tid] = {"tool": tool, "model": model, "backend": backend,
+                                   "started": time.time()}
+    try:
+        yield
+    finally:
+        with _playground_lock:
+            _playground_active.pop(tid, None)
+
+
 def _pick_model_for_task(task):
-    """Resolve preferred model for a task. Returns (model_name, backend) or (None, None)."""
+    """Resolve preferred model for a task. Returns (model_name, backend, warning)."""
     prefs = load_default_prefs()
     models = get_all_models()
-    for candidate in prefs.get(task, []):
+    candidates = prefs.get(task, [])
+    for candidate in candidates:
         if candidate in models:
-            return candidate, models[candidate]["backend"]
+            return candidate, models[candidate]["backend"], None
         for name in models:
             if name.startswith(candidate + ":"):
-                return name, models[name]["backend"]
-    return None, None
+                return name, models[name]["backend"], None
+    warning = None
+    if candidates:
+        warning = (f"Profile models for '{task}' not available: {', '.join(candidates)} "
+                   f"— using fallback")
+    return None, None, warning
 
 
 def _chat_url(backend):
@@ -702,29 +744,53 @@ def _chat_url(backend):
     return f"{OLLAMA_URL}/api/chat"
 
 
-def _chat(model, backend, messages, timeout=120):
+def _requests_error_detail(e):
+    """Extract a useful error message from a requests exception."""
+    if isinstance(e, requests.HTTPError) and e.response is not None:
+        body = e.response.text[:500] if e.response.text else "(empty body)"
+        return f"HTTP {e.response.status_code} from {e.response.url} — {body}"
+    if isinstance(e, requests.ConnectionError):
+        return f"Cannot connect to backend — is it running? ({e})"
+    if isinstance(e, requests.Timeout):
+        return f"Request timed out ({e})"
+    return str(e)
+
+
+def _chat(model, backend, messages, timeout=120, tool="chat"):
     """Send a chat request to the appropriate backend."""
-    if backend == "mlx":
-        resp = requests.post(f"{MLX_URL}/v1/chat/completions", json={
-            "model": model, "messages": messages,
-        }, timeout=300)
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
-    else:
-        resp = requests.post(f"{OLLAMA_URL}/api/chat", json={
-            "model": model, "messages": messages, "stream": False,
-        }, timeout=timeout)
-        resp.raise_for_status()
-        return resp.json()["message"]["content"]
+    with _track_playground(tool, model, backend):
+        try:
+            if backend == "mlx":
+                resp = requests.post(f"{MLX_URL}/v1/chat/completions", json={
+                    "model": model, "messages": messages,
+                }, timeout=300)
+                resp.raise_for_status()
+                return resp.json()["choices"][0]["message"]["content"]
+            else:
+                resp = requests.post(f"{OLLAMA_URL}/api/chat", json={
+                    "model": model, "messages": messages, "stream": False,
+                }, timeout=timeout)
+                resp.raise_for_status()
+                return resp.json()["message"]["content"]
+        except requests.RequestException as e:
+            raise RuntimeError(f"Chat ({model} via {backend}): {_requests_error_detail(e)}") from e
 
 
-def _chat_stream(model, backend, messages, think=True):
+def _chat_stream(model, backend, messages, think=True, tool="chat"):
     """Stream chat tokens as SSE events. Yields 'data: {...}\\n\\n' strings."""
+    _stream_tid = threading.get_ident()
+    with _playground_lock:
+        _playground_active[_stream_tid] = {"tool": tool, "model": model, "backend": backend,
+                                           "started": time.time()}
+    try:
+        if backend == "mlx":
+            resp = requests.post(f"{MLX_URL}/v1/chat/completions", json={
+                "model": model, "messages": messages, "stream": True,
+            }, stream=True, timeout=300)
+            resp.raise_for_status()
+    except requests.RequestException as e:
+        raise RuntimeError(f"Stream ({model} via {backend}): {_requests_error_detail(e)}") from e
     if backend == "mlx":
-        resp = requests.post(f"{MLX_URL}/v1/chat/completions", json={
-            "model": model, "messages": messages, "stream": True,
-        }, stream=True, timeout=300)
-        resp.raise_for_status()
         yield f"data: {json.dumps({'model': model})}\n\n"
         for line in resp.iter_lines():
             if not line:
@@ -746,9 +812,12 @@ def _chat_stream(model, backend, messages, think=True):
         body = {"model": model, "messages": messages, "stream": True}
         if not think:
             body["think"] = False
-        resp = requests.post(f"{OLLAMA_URL}/api/chat", json=body,
-                             stream=True, timeout=300)
-        resp.raise_for_status()
+        try:
+            resp = requests.post(f"{OLLAMA_URL}/api/chat", json=body,
+                                 stream=True, timeout=300)
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            raise RuntimeError(f"Stream ({model} via {backend}): {_requests_error_detail(e)}") from e
         yield f"data: {json.dumps({'model': model})}\n\n"
         for line in resp.iter_lines():
             if not line:
@@ -767,6 +836,8 @@ def _chat_stream(model, backend, messages, think=True):
             except json.JSONDecodeError:
                 pass
     yield "data: {\"done\": true}\n\n"
+    with _playground_lock:
+        _playground_active.pop(_stream_tid, None)
 
 
 STREAM_TOOLS = {"code", "general", "review", "translate", "summarize"}
@@ -779,57 +850,75 @@ def api_test_stream():
     override = body.get("model")
     think = body.get("think", True)
 
+    _override_warning = []
+
     def _pick(task):
         if override:
             models = get_all_models()
             if override in models:
                 return override, models[override]["backend"]
-        return _pick_model_for_task(task)
+            _override_warning.append(f"Model '{override}' not found in available models — fell back to profile default for '{task}'")
+        model, backend, stale_warning = _pick_model_for_task(task)
+        if stale_warning:
+            _override_warning.append(stale_warning)
+        if not model:
+            raise ValueError(f"No model available for task '{task}' — check that Ollama/MLX are running and models are loaded")
+        return model, backend
 
-    if tool == "code":
-        model, backend = _pick("code")
-        if not model:
-            model, backend = _pick("general")
-        messages = [{"role": "user", "content": body["prompt"]}]
-    elif tool == "general":
-        model, backend = _pick("general")
-        if not model:
-            model, backend = _pick("code")
-        messages = [{"role": "user", "content": body["prompt"]}]
-    elif tool == "review":
-        model, backend = _pick("reasoning")
-        messages = [
-            {"role": "system", "content": "Review this code. Be concise."},
-            {"role": "user", "content": body["code"]},
-        ]
-    elif tool == "translate":
-        model, backend = _pick("translation")
-        messages = [
-            {"role": "system",
-             "content": f"Translate to {body['target']}. Output only the translation."},
-            {"role": "user", "content": body["text"]},
-        ]
-    elif tool == "summarize":
-        model, backend = _pick("long_context")
-        fp = body["file_path"]
-        if not _is_safe_test_path(fp):
-            return jsonify({"error": "File path must be in /tmp/"}), 400
-        text = Path(fp).read_text(errors="replace")[:50000]
-        messages = [
-            {"role": "system", "content": "Summarize this content concisely."},
-            {"role": "user", "content": text},
-        ]
-    elif tool == "uncensored":
-        model, backend = _pick("uncensored")
-        messages = [{"role": "user", "content": body["prompt"]}]
-    else:
-        return jsonify({"error": "Not a streaming tool"}), 400
+    try:
+        if tool == "code":
+            try:
+                model, backend = _pick("code")
+            except ValueError:
+                model, backend = _pick("general")
+            messages = [{"role": "user", "content": body["prompt"]}]
+        elif tool == "general":
+            try:
+                model, backend = _pick("general")
+            except ValueError:
+                model, backend = _pick("code")
+            messages = [{"role": "user", "content": body["prompt"]}]
+        elif tool == "review":
+            model, backend = _pick("reasoning")
+            messages = [
+                {"role": "system", "content": "Review this code. Be concise."},
+                {"role": "user", "content": body["code"]},
+            ]
+        elif tool == "translate":
+            model, backend = _pick("translation")
+            messages = [
+                {"role": "system",
+                 "content": f"Translate to {body['target']}. Output only the translation."},
+                {"role": "user", "content": body["text"]},
+            ]
+        elif tool == "summarize":
+            model, backend = _pick("long_context")
+            fp = body["file_path"]
+            if not _is_safe_test_path(fp):
+                return jsonify({"error": "File path must be in /tmp/"}), 400
+            text = Path(fp).read_text(errors="replace")[:50000]
+            messages = [
+                {"role": "system", "content": "Summarize this content concisely."},
+                {"role": "user", "content": text},
+            ]
+        elif tool == "uncensored":
+            model, backend = _pick("uncensored")
+            messages = [{"role": "user", "content": body["prompt"]}]
+        else:
+            return jsonify({"error": "Not a streaming tool"}), 400
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
     def _safe_stream():
+        if _override_warning:
+            yield f"data: {json.dumps({'warning': '; '.join(_override_warning)})}\n\n"
         try:
-            yield from _chat_stream(model, backend, messages, think=think)
+            yield from _chat_stream(model, backend, messages, think=think, tool=tool)
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        finally:
+            with _playground_lock:
+                _playground_active.pop(threading.get_ident(), None)
 
     return Response(_safe_stream(), mimetype="text/event-stream")
 
@@ -840,21 +929,43 @@ def api_test():
     tool = body.get("tool")
     override = body.get("model")
 
+    _override_warning = []
+
     def _pick(task):
         if override:
             models = get_all_models()
             if override in models:
                 return override, models[override]["backend"]
-        return _pick_model_for_task(task)
+            _override_warning.append(f"Model '{override}' not found in available models — fell back to profile default for '{task}'")
+        model, backend, stale_warning = _pick_model_for_task(task)
+        if stale_warning:
+            _override_warning.append(stale_warning)
+        if not model:
+            raise ValueError(f"No model available for task '{task}' — check that Ollama/MLX are running and models are loaded")
+        return model, backend
+
+    @after_this_request
+    def _inject_warning(response):
+        if _override_warning and response.content_type == "application/json":
+            try:
+                data = response.get_json()
+                if isinstance(data, dict):
+                    data["warning"] = "; ".join(_override_warning)
+                    response.set_data(json.dumps(data))
+            except Exception:
+                pass
+        return response
 
     try:
         if tool in ("code", "general"):
             task = "code" if tool == "code" else "general"
-            model, backend = _pick(task)
-            if not model:
+            try:
+                model, backend = _pick(task)
+            except ValueError:
                 model, backend = _pick("code" if task == "general" else "general")
             result = _chat(model, backend,
-                           [{"role": "user", "content": body["prompt"]}])
+                           [{"role": "user", "content": body["prompt"]}],
+                           tool=tool)
             return jsonify({"result": result, "model": model})
 
         elif tool == "review":
@@ -862,7 +973,7 @@ def api_test():
             result = _chat(model, backend, [
                 {"role": "system", "content": "Review this code. Be concise."},
                 {"role": "user", "content": body["code"]},
-            ])
+            ], tool="review")
             return jsonify({"result": result, "model": model})
 
         elif tool == "vision":
@@ -871,26 +982,27 @@ def api_test():
             image_data = Path(body["image_path"]).read_bytes()
             image_b64 = base64.b64encode(image_data).decode()
             prompt = body.get("prompt", "Describe this image.")
-            if backend == "mlx":
-                resp = requests.post(f"{MLX_URL}/v1/chat/completions", json={
-                    "model": model, "stream": False,
-                    "messages": [{"role": "user", "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {
-                            "url": f"data:image/png;base64,{image_b64}"}},
-                    ]}],
-                }, timeout=120)
-                resp.raise_for_status()
-                result = resp.json()["choices"][0]["message"]["content"]
-            else:
-                resp = requests.post(f"{OLLAMA_URL}/api/chat", json={
-                    "model": model, "stream": False,
-                    "messages": [{"role": "user",
-                                  "content": prompt,
-                                  "images": [image_b64]}],
-                }, timeout=120)
-                resp.raise_for_status()
-                result = resp.json()["message"]["content"]
+            with _track_playground("vision", model, backend):
+                if backend == "mlx":
+                    resp = requests.post(f"{MLX_URL}/v1/chat/completions", json={
+                        "model": model, "stream": False,
+                        "messages": [{"role": "user", "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {
+                                "url": f"data:image/png;base64,{image_b64}"}},
+                        ]}],
+                    }, timeout=120)
+                    resp.raise_for_status()
+                    result = resp.json()["choices"][0]["message"]["content"]
+                else:
+                    resp = requests.post(f"{OLLAMA_URL}/api/chat", json={
+                        "model": model, "stream": False,
+                        "messages": [{"role": "user",
+                                      "content": prompt,
+                                      "images": [image_b64]}],
+                    }, timeout=120)
+                    resp.raise_for_status()
+                    result = resp.json()["message"]["content"]
             return jsonify({"result": result, "model": model})
 
         elif tool == "image_edit":
@@ -899,41 +1011,63 @@ def api_test():
             prompt = body.get("prompt", "")
             import time as _time
             out_path = f"/tmp/playground_edit_{int(_time.time())}.png"
-            try:
-                result = subprocess.run(
-                    ["mflux-generate-kontext",
-                     "--image-path", image_path,
-                     "--prompt", prompt,
-                     "--output", out_path,
-                     "--steps", "8",
-                     "--image-strength", "0.75"],
-                    capture_output=True, text=True, timeout=600,
-                    env={**os.environ,
-                         "PATH": f"/opt/homebrew/bin:{os.environ.get('PATH', '')}"},
-                )
-                if result.returncode != 0:
-                    return jsonify({"error": result.stderr[-300:]})
-                return jsonify({
-                    "result": f"Saved to {out_path}",
-                    "image_path": out_path,
-                    "model": model,
-                })
-            except Exception as e:
-                return jsonify({"error": str(e)})
+            with _track_playground("image_edit", model, backend):
+                try:
+                    result = subprocess.run(
+                        ["mflux-generate-kontext",
+                         "--image-path", image_path,
+                         "--prompt", prompt,
+                         "--output", out_path,
+                         "--steps", "8",
+                         "--image-strength", "0.75"],
+                        capture_output=True, text=True, timeout=600,
+                        env={**os.environ,
+                             "PATH": f"/opt/homebrew/bin:{os.environ.get('PATH', '')}"},
+                    )
+                    if result.returncode != 0:
+                        return jsonify({"error": f"image_edit: mflux-generate-kontext failed:\n{result.stderr[-300:]}"})
+                    return jsonify({
+                        "result": f"Saved to {out_path}",
+                        "image_path": out_path,
+                        "model": model,
+                    })
+                except Exception as e:
+                    return jsonify({"error": f"image_edit: {e}"})
 
         elif tool == "image_gen":
             model, backend = _pick("image_gen")
-            resp = requests.post(f"{OLLAMA_URL}/api/generate", json={
-                "model": model, "prompt": body["prompt"], "stream": False,
-            }, timeout=300)
-            resp.raise_for_status()
-            import base64, time as _time
-            image_b64 = resp.json().get("image", "")
-            if not image_b64:
-                return jsonify({"error": f"{model} did not return an image."})
+            import time as _time
             out = f"/tmp/test_image_{int(_time.time())}.png"
-            Path(out).write_bytes(base64.b64decode(image_b64))
-            return jsonify({"result": f"Saved to {out}", "image_path": out, "model": model})
+
+            if backend == "mflux":
+                with _track_playground("image_gen", model, backend):
+                    steps = "4" if any(k in model.lower() for k in ("schnell", "turbo", "klein")) else "20"
+                    result = subprocess.run(
+                        ["mflux-generate", "--model", model,
+                         "--prompt", body["prompt"],
+                         "--output", out, "--steps", steps],
+                        capture_output=True, text=True, timeout=600,
+                        env={**os.environ,
+                             "PATH": f"/opt/homebrew/bin:{os.environ.get('PATH', '')}"},
+                    )
+                    if result.returncode != 0:
+                        return jsonify({"error": f"image_gen: mflux-generate failed:\n{result.stderr[-300:]}"})
+                if not Path(out).exists():
+                    return jsonify({"error": f"image_gen: output image was not created at {out}"})
+                return jsonify({"result": f"Saved to {out}", "image_path": out, "model": model})
+            else:
+                with _track_playground("image_gen", model, backend):
+                    resp = requests.post(f"{OLLAMA_URL}/api/generate", json={
+                        "model": model, "prompt": body["prompt"], "stream": False,
+                    }, timeout=300)
+                    resp.raise_for_status()
+                    import base64
+                    image_b64 = resp.json().get("image", "")
+                if not image_b64:
+                    return jsonify({"error": f"image_gen: {model} did not return an image — "
+                                             f"this model may not support image generation."})
+                Path(out).write_bytes(base64.b64decode(image_b64))
+                return jsonify({"result": f"Saved to {out}", "image_path": out, "model": model})
 
         elif tool == "transcribe":
             model, backend = _pick("transcription")
@@ -955,14 +1089,16 @@ def api_test():
             ct_map = {"mp3": "audio/mpeg", "wav": "audio/wav",
                       "m4a": "audio/mp4", "ogg": "audio/ogg"}
             ct = ct_map.get(suffix, "application/octet-stream")
-            resp = requests.post(f"{MLX_URL}/v1/audio/transcriptions",
-                                 files={"file": (audio_path.name, audio_data, ct)},
-                                 data={"model": model}, timeout=300)
-            resp.raise_for_status()
+            url = MLX_URL if backend == "mlx" else OLLAMA_URL
+            with _track_playground("transcribe", model, backend):
+                resp = requests.post(f"{url}/v1/audio/transcriptions",
+                                     files={"file": (audio_path.name, audio_data, ct)},
+                                     data={"model": model}, timeout=300)
+                resp.raise_for_status()
             return jsonify({"result": resp.json().get("text", resp.text), "model": model})
 
         elif tool == "speak":
-            model, _ = _pick("tts")
+            model, backend = _pick("tts")
             model = body.get("model") or model
             voice = body.get("voice", "casual_male")
             lang = body.get("language", "en")
@@ -971,23 +1107,24 @@ def api_test():
             out_path = f"/tmp/playground_tts_{int(_time.time())}.wav"
             out_dir = os.path.dirname(out_path)
             prefix = Path(out_path).stem
-            try:
-                from mlx_audio.tts.generate import generate_audio
-                generate_audio(
-                    text=text, model=model, voice=voice,
-                    lang_code=lang, output_path=out_dir,
-                    file_prefix=prefix, audio_format="wav",
-                    verbose=False, play=False,
-                )
-                actual = os.path.join(out_dir, f"{prefix}_000.wav")
-                if os.path.exists(actual):
-                    os.rename(actual, out_path)
-                return jsonify({
-                    "result": f"Audio saved to {out_path}",
-                    "audio_path": out_path, "model": model.split("/")[-1],
-                })
-            except Exception as e:
-                return jsonify({"error": str(e)})
+            with _track_playground("speak", model, backend):
+                try:
+                    from mlx_audio.tts.generate import generate_audio
+                    generate_audio(
+                        text=text, model=model, voice=voice,
+                        lang_code=lang, output_path=out_dir,
+                        file_prefix=prefix, audio_format="wav",
+                        verbose=False, play=False,
+                    )
+                    actual = os.path.join(out_dir, f"{prefix}_000.wav")
+                    if os.path.exists(actual):
+                        os.rename(actual, out_path)
+                    return jsonify({
+                        "result": f"Audio saved to {out_path}",
+                        "audio_path": out_path, "model": model.split("/")[-1],
+                    })
+                except Exception as e:
+                    return jsonify({"error": f"speak: {e}"})
 
         elif tool == "translate":
             model, backend = _pick("translation")
@@ -995,7 +1132,7 @@ def api_test():
                 {"role": "system",
                  "content": f"Translate to {body['target']}. Output only the translation."},
                 {"role": "user", "content": body["text"]},
-            ])
+            ], tool="translate")
             return jsonify({"result": result, "model": model})
 
         elif tool == "summarize":
@@ -1004,24 +1141,25 @@ def api_test():
             result = _chat(model, backend, [
                 {"role": "system", "content": "Summarize this content concisely."},
                 {"role": "user", "content": text},
-            ])
+            ], tool="summarize")
             return jsonify({"result": result, "model": model})
 
         elif tool == "embed":
             model, backend = _pick("embedding")
             if not model:
                 model, backend = "mxbai-embed-large", "ollama"
-            if backend == "mlx":
-                resp = requests.post(f"{MLX_URL}/v1/embeddings", json={
-                    "model": model, "input": [body["text"]],
-                }, timeout=60)
-                resp.raise_for_status()
-                data = resp.json().get("data", [])
-                embeddings = [d["embedding"] for d in data]
-            else:
-                resp = requests.post(f"{OLLAMA_URL}/api/embed", json={
-                    "model": model, "input": [body["text"]],
-                }, timeout=60)
+            with _track_playground("embed", model, backend):
+                if backend == "mlx":
+                    resp = requests.post(f"{MLX_URL}/v1/embeddings", json={
+                        "model": model, "input": [body["text"]],
+                    }, timeout=60)
+                    resp.raise_for_status()
+                    data = resp.json().get("data", [])
+                    embeddings = [d["embedding"] for d in data]
+                else:
+                    resp = requests.post(f"{OLLAMA_URL}/api/embed", json={
+                        "model": model, "input": [body["text"]],
+                    }, timeout=60)
                 resp.raise_for_status()
                 embeddings = resp.json().get("embeddings", [])
             return jsonify({
@@ -1034,8 +1172,10 @@ def api_test():
         else:
             return jsonify({"error": f"Unknown tool: {tool}"}), 400
 
+    except requests.RequestException as e:
+        return jsonify({"error": f"{tool}: {_requests_error_detail(e)}"}), 500
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": f"{tool}: {e}"}), 500
 
 
 @app.route("/api/test/screenshot", methods=["POST"])
@@ -1106,14 +1246,27 @@ MCP_PORT = int(os.environ.get("MCP_PORT", "8100"))
 
 @app.route("/api/gpu")
 def api_gpu():
-    """Proxy GPU activity status from the MCP server."""
+    """Report playground activity and GPU contention."""
+    # What the playground is doing right now (pick most recent if multiple)
+    with _playground_lock:
+        own = None
+        if _playground_active:
+            own = max(_playground_active.values(), key=lambda x: x["started"])
+
+    # Check if other things are using the GPU (MCP server tasks)
+    other_active = False
     try:
         resp = requests.get(f"http://127.0.0.1:{MCP_PORT}/gpu", timeout=2)
-        return Response(resp.content, status=resp.status_code,
-                        content_type="application/json")
+        mcp = resp.json()
+        other_active = (mcp.get("ollama", {}).get("active", 0) > 0
+                        or mcp.get("mlx", {}).get("active", 0) > 0)
     except Exception:
-        return jsonify({"ollama": {"active": 0, "tasks": []},
-                        "mlx": {"active": 0, "tasks": []}})
+        pass
+
+    return jsonify({
+        "playground": own,
+        "other_active": other_active,
+    })
 
 
 # ── PWA assets ───────────────────────────────────────────────────────

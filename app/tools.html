@@ -496,10 +496,12 @@ function startGpuPoller(tool) {
       const resp = await fetch('/api/gpu');
       const data = await resp.json();
       const parts = [];
-      const tasks = [...data.ollama.tasks, ...data.mlx.tasks];
-      if (tasks.length > 0) parts.push(tasks.join(', '));
-      if (data.mlx.responsive === false) parts.push('MLX busy');
-      if (data.ollama.responsive === false) parts.push('Ollama busy');
+      if (data.playground) {
+        const p = data.playground;
+        const elapsed = Math.round((Date.now() / 1000) - p.started);
+        parts.push(`${p.model.split(':')[0]} (${p.backend})`);
+      }
+      if (data.other_active) parts.push('Waiting on another request');
       _lastGpuInfo = parts.length > 0 ? parts.join(' · ') : '';
     } catch {
       _lastGpuInfo = '';
@@ -617,22 +619,22 @@ async function run() {
         buf = lines.pop();
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue;
-          try {
-            const evt = JSON.parse(line.slice(6));
-            if (evt.error) { throw new Error(evt.error); }
-            if (evt.model) { model = evt.model; if (selected === runTool) log(`Model: ${model}`); }
-            if (evt.thinking && !loggedThinking) { if (selected === runTool) log(`Thinking...`); loggedThinking = true; }
-            if (evt.token) {
-              streamText += evt.token;
-              if (selected === runTool) {
-                if (loggedThinking && !output.textContent) log(`Generating output...`);
-                output.textContent = streamText;
-              }
+          let evt;
+          try { evt = JSON.parse(line.slice(6)); } catch { continue; }
+          if (evt.error) { throw new Error(evt.error); }
+          if (evt.warning) { if (selected === runTool) log(`⚠ ${evt.warning}`); }
+          if (evt.model) { model = evt.model; if (selected === runTool) log(`Model: ${model}`); }
+          if (evt.thinking && !loggedThinking) { if (selected === runTool) log(`Thinking...`); loggedThinking = true; }
+          if (evt.token) {
+            streamText += evt.token;
+            if (selected === runTool) {
+              if (loggedThinking && !output.textContent) log(`Generating output...`);
+              output.textContent = streamText;
             }
-            if (evt.done) { if (selected === runTool) log(`Stream complete`); break; }
           } catch (parseErr) {
             if (selected === runTool) log(`Parse error: ${parseErr.message}`);
           }
+          if (evt.done) { if (selected === runTool) log(`Stream complete`); break; }
         }
       }
       if (selected === runTool) {
@@ -653,7 +655,13 @@ async function run() {
         body: JSON.stringify(body),
         signal,
       });
-      const data = await resp.json();
+      let data;
+      try { data = await resp.json(); } catch {
+        throw new Error(`${runTool} failed: HTTP ${resp.status} (${resp.statusText}) — response was not JSON`);
+      }
+      if (!resp.ok && !data.error) {
+        throw new Error(`${runTool} failed: HTTP ${resp.status} — ${JSON.stringify(data)}`);
+      }
       if (selected !== runTool) {
         // User switched tools — stash result without touching the DOM
         let html, cls = 'output-box';
@@ -676,6 +684,7 @@ async function run() {
         btn.disabled = false;
         return;
       }
+      if (data.warning) log(`⚠ ${data.warning}`);
       log(`Response received · model: ${data.model || '?'}`);
       output.className = 'output-box';
       stopTimer(runTool, t0, status, data.model);
