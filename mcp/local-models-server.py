@@ -23,6 +23,9 @@ from pathlib import Path
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from lib.models import MCP_PREFS_FILE, MLX_SERVER_CONFIG, active_params_b
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
@@ -30,8 +33,6 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 MLX_URL = os.environ.get("MLX_URL", "http://localhost:8000")
-MCP_PREFS_FILE = Path("~/.config/local-models/mcp_preferences.json").expanduser()
-
 MCP_HOST = os.environ.get("MCP_HOST", "127.0.0.1")
 MCP_PORT = int(os.environ.get("MCP_PORT", "8100"))
 
@@ -137,11 +138,6 @@ def _gpu_contention_warning(backend: str) -> str:
                 f"active on {backend}{queue_info}. Response may be slow.\n\n")
 
 
-_KNOWN_ACTIVE = {
-    "nemotron_h_moe": {124: 12},
-    "deepseek2": {671: 37},
-}
-
 # ── Model Discovery ─────────────────────────────────────────────────
 
 _models: dict = {}  # populated at startup
@@ -194,30 +190,11 @@ async def discover_models():
                 except Exception:
                     pass
 
-                active_b = total_b
-                if expert_count and expert_used and expert_count > 1:
-                    import re as _re
-                    total_raw = int(total_b * 1e9)
-                    # Strategy 1: parse AXB from name
-                    m = _re.search(r'[_-]A(\d+(?:\.\d+)?)B', name, _re.IGNORECASE)
-                    if m:
-                        active_b = float(m.group(1))
-                    # Strategy 2: known hybrid lookup
-                    elif family in _KNOWN_ACTIVE:
-                        known = _KNOWN_ACTIVE[family]
-                        if round(total_b) in known:
-                            active_b = known[round(total_b)]
-                    # Strategy 3: FFN subtraction
-                    elif expert_ffn and embed_len and block_count:
-                        total_moe = block_count * expert_count * expert_ffn * embed_len * 3
-                        active_moe = block_count * expert_used * expert_ffn * embed_len * 3
-                        computed = total_raw - total_moe + active_moe
-                        if 0 < computed < total_raw:
-                            active_b = round(computed / 1e9)
-                        else:
-                            active_b = round(total_b * expert_used / expert_count)
-                    else:
-                        active_b = round(total_b * expert_used / expert_count)
+                active_b = active_params_b(
+                    name, total_b, family,
+                    expert_count, expert_used,
+                    expert_ffn, embed_len, block_count,
+                )
                 active_b = round(active_b)
                 total_b = round(total_b)
 
@@ -237,11 +214,10 @@ async def discover_models():
         # MLX
         # Load MLX server config to map served names → HuggingFace paths
         _mlx_cfg_map = {}
-        _mlx_cfg_path = Path("~/.config/mlx-server/config.yaml").expanduser()
-        if _mlx_cfg_path.exists():
+        if MLX_SERVER_CONFIG.exists():
             try:
                 import yaml
-                _mcfg = yaml.safe_load(_mlx_cfg_path.read_text())
+                _mcfg = yaml.safe_load(MLX_SERVER_CONFIG.read_text())
                 for entry in _mcfg.get("models", []):
                     sn = entry.get("served_model_name", "")
                     mp = entry.get("model_path", "")
@@ -288,8 +264,7 @@ async def discover_models():
             "image_edit": "mflux",
             "image_gen": "mflux",
         }
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
-        from hf_scanner import scan_hf_cache
+        from lib.hf_scanner import scan_hf_cache
         for hf_model in scan_hf_cache(_TASK_BACKENDS.keys()):
             name = hf_model["name"]
             if name not in models:
