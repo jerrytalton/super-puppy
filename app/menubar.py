@@ -268,17 +268,15 @@ def get_mcp_models(mcp_url="http://127.0.0.1:8100", timeout=3):
 # MCP tool preferences
 # ---------------------------------------------------------------------------
 
-MCP_PREFS_FILE = os.path.expanduser("~/.config/local-models/mcp_preferences.json")
+from lib.models import (
+    STANDARD_TASKS, SPECIAL_TASKS, TASK_FILTERS, KNOWN_ACTIVE_PARAMS,
+    ALWAYS_EXCLUDE, active_params_b,
+    MCP_PREFS_FILE as _MCP_PREFS_PATH,
+)
+MCP_PREFS_FILE = str(_MCP_PREFS_PATH)
 
-# Task types that users can configure a preferred model for.
-# Keys match the MCP server's pick_model() task parameter.
-MCP_TASK_LABELS = {
-    "code": "Code Generation",
-    "general": "General Text",
-    "translation": "Translation",
-    "reasoning": "Reasoning & Review",
-    "long_context": "Long Context",
-}
+MCP_TASK_LABELS = {k: v for k, v in STANDARD_TASKS.items()}
+MCP_TASK_FILTERS = TASK_FILTERS
 
 MCP_DEFAULT_PREFS = {
     "code": ["qwen3-coder:480b", "qwen3-coder", "qwen2.5-coder:32b", "glm-4.7-flash", "qwen3.5"],
@@ -286,41 +284,6 @@ MCP_DEFAULT_PREFS = {
     "translation": ["cogito-2.1", "qwen3.5", "glm-4.7-flash"],
     "reasoning": ["deepseek-r1:671b", "cogito-2.1", "nemotron-3-super", "qwen3.5-large", "qwen3.5", "glm-4.7-flash"],
     "long_context": ["qwen3.5", "nemotron-3-super", "glm-4.7-flash", "deepseek-r1:671b"],
-}
-
-# Filters: include/exclude patterns and numeric thresholds.
-# "include_names" — model must match at least one prefix (if set).
-# "exclude_names" — model is hidden if it matches any prefix.
-# "min_active_b" / "min_ctx" — numeric minimums.
-MCP_TASK_FILTERS = {
-    "code": {
-        "priority_names": ["coder"],
-        "include_names": ["qwen3.5", "deepseek", "cogito", "nemotron",
-                          "gpt-oss", "llama3.3"],
-        "exclude_names": ["vl", "flux", "z-image", "whisper", "ocr", "tinyllama",
-                          "goonsai", "nsfw"],
-        "min_active_b": 3,
-    },
-    "general": {
-        "exclude_names": ["coder", "vl", "flux", "z-image", "whisper", "ocr",
-                          "tinyllama", "goonsai", "nsfw"],
-        "min_active_b": 3,
-    },
-    "translation": {
-        "exclude_names": ["coder", "vl", "flux", "z-image", "whisper", "ocr",
-                          "tinyllama", "goonsai", "nsfw"],
-        "min_active_b": 3,
-    },
-    "reasoning": {
-        "exclude_names": ["coder", "vl", "flux", "z-image", "whisper", "ocr",
-                          "tinyllama", "goonsai", "nsfw"],
-        "min_active_b": 10,
-    },
-    "long_context": {
-        "exclude_names": ["vl", "flux", "z-image", "whisper", "ocr",
-                          "tinyllama", "goonsai", "nsfw"],
-        "min_ctx": 64000,
-    },
 }
 
 
@@ -356,21 +319,7 @@ def _model_matches_filter(model_name, raw_info, task_filter):
 
     return True
 
-# Specialized task types matched by model name prefix.
-MCP_SPECIAL_TASKS = {
-    "vision": {
-        "label": "Vision",
-        "prefixes": ["qwen3-vl", "llava", "moondream"],
-    },
-    "image_gen": {
-        "label": "Image Generation",
-        "prefixes": ["x/flux2", "x/z-image", "flux", "stable-diffusion"],
-    },
-    "transcription": {
-        "label": "Transcription",
-        "prefixes": ["whisper"],
-    },
-}
+MCP_SPECIAL_TASKS = SPECIAL_TASKS
 
 
 # ---------------------------------------------------------------------------
@@ -616,12 +565,6 @@ def query_ollama_all_models(base_url, timeout=5):
     return result
 
 
-# Known active params for hybrid architectures where auto-detection fails.
-# Keyed by Ollama family name → {total_b: active_b}.
-_KNOWN_ACTIVE_PARAMS_B = {
-    "nemotron_h_moe": {124: 12},
-    "deepseek2": {671: 37},
-}
 
 
 def query_ollama_model_detail(base_url, model_name, timeout=5):
@@ -671,37 +614,17 @@ def query_ollama_model_detail(base_url, model_name, timeout=5):
         if expert_used:
             expert_used = int(expert_used)
 
-        # Active params — multi-strategy for MoE models
-        active_b = total_b
-        if expert_count and expert_used and expert_count > 1:
-            total_b_rounded = round(total_b)
-
-            # Strategy 1: Parse "AXB" from model name
-            match = re.search(r'[_-]A(\d+(?:\.\d+)?)B', model_name, re.IGNORECASE)
-            if match:
-                active_b = float(match.group(1))
-
-            # Strategy 2: Known hybrid model lookup
-            elif family in _KNOWN_ACTIVE_PARAMS_B:
-                known = _KNOWN_ACTIVE_PARAMS_B[family]
-                if total_b_rounded in known:
-                    active_b = known[total_b_rounded]
-
-            # Strategy 3: FFN subtraction (works for pure MoE like Qwen)
-            else:
-                expert_ffn = _get(".expert_feed_forward_length", 0)
-                embed_len = _get(".embedding_length", 0)
-                block_count = _get(".block_count", 0)
-                if expert_ffn and embed_len and block_count:
-                    total_moe = block_count * expert_count * expert_ffn * embed_len * 3
-                    active_moe = block_count * expert_used * expert_ffn * embed_len * 3
-                    computed = total_raw - total_moe + active_moe
-                    if 0 < computed < total_raw:
-                        active_b = computed / 1e9
-
-                # Strategy 4: Simple ratio (last resort)
-                if active_b == total_b:
-                    active_b = total_b * expert_used / expert_count
+        # Active params — delegate MoE computation to shared library
+        expert_ffn = _get(".expert_feed_forward_length", 0)
+        embed_len = _get(".embedding_length", 0)
+        block_count = _get(".block_count", 0)
+        active_b = active_params_b(
+            model_name, total_b, family,
+            expert_count, expert_used,
+            expert_ffn=expert_ffn or 0,
+            embed_len=embed_len or 0,
+            block_count=block_count or 0,
+        )
 
         has_vision = any("vision" in k for k in model_info)
 
