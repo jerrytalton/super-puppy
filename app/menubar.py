@@ -2189,16 +2189,9 @@ class LocalModelsApp(rumps.App):
             os.unlink(lock_file)
         except FileNotFoundError:
             pass
-        bundle = os.path.join(SCRIPT_DIR, "SuperPuppy.app")
-        if os.path.isdir(bundle):
-            subprocess.Popen(
-                ["bash", "-c", f"sleep 2 && open '{bundle}'"],
-                start_new_session=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        from PyObjCTools import AppHelper
-        AppHelper.callAfter(rumps.quit_application)
+        # Exit non-zero so launchd's KeepAlive restarts us on the new code.
+        # os._exit bypasses atexit handlers to ensure a clean, fast exit.
+        os._exit(1)
 
     def _mcp_code_changed(self):
         """Check if mcp/ files differ between HEAD and origin/main."""
