@@ -1216,13 +1216,8 @@ if __name__ == "__main__":
     # HTTPS only when binding to all interfaces (remote access).
     # Tailscale certs are issued for the FQDN, not 127.0.0.1, so TLS
     # on localhost would fail with a hostname mismatch.
-    ssl_ctx = None
-    if HOST == "0.0.0.0":
-        cert_dir = Path("~/.config/local-models/certs").expanduser()
-        cert_file = next(cert_dir.glob("*.crt"), None) if cert_dir.exists() else None
-        key_file = next(cert_dir.glob("*.key"), None) if cert_dir.exists() else None
-        ssl_ctx = (str(cert_file), str(key_file)) if cert_file and key_file else None
-
-    scheme = "https" if ssl_ctx else "http"
-    print(f"{scheme}://{HOST}:{PORT}", flush=True)  # menu bar reads this
-    app.run(host=HOST, port=PORT, debug=False, ssl_context=ssl_ctx)
+    # Plain HTTP always. Tailscale encrypts the WireGuard tunnel for remote
+    # access. HTTPS would break the local webview (cert is for the Tailscale
+    # FQDN, not 127.0.0.1).
+    print(f"http://{HOST}:{PORT}", flush=True)  # menu bar reads this
+    app.run(host=HOST, port=PORT, debug=False)
