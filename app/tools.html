@@ -162,6 +162,7 @@ h2 { font-size: 13px; font-weight: 600; color: var(--text2); text-transform: upp
 </div>
 <div class="run-row">
   <button class="run-btn" id="run" onclick="run()">Run</button>
+  <button class="run-btn" id="cancel-btn" onclick="cancel()" style="background:#888;display:none">Cancel</button>
   <span class="status" id="status"></span>
   <span id="log" style="font-size:11px; color:var(--text3); font-family:ui-monospace,monospace; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; flex:1; min-width:0;"></span>
 </div>
@@ -236,11 +237,21 @@ const fmtP = (t,a) => t===a||!a ? t+'B' : t+'B/'+a+'B';
 const fmtC = c => c>=1e6?Math.round(c/1e6)+'M':c>=1024?Math.floor(c/1024)+'K':c>0?''+c:'';
 
 async function init() {
-  const [models, tasks, profiles] = await Promise.all([
-    fetch('/api/models').then(r => r.json()),
-    fetch('/api/tasks').then(r => r.json()),
-    fetch('/api/profiles').then(r => r.json()),
-  ]);
+  let models, tasks, profiles;
+  try {
+    [models, tasks, profiles] = await Promise.all([
+      fetch('/api/models').then(r => r.json()),
+      fetch('/api/tasks').then(r => r.json()),
+      fetch('/api/profiles').then(r => r.json()),
+    ]);
+  } catch (err) {
+    document.getElementById('output').innerHTML =
+      `<div style="color:#e55;padding:2em;text-align:center">
+        Cannot connect to server<br>
+        <button onclick="init()" style="margin-top:1em;padding:.5em 1.5em;cursor:pointer">Retry</button>
+      </div>`;
+    return;
+  }
   allModels = models.sort((a, b) => (b.total_params_b || 0) - (a.total_params_b || 0));
 
   // Active profile picks
@@ -549,6 +560,15 @@ async function buildBody() {
   return body;
 }
 
+let _abortController = null;
+
+function cancel() {
+  if (_abortController) {
+    _abortController.abort();
+    _abortController = null;
+  }
+}
+
 async function run() {
   const btn = document.getElementById('run');
   const status = document.getElementById('status');
@@ -556,6 +576,9 @@ async function run() {
   const runTool = selected;
   _running[runTool] = Date.now();
   btn.disabled = true;
+  document.getElementById('cancel-btn').style.display = '';
+  _abortController = new AbortController();
+  const signal = _abortController.signal;
   output.textContent = '';
   output.className = 'output-box running';
 
@@ -575,6 +598,7 @@ async function run() {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(body),
+        signal,
       });
       if (!resp.ok) {
         const err = await resp.json();
@@ -607,6 +631,8 @@ async function run() {
               if (loggedThinking && !output.textContent) log(`Generating output...`);
               output.textContent = streamText;
             }
+          } catch (parseErr) {
+            if (selected === runTool) log(`Parse error: ${parseErr.message}`);
           }
           if (evt.done) { if (selected === runTool) log(`Stream complete`); break; }
         }
@@ -627,6 +653,7 @@ async function run() {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(body),
+        signal,
       });
       let data;
       try { data = await resp.json(); } catch {
@@ -683,13 +710,22 @@ async function run() {
     }
   } catch (e) {
     if (selected === runTool) {
-      log(`FAILED: ${e.message}`);
-      output.textContent = e.message;
-      output.className = 'output-box error';
-      stopTimer(runTool, t0, status, '');
-      status.textContent = 'Failed';
+      if (e.name === 'AbortError') {
+        log('Cancelled');
+        output.className = 'output-box';
+        stopTimer(runTool, t0, status, '');
+        status.textContent = 'Cancelled';
+      } else {
+        log(`FAILED: ${e.message}`);
+        output.textContent = e.message;
+        output.className = 'output-box error';
+        stopTimer(runTool, t0, status, '');
+        status.textContent = 'Failed';
+      }
     }
   }
+  _abortController = null;
+  document.getElementById('cancel-btn').style.display = 'none';
   delete _running[runTool];
   if (selected === runTool) btn.disabled = false;
 }
