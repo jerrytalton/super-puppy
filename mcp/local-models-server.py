@@ -41,7 +41,19 @@ if not MCP_AUTH_TOKEN:
     print("local-models MCP: WARNING: MCP_AUTH_TOKEN not set, server is unauthenticated",
           file=sys.stderr, flush=True)
 
-mcp = FastMCP("local-models", host=MCP_HOST, port=MCP_PORT)
+# Allow Tailscale FQDN in Host header (tailscale serve proxies with original Host)
+_EXTRA_HOSTS = os.environ.get("MCP_ALLOWED_HOSTS", "")
+_allowed_hosts = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+if _EXTRA_HOSTS:
+    _allowed_hosts.extend(h.strip() for h in _EXTRA_HOSTS.split(",") if h.strip())
+
+from mcp.server.transport_security import TransportSecuritySettings
+_transport_security = TransportSecuritySettings(
+    enable_dns_rebinding_protection=True,
+    allowed_hosts=_allowed_hosts,
+)
+mcp = FastMCP("local-models", host=MCP_HOST, port=MCP_PORT,
+              transport_security=_transport_security)
 
 
 _AUTH_EXEMPT_PATHS = {"/gpu", "/api/mcp-models"}
@@ -1298,7 +1310,8 @@ def main():
         app.routes.append(Route("/api/mcp-models", _mcp_models))
         config = uvicorn.Config(
             app, host=mcp.settings.host, port=mcp.settings.port,
-            log_level=mcp.settings.log_level.lower())
+            log_level=mcp.settings.log_level.lower(),
+            proxy_headers=True, forwarded_allow_ips="*")
         anyio.run(uvicorn.Server(config).serve)
     else:
         mcp.run(transport="streamable-http")
