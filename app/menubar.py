@@ -1218,31 +1218,28 @@ class LocalModelsApp(rumps.App):
     # -------------------------------------------------------------------
 
     def _resolve_desktop(self):
-        """Try mDNS then Tailscale to find the desktop. Updates remote URLs.
+        """Try mDNS then Tailscale to find the desktop's MCP server.
 
         Returns the connection path ("lan", "tailscale") or "" if unreachable.
         """
         # Try 1: mDNS (LAN)
         mdns_ip = resolve_mdns(self.desktop_host)
-        if mdns_ip:
-            self.desktop_ip = mdns_ip
-            self.ollama_remote = f"http://{mdns_ip}:{self.ollama_port}"
-            self.mlx_remote = f"http://{mdns_ip}:{self.mlx_port}"
-            if (probe_service(self.ollama_remote, self.probe_timeout)
-                    or probe_service(self.mlx_remote, self.probe_timeout)):
-                return "lan"
+        if mdns_ip and probe_port(8100, host=mdns_ip, timeout=self.probe_timeout):
+            self._set_desktop_ip(mdns_ip)
+            return "lan"
 
         # Try 2: Tailscale (off-LAN)
         ts_ip = resolve_desktop_tailscale(self.ts_hostname)
-        if ts_ip:
-            self.desktop_ip = ts_ip
-            self.ollama_remote = f"http://{ts_ip}:{self.ollama_port}"
-            self.mlx_remote = f"http://{ts_ip}:{self.mlx_port}"
-            if (probe_service(self.ollama_remote, self.probe_timeout)
-                    or probe_service(self.mlx_remote, self.probe_timeout)):
-                return "tailscale"
+        if ts_ip and probe_port(8100, host=ts_ip, timeout=self.probe_timeout):
+            self._set_desktop_ip(ts_ip)
+            return "tailscale"
 
         return ""
+
+    def _set_desktop_ip(self, ip):
+        self.desktop_ip = ip
+        self.ollama_remote = f"http://{ip}:{self.ollama_port}"
+        self.mlx_remote = f"http://{ip}:{self.mlx_port}"
 
     def start_services(self):
         """Start local servers (or detect desktop)."""
@@ -1724,12 +1721,10 @@ class LocalModelsApp(rumps.App):
         if path:
             self.connection_path = path
             self.mode = "client"
-            self.ollama_ok = probe_service(self.ollama_remote, self.probe_timeout)
-            self.mlx_ok = probe_service(self.mlx_remote, self.probe_timeout)
-            self.ollama_models = (
-                get_ollama_models(self.ollama_remote) if self.ollama_ok else [])
-            self.mlx_models = (
-                get_mlx_models(self.mlx_remote) if self.mlx_ok else [])
+            self.ollama_ok = False
+            self.mlx_ok = False
+            self.ollama_models = []
+            self.mlx_models = []
             self.mcp_models = get_mcp_models(f"http://{self.desktop_ip}:8100")
             # Notify on path change
             if prev_path and prev_path != path:
@@ -1881,34 +1876,34 @@ class LocalModelsApp(rumps.App):
         mlx_loading = getattr(self, 'mlx_loading', False)
         is_local = self.mode in ("server", "offline")
 
-        if self.ollama_ok:
-            self._styled_menu(self.menu_ollama, GRN, "Ollama",
-                              f"{ollama_n} models")
-        elif ollama_loading:
-            self._styled_menu(self.menu_ollama, YEL, "Ollama", "starting…")
+        if self.mode == "client":
+            # Remote: hide Ollama/MLX — they're the desktop's concern
+            self.menu_ollama.hide()
+            self.menu_mlx.hide()
         else:
-            self._styled_menu(self.menu_ollama, RED, "Ollama", "down")
-        self.menu_ollama_restart.title = (
-            "Restart Ollama" if is_local else "Remote — restart from server")
-        self.menu_ollama_restart.set_callback(
-            self._restart_ollama if is_local else None)
+            self.menu_ollama.show()
+            self.menu_mlx.show()
+            if self.ollama_ok:
+                self._styled_menu(self.menu_ollama, GRN, "Ollama",
+                                  f"{ollama_n} models")
+            elif ollama_loading:
+                self._styled_menu(self.menu_ollama, YEL, "Ollama", "starting…")
+            else:
+                self._styled_menu(self.menu_ollama, RED, "Ollama", "down")
+            self.menu_ollama_restart.set_callback(self._restart_ollama)
 
-        if self.mlx_ok:
-            self._styled_menu(self.menu_mlx, GRN, "MLX",
-                              f"{mlx_n} models")
-        elif mlx_loading:
-            self._styled_menu(self.menu_mlx, YEL, "MLX", "starting…")
-        else:
-            self._styled_menu(self.menu_mlx, RED, "MLX", "down")
-        self.menu_mlx_restart.title = (
-            "Restart MLX" if is_local else "Remote — restart from server")
-        self.menu_mlx_restart.set_callback(
-            self._restart_mlx if is_local else None)
+            if self.mlx_ok:
+                self._styled_menu(self.menu_mlx, GRN, "MLX",
+                                  f"{mlx_n} models")
+            elif mlx_loading:
+                self._styled_menu(self.menu_mlx, YEL, "MLX", "starting…")
+            else:
+                self._styled_menu(self.menu_mlx, RED, "MLX", "down")
+            self.menu_mlx_restart.set_callback(self._restart_mlx)
 
         mcp_proc = getattr(self, '_mcp_proc', None)
         mcp_proc_alive = mcp_proc is not None and mcp_proc.poll() is None
         if self.mode == "client":
-            # Remote mode: MCP runs on the desktop, check its port
             mcp_alive = probe_port(8100, host=self.desktop_ip or "127.0.0.1")
         else:
             mcp_port_alive = probe_port(8100)
