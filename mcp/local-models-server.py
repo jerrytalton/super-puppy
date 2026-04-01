@@ -38,8 +38,9 @@ MCP_PORT = int(os.environ.get("MCP_PORT", "8100"))
 # --- Bearer token auth (token comes from 1Password via wrapper) ---
 MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "")
 if not MCP_AUTH_TOKEN:
-    print("local-models MCP: WARNING: MCP_AUTH_TOKEN not set, server is unauthenticated",
+    print("local-models MCP: ERROR: MCP_AUTH_TOKEN not set. Refusing to start without auth.",
           file=sys.stderr, flush=True)
+    sys.exit(1)
 
 # Allow Tailscale FQDN in Host header (tailscale serve proxies with original Host)
 _EXTRA_HOSTS = os.environ.get("MCP_ALLOWED_HOSTS", "")
@@ -57,6 +58,8 @@ mcp = FastMCP("local-models", host=MCP_HOST, port=MCP_PORT,
 
 
 _AUTH_EXEMPT_PATHS = {"/gpu", "/api/mcp-models"}
+_authenticated_sessions: set[str] = set()
+_session_lock = threading.Lock()
 
 
 class BearerAuthMiddleware(BaseHTTPMiddleware):
@@ -66,17 +69,28 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         if path in _AUTH_EXEMPT_PATHS:
             return await call_next(request)
-        # Let OAuth discovery get a clean 404 so Claude Code doesn't
-        # mistake our 403 for "auth server exists but denied access"
         if ".well-known" in path or path == "/register":
             return await call_next(request)
-        # Exempt session-bound requests (SSE /messages/ with session_id).
-        # These only work with sessions created via authenticated /mcp init.
-        if path.startswith("/messages") and request.query_params.get("session_id"):
-            return await call_next(request)
+        # Session-bound requests: validate against authenticated session set
+        session_id = request.query_params.get("session_id")
+        if path.startswith("/messages") and session_id:
+            with _session_lock:
+                if session_id in _authenticated_sessions:
+                    return await call_next(request)
+            return JSONResponse({"error": "unauthorized"}, status_code=403)
         auth = request.headers.get("authorization", "")
         if auth == f"Bearer {MCP_AUTH_TOKEN}":
-            return await call_next(request)
+            # Track session ID from authenticated /mcp init requests
+            if path == "/mcp" and session_id:
+                with _session_lock:
+                    _authenticated_sessions.add(session_id)
+            response = await call_next(request)
+            # Also capture session IDs from response headers (MCP protocol)
+            new_sid = response.headers.get("mcp-session-id")
+            if new_sid:
+                with _session_lock:
+                    _authenticated_sessions.add(new_sid)
+            return response
         return JSONResponse({"error": "unauthorized"}, status_code=403)
 
 # ── GPU activity tracking ────────────────────────────────────────────

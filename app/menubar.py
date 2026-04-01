@@ -105,6 +105,7 @@ UPDATE_IDLE_SECONDS = 60     # don't auto-update if MCP active within 60s
 UPDATE_CRASH_WINDOW = 30     # seconds — if app dies within this after update, roll back
 UPDATE_STARTED_FILE = os.path.expanduser("~/.config/local-models/update_started")
 UPDATE_SKIPPED_FILE = os.path.expanduser("~/.config/local-models/update_skipped")
+UPDATE_PRE_HASH_FILE = os.path.expanduser("~/.config/local-models/update_pre_hash")
 PRE_UPDATE_HEALTH_FILE = os.path.expanduser("~/.config/local-models/pre_update_health.json")
 MCP_LOG_FILE = "/tmp/local-models-mcp.log"
 
@@ -1252,8 +1253,7 @@ class LocalModelsApp(rumps.App):
         """Launch Ollama and MLX-OpenAI-Server via start-local-models."""
         try:
             env = os.environ.copy()
-            if self.desktop:
-                env["OLLAMA_HOST"] = f"0.0.0.0:{self.ollama_port}"
+            # Ollama always binds localhost; tailscale serve handles remote access
             # Ensure Homebrew is on PATH — launchd gives a minimal PATH
             if "/opt/homebrew/bin" not in env.get("PATH", ""):
                 env["PATH"] = f"/opt/homebrew/bin:{env.get('PATH', '')}"
@@ -1348,12 +1348,27 @@ class LocalModelsApp(rumps.App):
             entry["url"] = url
             # Preserve existing auth headers
             servers["local-models"] = entry
-            with open(MCP_TOOLS_FILE, "w") as f:
+            tmp = MCP_TOOLS_FILE + ".tmp"
+            with open(tmp, "w") as f:
                 json.dump(data, f, indent=2)
                 f.write("\n")
+            os.replace(tmp, MCP_TOOLS_FILE)
             logging.info("MCP config updated: %s", url)
         except Exception as e:
             logging.warning("Failed to update Claude MCP config: %s", e)
+
+    _last_connection_notify = 0
+
+    def _notify_connection(self, title, body):
+        """Send a connectivity notification, debounced to 60s minimum interval."""
+        now = time.time()
+        if now - self._last_connection_notify < 60:
+            return
+        self._last_connection_notify = now
+        try:
+            rumps.notification("Super Puppy", title, body)
+        except RuntimeError:
+            pass
 
     def _get_own_fqdn(self):
         """Get this machine's Tailscale FQDN."""
@@ -1410,7 +1425,8 @@ class LocalModelsApp(rumps.App):
                 capture_output=True, timeout=10)
         except Exception:
             pass
-        for port in (8100, self._profile_fixed_port):
+        for port in (8100, self._profile_fixed_port,
+                     int(self.ollama_port), int(self.mlx_port)):
             try:
                 result = subprocess.run(
                     ["tailscale", "serve", "--bg", "--https",
@@ -1554,8 +1570,6 @@ class LocalModelsApp(rumps.App):
                                capture_output=True, timeout=5)
                 time.sleep(2)
                 env = os.environ.copy()
-                if self.desktop:
-                    env["OLLAMA_HOST"] = f"0.0.0.0:{self.ollama_port}"
                 subprocess.Popen(
                     ["ollama", "serve"], env=env,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -1735,21 +1749,13 @@ class LocalModelsApp(rumps.App):
                 f"https://{self.desktop_fqdn}:8100" if self.desktop_fqdn
                 else f"http://{self.desktop_ip}:8100")
             if not was_remote:
-                try:
-                    rumps.notification(
-                        "Super Puppy", "Connected to desktop",
-                        f"via Tailscale ({self.desktop_ip})")
-                except RuntimeError:
-                    pass
+                self._notify_connection("Connected to desktop",
+                                        f"via Tailscale ({self.desktop_ip})")
             return
 
         if was_remote:
-            try:
-                rumps.notification(
-                    "Super Puppy", "Desktop unreachable",
-                    "Using local models")
-            except RuntimeError:
-                pass
+            self._notify_connection("Desktop unreachable",
+                                    "Using local models")
 
         self.ollama_ok = probe_service(OLLAMA_LOCAL, 2)
         self.mlx_ok = probe_service(MLX_LOCAL, 2)
@@ -2149,6 +2155,17 @@ class LocalModelsApp(rumps.App):
             return False
 
     def _auto_update(self, remote_ver):
+        # Save pre-update commit hash for precise rollback
+        pre_hash = ""
+        try:
+            pre_hash = subprocess.check_output(
+                ["git", "-C", REPO_DIR, "rev-parse", "HEAD"],
+                text=True, timeout=5).strip()
+            with open(UPDATE_PRE_HASH_FILE, "w") as f:
+                f.write(pre_hash)
+        except Exception:
+            pass
+
         # Save pre-update health snapshot
         health = {
             "ollama": self.ollama_ok,
@@ -2175,10 +2192,17 @@ class LocalModelsApp(rumps.App):
         success, output = apply_repo_update()
         if not success:
             logging.error("Auto-update failed: %s", output)
+            # Reset to pre-update commit so we don't stay on broken code
+            if pre_hash:
+                subprocess.run(
+                    ["git", "-C", REPO_DIR, "reset", "--hard", pre_hash],
+                    capture_output=True, timeout=10)
             try:
-                rumps.notification("Super Puppy", "Update failed", output[:100])
+                rumps.notification("Super Puppy", "Update failed — rolled back",
+                                   output[:100])
             except RuntimeError:
                 pass
+            self._cleanup_update_files()
             return
 
         # Write update_started marker for crash rollback detection
@@ -2245,8 +2269,17 @@ class LocalModelsApp(rumps.App):
             head = subprocess.check_output(
                 ["git", "-C", REPO_DIR, "rev-parse", "HEAD"],
                 text=True, timeout=5).strip()
+            # Roll back to the exact pre-update hash, not just HEAD~1
+            rollback_target = "HEAD~1"
+            try:
+                with open(UPDATE_PRE_HASH_FILE) as f:
+                    saved_hash = f.read().strip()
+                if saved_hash:
+                    rollback_target = saved_hash
+            except FileNotFoundError:
+                pass
             subprocess.run(
-                ["git", "-C", REPO_DIR, "reset", "--hard", "HEAD~1"],
+                ["git", "-C", REPO_DIR, "reset", "--hard", rollback_target],
                 capture_output=True, timeout=10)
             # Record skipped commit
             os.makedirs(os.path.dirname(UPDATE_SKIPPED_FILE), exist_ok=True)
@@ -2268,14 +2301,17 @@ class LocalModelsApp(rumps.App):
             except FileNotFoundError:
                 pass
 
+    def _cleanup_update_files(self):
+        for f in (UPDATE_STARTED_FILE, UPDATE_PRE_HASH_FILE):
+            try:
+                os.unlink(f)
+            except FileNotFoundError:
+                pass
+
     def _mark_startup_healthy(self):
-        """Clear the update_started marker after surviving the crash window."""
-        try:
-            os.unlink(UPDATE_STARTED_FILE)
-        except FileNotFoundError:
-            pass
-        # If we survived an update that moved past the previously-skipped
-        # commit, clear the skip marker so future updates aren't blocked.
+        """Clear update markers after surviving the crash window."""
+        self._cleanup_update_files()
+        # If we survived an update past the previously-skipped commit, unblock.
         try:
             with open(UPDATE_SKIPPED_FILE) as f:
                 skipped = f.read().strip()
