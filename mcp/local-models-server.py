@@ -344,16 +344,28 @@ def pick_model(task: str, override: str | None = None) -> tuple[str, str]:
     raise ValueError(f"No model available for task '{task}'")
 
 
+def _http_error_detail(e: httpx.HTTPStatusError, action: str) -> str:
+    body = e.response.text[:500] if e.response.text else "(empty body)"
+    return f"{action}: HTTP {e.response.status_code} from {e.request.url} — {body}"
+
+
 async def chat_ollama(model: str, messages: list[dict],
                       max_tokens: int = 4096, think: bool = True) -> str:
     body = {"model": model, "messages": messages, "stream": False,
             "options": {"num_predict": max_tokens}}
     if not think:
         body["think"] = False
-    async with httpx.AsyncClient(timeout=300) as client:
-        resp = await client.post(f"{OLLAMA_URL}/api/chat", json=body)
-        resp.raise_for_status()
-        return resp.json()["message"]["content"]
+    try:
+        async with httpx.AsyncClient(timeout=300) as client:
+            resp = await client.post(f"{OLLAMA_URL}/api/chat", json=body)
+            resp.raise_for_status()
+            return resp.json()["message"]["content"]
+    except httpx.HTTPStatusError as e:
+        raise RuntimeError(_http_error_detail(e, f"Ollama chat ({model})")) from e
+    except httpx.ConnectError:
+        raise RuntimeError(f"Ollama chat ({model}): cannot connect to {OLLAMA_URL} — is Ollama running?")
+    except httpx.TimeoutException:
+        raise RuntimeError(f"Ollama chat ({model}): request timed out after 300s")
 
 
 async def chat_mlx(model: str, messages: list[dict],
@@ -363,10 +375,17 @@ async def chat_mlx(model: str, messages: list[dict],
     if not think:
         # MLX OpenAI-compatible: some models respect this
         body["temperature"] = 0.3
-    async with httpx.AsyncClient(timeout=300) as client:
-        resp = await client.post(f"{MLX_URL}/v1/chat/completions", json=body)
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+    try:
+        async with httpx.AsyncClient(timeout=300) as client:
+            resp = await client.post(f"{MLX_URL}/v1/chat/completions", json=body)
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
+    except httpx.HTTPStatusError as e:
+        raise RuntimeError(_http_error_detail(e, f"MLX chat ({model})")) from e
+    except httpx.ConnectError:
+        raise RuntimeError(f"MLX chat ({model}): cannot connect to {MLX_URL} — is mlx-openai-server running?")
+    except httpx.TimeoutException:
+        raise RuntimeError(f"MLX chat ({model}): request timed out after 300s")
 
 
 async def chat(model: str, backend: str, messages: list[dict],
@@ -549,34 +568,41 @@ async def local_vision(
     print(f"  → vision {model_name} ({backend}): {prompt[:50]}",
           file=sys.stderr, flush=True)
 
-    with _gpu_request(backend, f"vision:{model_name}"):
-        warning = _gpu_contention_warning(backend)
-        async with httpx.AsyncClient(timeout=300) as client:
-            if backend == "ollama":
-                messages = [{"role": "user", "content": prompt,
-                             "images": images_b64}]
-                body = {"model": model_name, "messages": messages,
-                        "stream": False}
-                if not thinking_enabled("vision"):
-                    body["think"] = False
-                resp = await client.post(f"{OLLAMA_URL}/api/chat", json=body)
-                resp.raise_for_status()
-                result = resp.json()["message"]["content"]
-            else:
-                # MLX OpenAI-compatible: images as data URIs in content array
-                content = [{"type": "text", "text": prompt}]
-                for b64 in images_b64:
-                    content.append({
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{b64}"},
-                    })
-                body = {"model": model_name,
-                        "messages": [{"role": "user", "content": content}],
-                        "max_tokens": 4096, "stream": False}
-                resp = await client.post(
-                    f"{MLX_URL}/v1/chat/completions", json=body)
-                resp.raise_for_status()
-                result = resp.json()["choices"][0]["message"]["content"]
+    try:
+        with _gpu_request(backend, f"vision:{model_name}"):
+            warning = _gpu_contention_warning(backend)
+            async with httpx.AsyncClient(timeout=300) as client:
+                if backend == "ollama":
+                    messages = [{"role": "user", "content": prompt,
+                                 "images": images_b64}]
+                    body = {"model": model_name, "messages": messages,
+                            "stream": False}
+                    if not thinking_enabled("vision"):
+                        body["think"] = False
+                    resp = await client.post(f"{OLLAMA_URL}/api/chat", json=body)
+                    resp.raise_for_status()
+                    result = resp.json()["message"]["content"]
+                else:
+                    content = [{"type": "text", "text": prompt}]
+                    for b64 in images_b64:
+                        content.append({
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{b64}"},
+                        })
+                    body = {"model": model_name,
+                            "messages": [{"role": "user", "content": content}],
+                            "max_tokens": 4096, "stream": False}
+                    resp = await client.post(
+                        f"{MLX_URL}/v1/chat/completions", json=body)
+                    resp.raise_for_status()
+                    result = resp.json()["choices"][0]["message"]["content"]
+    except httpx.HTTPStatusError as e:
+        return f"Error: {_http_error_detail(e, f'Vision ({model_name} via {backend})')}"
+    except httpx.ConnectError:
+        url = OLLAMA_URL if backend == "ollama" else MLX_URL
+        return f"Error: Vision ({model_name}): cannot connect to {url} — is the backend running?"
+    except httpx.TimeoutException:
+        return f"Error: Vision ({model_name}): request timed out after 300s"
 
     return f"{warning}[{model_name} via {backend}]\n\n{result}"
 
@@ -598,25 +624,56 @@ async def local_image(
         model: Optional model override. Defaults to best available image model.
     """
     try:
-        selected, _ = pick_model("image_gen", model)
+        selected, backend = pick_model("image_gen", model)
     except ValueError:
-        return "Error: no image generation model available. Need flux2 or similar in Ollama."
+        return "Error: no image generation model available. Need flux2 or similar."
 
     if not output_path:
         import time as _time
         output_path = f"/tmp/local_image_{int(_time.time())}.png"
 
-    print(f"  → generate image {selected}: {prompt[:50]}", file=sys.stderr, flush=True)
+    print(f"  → generate image {selected} ({backend}): {prompt[:50]}", file=sys.stderr, flush=True)
 
-    with _gpu_request("ollama", f"image:{selected}"):
-        warning = _gpu_contention_warning("ollama")
-        async with httpx.AsyncClient(timeout=300) as client:
-            resp = await client.post(
-                f"{OLLAMA_URL}/api/generate",
-                json={"model": selected, "prompt": prompt, "stream": False},
-            )
-            resp.raise_for_status()
-            image_b64 = resp.json().get("image", "")
+    if backend == "mflux":
+        with _gpu_request("mlx", f"image:{selected}"):
+            warning = _gpu_contention_warning("mlx")
+            loop = asyncio.get_event_loop()
+            try:
+                # Dev models need more steps; schnell/turbo/klein are fast
+                steps = "4" if any(k in selected.lower() for k in ("schnell", "turbo", "klein")) else "20"
+                proc = await loop.run_in_executor(None, lambda: subprocess.run(
+                    ["mflux-generate", "--model", selected, "--prompt", prompt,
+                     "--output", output_path, "--steps", steps],
+                    capture_output=True, text=True, timeout=600,
+                    env={**os.environ, "PATH": f"/opt/homebrew/bin:{os.environ.get('PATH', '')}"},
+                ))
+                if proc.returncode != 0:
+                    return f"Error: mflux-generate failed:\n{proc.stderr[-500:]}"
+            except subprocess.TimeoutExpired:
+                return "Error: image generation timed out after 10 minutes."
+
+        if not Path(output_path).exists():
+            return f"Error: output image was not created at {output_path}"
+        size = Path(output_path).stat().st_size
+        return f"{warning}[{selected} via mflux]\n\nImage saved to {output_path} ({size} bytes)"
+
+    # Ollama backend
+    try:
+        with _gpu_request("ollama", f"image:{selected}"):
+            warning = _gpu_contention_warning("ollama")
+            async with httpx.AsyncClient(timeout=300) as client:
+                resp = await client.post(
+                    f"{OLLAMA_URL}/api/generate",
+                    json={"model": selected, "prompt": prompt, "stream": False},
+                )
+                resp.raise_for_status()
+                image_b64 = resp.json().get("image", "")
+    except httpx.HTTPStatusError as e:
+        return f"Error: {_http_error_detail(e, f'Image generation ({selected})')}"
+    except httpx.ConnectError:
+        return f"Error: Image generation ({selected}): cannot connect to {OLLAMA_URL} — is Ollama running?"
+    except httpx.TimeoutException:
+        return f"Error: Image generation ({selected}): request timed out after 300s"
 
     if not image_b64:
         return f"Error: {selected} did not return an image."
@@ -665,9 +722,8 @@ async def local_image_edit(
 
     print(f"  → edit image [{selected}]: {prompt[:60]}", file=sys.stderr, flush=True)
 
-    # mflux uses Metal/GPU directly
-    with _gpu_request("mlx", f"image_edit:{selected}"):
-        warning = _gpu_contention_warning("mlx")
+    with _gpu_request(backend, f"image_edit:{selected}"):
+        warning = _gpu_contention_warning(backend)
 
         cmd = [
             "mflux-generate-kontext",
@@ -712,9 +768,9 @@ async def local_transcribe(
         model: Optional model name override. Must be a whisper model.
     """
     try:
-        whisper_model, _ = pick_model("transcription", model)
+        whisper_model, backend = pick_model("transcription", model)
     except ValueError:
-        return "Error: no whisper model available on MLX server."
+        return "Error: no transcription model available."
 
     try:
         audio_data = Path(audio_path).read_bytes()
@@ -727,22 +783,30 @@ async def local_transcribe(
                      "flac": "audio/flac"}
     ct = content_types.get(suffix, "application/octet-stream")
 
-    with _gpu_request("mlx", f"transcribe:{whisper_model}"):
-        warning = _gpu_contention_warning("mlx")
-        async with httpx.AsyncClient(timeout=300) as client:
-            files = {"file": (Path(audio_path).name, audio_data, ct)}
-            data = {"model": whisper_model}
-            if language:
-                data["language"] = language
+    url = MLX_URL if backend == "mlx" else OLLAMA_URL
+    try:
+        with _gpu_request(backend, f"transcribe:{whisper_model}"):
+            warning = _gpu_contention_warning(backend)
+            async with httpx.AsyncClient(timeout=300) as client:
+                files = {"file": (Path(audio_path).name, audio_data, ct)}
+                data = {"model": whisper_model}
+                if language:
+                    data["language"] = language
 
-            resp = await client.post(
-                f"{MLX_URL}/v1/audio/transcriptions",
-                files=files, data=data,
-            )
-            resp.raise_for_status()
-            result = resp.json().get("text", resp.text)
+                resp = await client.post(
+                    f"{url}/v1/audio/transcriptions",
+                    files=files, data=data,
+                )
+                resp.raise_for_status()
+                result = resp.json().get("text", resp.text)
+    except httpx.HTTPStatusError as e:
+        return f"Error: {_http_error_detail(e, f'Transcription ({whisper_model})')}"
+    except httpx.ConnectError:
+        return f"Error: Transcription ({whisper_model}): cannot connect to {url} — is the backend running?"
+    except httpx.TimeoutException:
+        return f"Error: Transcription ({whisper_model}): request timed out after 300s"
 
-    return f"{warning}[{whisper_model} via mlx]\n\n{result}"
+    return f"{warning}[{whisper_model} via {backend}]\n\n{result}"
 
 
 @mcp.tool()
@@ -775,7 +839,7 @@ async def local_speak(
         ref_text: Optional transcript of the reference audio (improves cloning).
     """
     try:
-        model, _ = pick_model("tts", model)
+        model, backend = pick_model("tts", model)
     except ValueError:
         return "Error: no TTS model available. Need Voxtral or Chatterbox downloaded."
     if not output_path:
@@ -807,8 +871,8 @@ async def local_speak(
             kwargs["ref_text"] = ref_text
         generate_audio(**kwargs)
 
-    with _gpu_request("mlx", f"tts:{model.split('/')[-1]}"):
-        warning = _gpu_contention_warning("mlx")
+    with _gpu_request(backend, f"tts:{model.split('/')[-1]}"):
+        warning = _gpu_contention_warning(backend)
         loop = asyncio.get_event_loop()
         try:
             await loop.run_in_executor(None, _generate)
@@ -831,7 +895,7 @@ async def local_speak(
             return f"Error: audio file was not created at {output_path}"
 
     size = Path(final_path).stat().st_size
-    return f"{warning}[{model.split('/')[-1]} via mlx-audio]\n\nAudio saved to {final_path} ({size} bytes)"
+    return f"{warning}[{model.split('/')[-1]} via {backend}]\n\nAudio saved to {final_path} ({size} bytes)"
 
 
 @mcp.tool()
@@ -1000,13 +1064,20 @@ def _get_hf_model(name: str):
 
 
 async def embed_ollama(model: str, texts: list[str]) -> list[list[float]]:
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post(
-            f"{OLLAMA_URL}/api/embed",
-            json={"model": model, "input": texts},
-        )
-        resp.raise_for_status()
-        return resp.json()["embeddings"]
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                f"{OLLAMA_URL}/api/embed",
+                json={"model": model, "input": texts},
+            )
+            resp.raise_for_status()
+            return resp.json()["embeddings"]
+    except httpx.HTTPStatusError as e:
+        raise RuntimeError(_http_error_detail(e, f"Embedding ({model})")) from e
+    except httpx.ConnectError:
+        raise RuntimeError(f"Embedding ({model}): cannot connect to {OLLAMA_URL} — is Ollama running?")
+    except httpx.TimeoutException:
+        raise RuntimeError(f"Embedding ({model}): request timed out after 60s")
 
 
 def embed_hf(model_name: str, texts: list[str]) -> list[list[float]]:
@@ -1044,16 +1115,18 @@ async def local_embed(
     if not texts:
         return "Error: provide texts or file_paths to embed."
 
-    # Pick model — fall back to HF if no Ollama embedding model available
-    if model and (model in _models or model in HF_EMBED_MODELS):
-        chosen = model
+    # Pick model — HF models are a separate pool, check both
+    if model and model in HF_EMBED_MODELS:
+        chosen, backend = model, "huggingface"
+    elif model and model in _models:
+        chosen, backend = model, _models[model]["backend"]
     else:
         try:
-            chosen, _ = pick_model("embedding", model)
+            chosen, backend = pick_model("embedding", model)
         except ValueError:
-            chosen = "bge-m3"
+            chosen, backend = "bge-m3", "huggingface"
 
-    if chosen in HF_EMBED_MODELS:
+    if backend == "huggingface" or chosen in HF_EMBED_MODELS:
         import asyncio
         embeddings = await asyncio.to_thread(embed_hf, chosen, texts)
         dim = len(embeddings[0]) if embeddings else 0
@@ -1065,7 +1138,7 @@ async def local_embed(
         embeddings = await embed_ollama(chosen, texts)
         dim = len(embeddings[0]) if embeddings else 0
         return (
-            f"[{chosen} via ollama · {len(embeddings)} embeddings · {dim}d]\n\n"
+            f"[{chosen} via {backend} · {len(embeddings)} embeddings · {dim}d]\n\n"
             + json.dumps(embeddings)
         )
 
@@ -1107,15 +1180,17 @@ async def local_similarity_search(
 
     all_texts = [query] + file_texts
 
-    if model and (model in _models or model in HF_EMBED_MODELS):
-        chosen = model
+    if model and model in HF_EMBED_MODELS:
+        chosen, backend = model, "huggingface"
+    elif model and model in _models:
+        chosen, backend = model, _models[model]["backend"]
     else:
         try:
-            chosen, _ = pick_model("embedding", model)
+            chosen, backend = pick_model("embedding", model)
         except ValueError:
-            chosen = "bge-m3"
+            chosen, backend = "bge-m3", "huggingface"
 
-    if chosen in HF_EMBED_MODELS:
+    if backend == "huggingface" or chosen in HF_EMBED_MODELS:
         import asyncio
         embeddings = await asyncio.to_thread(embed_hf, chosen, all_texts)
     else:
