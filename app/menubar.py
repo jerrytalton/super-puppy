@@ -1201,7 +1201,10 @@ class LocalModelsApp(rumps.App):
         Returns True if reachable, False otherwise.
         """
         ts_ip = resolve_desktop_tailscale(self.ts_hostname)
-        if ts_ip and probe_port(8100, host=ts_ip, timeout=self.probe_timeout):
+        if not ts_ip:
+            return False
+        reachable = probe_port(8100, host=ts_ip, timeout=self.probe_timeout)
+        if reachable:
             self.desktop_ip = ts_ip
             self.ollama_remote = f"http://{ts_ip}:{self.ollama_port}"
             self.mlx_remote = f"http://{ts_ip}:{self.mlx_port}"
