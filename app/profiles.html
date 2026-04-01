@@ -116,6 +116,8 @@ body {
 .badge.active-badge { background: rgba(0,122,255,0.12); color: var(--accent); }
 .card.too-large { opacity: 0.35; cursor: not-allowed; }
 .card.too-large:hover { border-color: transparent; }
+.task-selected.stale { color: var(--red); }
+.task-selected.stale::before { content: '\26A0  '; }
 .think-toggle {
   font-size: 10px; padding: 2px 8px; border-radius: 10px;
   border: 1px solid var(--border); background: var(--surface2);
@@ -376,6 +378,7 @@ function renderTasks() {
     const isPreset = S.sel && S.sel !== 'custom';
     const selectedName = picked || (isPreset ? null : def);
     const selectedLabel = selectedName ? selectedName.split(':')[0] : 'none';
+    const isStale = selectedName && !findModel(selectedName);
 
     const row = document.createElement('div');
     row.className = 'task-row' + (S.openTasks.has(key) ? ' open' : '');
@@ -385,7 +388,7 @@ function renderTasks() {
       <div class="task-header" data-task="${key}">
         <div class="task-color" style="background:${color}"></div>
         <div class="task-label">${info.label}</div>
-        <div class="task-selected">${selectedLabel}</div>
+        <div class="task-selected${isStale ? ' stale' : ''}">${selectedLabel}</div>
         <div class="think-toggle ${think ? 'on' : ''}" data-key="${key}">think</div>
         <div class="task-chevron">&#9654;</div>
       </div>
@@ -454,9 +457,15 @@ async function activate(name) {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({name, ...p}),
     });
-    await fetch(`/api/profiles/${name}/activate`, {method:'POST'});
+    const actResp = await fetch(`/api/profiles/${name}/activate`, {method:'POST'});
+    const actData = await actResp.json();
     S.profiles.active = name;
     render();
+    if (actData.warnings?.length) {
+      const msg = 'Pruned stale models from preferences:\n' + actData.warnings.join('\n');
+      console.warn(msg);
+      if (btn) { btn.textContent = `Activated (${actData.warnings.length} stale)`; btn.disabled = false; return; }
+    }
     if (window.webkit?.messageHandlers?.app)
       window.webkit.messageHandlers.app.postMessage('profileChanged');
   } catch(e) { alert('Failed: '+e.message); }
