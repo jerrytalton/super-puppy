@@ -167,24 +167,6 @@ def http_get_json(url, timeout=3):
         return None
 
 
-def resolve_mdns(hostname, timeout=5):
-    """Resolve an mDNS (.local) hostname to an IP address.
-
-    Uses socket.getaddrinfo with a generous timeout to handle cold mDNS
-    caches. Returns the IP string, or empty string on failure.
-    """
-    if not hostname:
-        return ""
-    try:
-        results = socket.getaddrinfo(hostname, None, socket.AF_INET,
-                                     socket.SOCK_STREAM)
-        if results:
-            return results[0][4][0]
-    except (socket.gaierror, OSError):
-        pass
-    return ""
-
-
 # Cache for resolve_desktop_tailscale (avoids repeated slow `tailscale status`)
 _ts_cache = {"ip": "", "ts": 0}
 _TS_CACHE_TTL = 30
@@ -1076,25 +1058,21 @@ class LocalModelsApp(rumps.App):
         self.conf = load_network_conf()
         self.desktop = is_desktop()
         self.ram_gb = get_ram_gb()
-        self.desktop_host = self.conf["MODEL_SERVER_HOST"]
         self.ollama_port = self.conf["OLLAMA_PORT"]
         self.mlx_port = self.conf["MLX_PORT"]
         self.probe_timeout = int(self.conf["PROBE_TIMEOUT"])
         self._profile_fixed_port = int(self.conf.get("PROFILE_PORT", "8101"))
         self.ts_hostname = self.conf.get("TAILSCALE_HOSTNAME", "")
 
-        # Resolve mDNS hostname to IP once (avoids repeated cold-cache
-        # lookups that eat into the probe timeout window)
-        self.desktop_ip = resolve_mdns(self.desktop_host)
-        remote_addr = self.desktop_ip or self.desktop_host
-        self.ollama_remote = f"http://{remote_addr}:{self.ollama_port}"
-        self.mlx_remote = f"http://{remote_addr}:{self.mlx_port}"
+        # Desktop IP resolved via Tailscale on first probe (laptops only)
+        self.desktop_ip = ""
+        self.ollama_remote = OLLAMA_LOCAL
+        self.mlx_remote = MLX_LOCAL
 
         # Mode preference (laptops only): user can force local even when
         # the desktop is reachable.  On startup, if not forced, prefer remote.
         self.force_local = load_force_local() if not self.desktop else False
         self.remote_reachable = False  # tracked every poll for greying out
-        self.connection_path = ""      # "lan", "tailscale", or "local"
 
         # State (protected by _lock for cross-thread access)
         self._lock = threading.Lock()
@@ -1218,43 +1196,30 @@ class LocalModelsApp(rumps.App):
     # -------------------------------------------------------------------
 
     def _resolve_desktop(self):
-        """Try mDNS then Tailscale to find the desktop's MCP server.
+        """Check if the desktop's MCP server is reachable via Tailscale.
 
-        Returns the connection path ("lan", "tailscale") or "" if unreachable.
+        Returns True if reachable, False otherwise.
         """
-        # Try 1: mDNS (LAN)
-        mdns_ip = resolve_mdns(self.desktop_host)
-        if mdns_ip and probe_port(8100, host=mdns_ip, timeout=self.probe_timeout):
-            self._set_desktop_ip(mdns_ip)
-            return "lan"
-
-        # Try 2: Tailscale (off-LAN)
         ts_ip = resolve_desktop_tailscale(self.ts_hostname)
         if ts_ip and probe_port(8100, host=ts_ip, timeout=self.probe_timeout):
-            self._set_desktop_ip(ts_ip)
-            return "tailscale"
-
-        return ""
-
-    def _set_desktop_ip(self, ip):
-        self.desktop_ip = ip
-        self.ollama_remote = f"http://{ip}:{self.ollama_port}"
-        self.mlx_remote = f"http://{ip}:{self.mlx_port}"
+            self.desktop_ip = ts_ip
+            self.ollama_remote = f"http://{ts_ip}:{self.ollama_port}"
+            self.mlx_remote = f"http://{ts_ip}:{self.mlx_port}"
+            return True
+        return False
 
     def start_services(self):
         """Start local servers (or detect desktop)."""
         if self.desktop:
             self._start_local_servers()
         else:
-            path = ""
-            if not self.force_local and self.desktop_host:
-                path = self._resolve_desktop()
-            if path:
+            found = (not self.force_local
+                     and self.ts_hostname
+                     and self._resolve_desktop())
+            if found:
                 self.mode = "client"
                 self.remote_reachable = True
-                self.connection_path = path
             else:
-                self.connection_path = "local"
                 self._start_local_servers()
         self._start_mcp_server()
         self._ensure_active_profile()
@@ -1710,35 +1675,30 @@ class LocalModelsApp(rumps.App):
             self.mode = "stopped"
 
     def _refresh_client_mode(self):
-        # Probe desktop via mDNS, then Tailscale fallback
-        path = ""
-        if self.desktop_host and not self.force_local:
-            path = self._resolve_desktop()
+        # Probe desktop via Tailscale
+        found = (self.ts_hostname
+                 and not self.force_local
+                 and self._resolve_desktop())
+        was_remote = self.remote_reachable
+        self.remote_reachable = found
 
-        self.remote_reachable = bool(path)
-        prev_path = self.connection_path
-
-        if path:
-            self.connection_path = path
+        if found:
             self.mode = "client"
             self.ollama_ok = False
             self.mlx_ok = False
             self.ollama_models = []
             self.mlx_models = []
             self.mcp_models = get_mcp_models(f"http://{self.desktop_ip}:8100")
-            # Notify on path change
-            if prev_path and prev_path != path:
-                label = "LAN" if path == "lan" else "Tailscale"
+            if not was_remote:
                 try:
                     rumps.notification(
-                        "Super Puppy", f"Switched to {label}",
-                        f"Desktop at {self.desktop_ip}")
+                        "Super Puppy", "Connected to desktop",
+                        f"via Tailscale ({self.desktop_ip})")
                 except RuntimeError:
                     pass
             return
 
-        self.connection_path = "local"
-        if prev_path and prev_path != "local":
+        if was_remote:
             try:
                 rumps.notification(
                     "Super Puppy", "Desktop unreachable",
@@ -1849,10 +1809,7 @@ class LocalModelsApp(rumps.App):
             self.menu_mode_remote.state = is_remote
             self.menu_mode_local.state = not is_remote
             if self.remote_reachable:
-                path_label = {"lan": "LAN", "tailscale": "Tailscale"
-                              }.get(self.connection_path, "")
-                self._styled_menu(self.menu_mode_remote, "", "Remote",
-                                  path_label)
+                self._styled_menu(self.menu_mode_remote, "", "Remote")
                 self.menu_mode_remote.set_callback(self._select_remote)
             else:
                 self._styled_menu(self.menu_mode_remote, "", "Remote",
