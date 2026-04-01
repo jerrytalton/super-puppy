@@ -83,6 +83,9 @@ claude-local              # fully local (Ollama only, no Anthropic)
 
 start-local-models        # start Ollama + MLX
 start-local-models --stop
+
+# restart the menu bar app
+pkill -f menubar.py; sleep 1; open ~/super-puppy/app/SuperPuppy.app
 ```
 
 ### `claude-local`

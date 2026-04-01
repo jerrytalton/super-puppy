@@ -19,18 +19,29 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import requests
 import yaml
 from flask import Flask, Response, after_this_request, jsonify, request, send_file
+
+from lib.models import (
+    ALWAYS_EXCLUDE,
+    KNOWN_ACTIVE_PARAMS,
+    MCP_PREFS_FILE,
+    MLX_SERVER_CONFIG,
+    NETWORK_CONF,
+    PROFILES_FILE,
+    SPECIAL_TASKS,
+    STANDARD_TASKS,
+    TASK_FILTERS,
+    active_params_b,
+)
 
 # ── Config ───────────────────────────────────────────────────────────
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 MLX_URL = os.environ.get("MLX_URL", "http://localhost:8000")
-MLX_CONFIG = Path("~/.config/mlx-server/config.yaml").expanduser()
-PROFILES_FILE = Path("~/.config/local-models/profiles.json").expanduser()
-MCP_PREFS_FILE = Path("~/.config/local-models/mcp_preferences.json").expanduser()
-NETWORK_CONF = Path("~/.config/local-models/network.conf").expanduser()
 HTML_FILE = Path(__file__).parent / "profiles.html"
 TOOLS_HTML = Path(__file__).parent / "tools.html"
 
@@ -41,60 +52,6 @@ _playground_lock = threading.Lock()
 _playground_active: dict[int, dict] = {}  # thread_id → {tool, model, backend, started}
 PORT = int(os.environ.get("PROFILE_SERVER_PORT", "0"))  # 0 = random
 HOST = os.environ.get("PROFILE_HOST", "127.0.0.1")
-
-# ── Shared constants (mirrored from MCP server + menubar) ───────────
-
-KNOWN_ACTIVE = {
-    "nemotron_h_moe": {124: 12},
-    "deepseek2": {671: 37},
-}
-
-TASK_LABELS = {
-    "code": "Code",
-    "general": "General",
-    "reasoning": "Reasoning",
-    "long_context": "Long Context",
-    "translation": "Translation",
-}
-
-SPECIAL_TASKS = {
-    "vision": {"label": "Vision", "prefixes": ["qwen3-vl", "llava", "moondream"]},
-    "image_gen": {"label": "Image Gen", "prefixes": ["x/flux2", "x/z-image", "FLUX.1-dev", "FLUX.2", "stable-diffusion"]},
-    "transcription": {"label": "Transcription", "prefixes": ["whisper"]},
-    "tts": {"label": "Text-to-Speech", "prefixes": ["voxtral", "chatterbox"]},
-    "image_edit": {"label": "Image Edit", "prefixes": ["FLUX.1-Kontext", "FLUX.1-Fill"]},
-    "embedding": {"label": "Embedding", "prefixes": ["mxbai-embed", "nomic-embed", "snowflake-arctic", "all-minilm"]},
-    "uncensored": {"label": "Uncensored", "prefixes": ["wizard-vicuna-uncensored", "dolphin", "nous-hermes"]},
-}
-
-# Names excluded from ALL general LLM tasks (not language models)
-_ALWAYS_EXCLUDE = ["vl", "flux", "z-image", "whisper", "ocr", "embed", "minilm",
-                   "tinyllama", "goonsai", "nsfw", "dolphin"]
-
-TASK_FILTERS = {
-    "code": {
-        "priority_names": ["coder"],
-        "include_names": ["qwen3.5", "deepseek", "cogito", "nemotron", "gpt-oss", "llama3.3", "glm"],
-        "exclude_names": _ALWAYS_EXCLUDE,
-        "min_active_b": 3,
-    },
-    "general": {
-        "exclude_names": ["coder"] + _ALWAYS_EXCLUDE,
-        "min_active_b": 3,
-    },
-    "reasoning": {
-        "exclude_names": ["coder"] + _ALWAYS_EXCLUDE,
-        "min_active_b": 10,
-    },
-    "long_context": {
-        "exclude_names": _ALWAYS_EXCLUDE,
-        "min_ctx": 64000,
-    },
-    "translation": {
-        "exclude_names": ["coder"] + _ALWAYS_EXCLUDE,
-        "min_active_b": 3,
-    },
-}
 
 def load_default_prefs() -> dict[str, list[str]]:
     """Load ranked model preferences from config file."""
@@ -170,7 +127,11 @@ def get_system_info():
 
 
 def compute_active_params(model_name, total_b, mi, family):
-    """Multi-strategy active param calculation for MoE models."""
+    """Multi-strategy active param calculation for MoE models.
+
+    Extracts architecture fields from Ollama model_info and delegates
+    to lib.models.active_params_b.
+    """
     def _get(suffix, default=None):
         for k, v in mi.items():
             if k.endswith(suffix) and ".vision." not in k:
@@ -184,34 +145,16 @@ def compute_active_params(model_name, total_b, mi, family):
     if expert_used:
         expert_used = int(expert_used)
 
-    if not expert_count or not expert_used or expert_count <= 1:
-        return total_b
-
-    total_rounded = round(total_b)
-
-    # Strategy 1: parse AXB from name
-    match = re.search(r'[_-]A(\d+(?:\.\d+)?)B', model_name, re.IGNORECASE)
-    if match:
-        return float(match.group(1))
-
-    # Strategy 2: known hybrid lookup
-    if family in KNOWN_ACTIVE and total_rounded in KNOWN_ACTIVE[family]:
-        return KNOWN_ACTIVE[family][total_rounded]
-
-    # Strategy 3: FFN subtraction
-    expert_ffn = _get(".expert_feed_forward_length", 0)
-    embed_len = _get(".embedding_length", 0)
-    block_count = _get(".block_count", 0)
-    if expert_ffn and embed_len and block_count:
-        total_raw = int(total_b * 1e9)
-        total_moe = block_count * expert_count * expert_ffn * embed_len * 3
-        active_moe = block_count * expert_used * expert_ffn * embed_len * 3
-        computed = total_raw - total_moe + active_moe
-        if 0 < computed < total_raw:
-            return round(computed / 1e9)
-
-    # Strategy 4: simple ratio
-    return round(total_b * expert_used / expert_count)
+    return active_params_b(
+        model_name=model_name,
+        total_b=total_b,
+        family=family,
+        expert_count=expert_count,
+        expert_used=expert_used,
+        expert_ffn=int(_get(".expert_feed_forward_length", 0) or 0),
+        embed_len=int(_get(".embedding_length", 0) or 0),
+        block_count=int(_get(".block_count", 0) or 0),
+    )
 
 
 _model_cache = {"data": None, "ts": 0}
@@ -299,9 +242,9 @@ def _fetch_all_models():
         mlx_models = []
 
     mlx_config = {}
-    if MLX_CONFIG.exists():
+    if MLX_SERVER_CONFIG.exists():
         try:
-            cfg = yaml.safe_load(MLX_CONFIG.read_text())
+            cfg = yaml.safe_load(MLX_SERVER_CONFIG.read_text())
             for entry in cfg.get("models", []):
                 served_name = entry.get("served_model_name", "")
                 mlx_config[served_name] = entry
@@ -377,8 +320,7 @@ def _fetch_all_models():
         "image_edit": "mflux",
         "image_gen": "mflux",
     }
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
-    from hf_scanner import scan_hf_cache
+    from lib.hf_scanner import scan_hf_cache
     for hf_model in scan_hf_cache(_TASK_BACKENDS.keys()):
         name = hf_model["name"]
         if name in models:
@@ -614,7 +556,7 @@ def api_tasks():
     prefs = load_default_prefs()
     thinking = prefs.get("thinking", {})
     all_tasks = {}
-    for key, label in TASK_LABELS.items():
+    for key, label in STANDARD_TASKS.items():
         all_tasks[key] = {"label": label, "defaults": prefs.get(key, []),
                           "thinking": thinking.get(key, True)}
     for key, spec in SPECIAL_TASKS.items():

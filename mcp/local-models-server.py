@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["mcp[cli]>=1.0", "httpx>=0.28", "sentence-transformers>=3.0", "torch", "pyyaml", "mlx-audio[tts] @ git+https://github.com/Blaizzy/mlx-audio.git"]
+# dependencies = ["mcp[cli]==1.26.0", "httpx==0.28.1", "sentence-transformers==5.3.0", "torch==2.11.0", "pyyaml==6.0.3", "mlx-audio[tts] @ git+https://github.com/Blaizzy/mlx-audio.git@e42e1431fcf89af313375296c46d03a0153c4aa7"]
 # ///
 """
 Local Models MCP Server for Super Puppy.
@@ -23,6 +23,9 @@ from pathlib import Path
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from lib.models import MCP_PREFS_FILE, MLX_SERVER_CONFIG, active_params_b
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
@@ -30,16 +33,15 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 MLX_URL = os.environ.get("MLX_URL", "http://localhost:8000")
-MCP_PREFS_FILE = Path("~/.config/local-models/mcp_preferences.json").expanduser()
-
 MCP_HOST = os.environ.get("MCP_HOST", "127.0.0.1")
 MCP_PORT = int(os.environ.get("MCP_PORT", "8100"))
 
 # --- Bearer token auth (token comes from 1Password via wrapper) ---
 MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "")
 if not MCP_AUTH_TOKEN:
-    print("local-models MCP: WARNING: MCP_AUTH_TOKEN not set, server is unauthenticated",
+    print("local-models MCP: ERROR: MCP_AUTH_TOKEN not set. Refusing to start without auth.",
           file=sys.stderr, flush=True)
+    sys.exit(1)
 
 # Allow Tailscale FQDN in Host header (tailscale serve proxies with original Host)
 _EXTRA_HOSTS = os.environ.get("MCP_ALLOWED_HOSTS", "")
@@ -57,6 +59,8 @@ mcp = FastMCP("local-models", host=MCP_HOST, port=MCP_PORT,
 
 
 _AUTH_EXEMPT_PATHS = {"/gpu", "/api/mcp-models"}
+_authenticated_sessions: set[str] = set()
+_session_lock = threading.Lock()
 
 
 class BearerAuthMiddleware(BaseHTTPMiddleware):
@@ -66,17 +70,28 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         if path in _AUTH_EXEMPT_PATHS:
             return await call_next(request)
-        # Let OAuth discovery get a clean 404 so Claude Code doesn't
-        # mistake our 403 for "auth server exists but denied access"
         if ".well-known" in path or path == "/register":
             return await call_next(request)
-        # Exempt session-bound requests (SSE /messages/ with session_id).
-        # These only work with sessions created via authenticated /mcp init.
-        if path.startswith("/messages") and request.query_params.get("session_id"):
-            return await call_next(request)
+        # Session-bound requests: validate against authenticated session set
+        session_id = request.query_params.get("session_id")
+        if path.startswith("/messages") and session_id:
+            with _session_lock:
+                if session_id in _authenticated_sessions:
+                    return await call_next(request)
+            return JSONResponse({"error": "unauthorized"}, status_code=403)
         auth = request.headers.get("authorization", "")
         if auth == f"Bearer {MCP_AUTH_TOKEN}":
-            return await call_next(request)
+            # Track session ID from authenticated /mcp init requests
+            if path == "/mcp" and session_id:
+                with _session_lock:
+                    _authenticated_sessions.add(session_id)
+            response = await call_next(request)
+            # Also capture session IDs from response headers (MCP protocol)
+            new_sid = response.headers.get("mcp-session-id")
+            if new_sid:
+                with _session_lock:
+                    _authenticated_sessions.add(new_sid)
+            return response
         return JSONResponse({"error": "unauthorized"}, status_code=403)
 
 # ── GPU activity tracking ────────────────────────────────────────────
@@ -122,11 +137,6 @@ def _gpu_contention_warning(backend: str) -> str:
         return (f"⚠ GPU contention: {others} other request{'s' if others > 1 else ''} "
                 f"active on {backend}{queue_info}. Response may be slow.\n\n")
 
-
-_KNOWN_ACTIVE = {
-    "nemotron_h_moe": {124: 12},
-    "deepseek2": {671: 37},
-}
 
 # ── Model Discovery ─────────────────────────────────────────────────
 
@@ -180,30 +190,11 @@ async def discover_models():
                 except Exception:
                     pass
 
-                active_b = total_b
-                if expert_count and expert_used and expert_count > 1:
-                    import re as _re
-                    total_raw = int(total_b * 1e9)
-                    # Strategy 1: parse AXB from name
-                    m = _re.search(r'[_-]A(\d+(?:\.\d+)?)B', name, _re.IGNORECASE)
-                    if m:
-                        active_b = float(m.group(1))
-                    # Strategy 2: known hybrid lookup
-                    elif family in _KNOWN_ACTIVE:
-                        known = _KNOWN_ACTIVE[family]
-                        if round(total_b) in known:
-                            active_b = known[round(total_b)]
-                    # Strategy 3: FFN subtraction
-                    elif expert_ffn and embed_len and block_count:
-                        total_moe = block_count * expert_count * expert_ffn * embed_len * 3
-                        active_moe = block_count * expert_used * expert_ffn * embed_len * 3
-                        computed = total_raw - total_moe + active_moe
-                        if 0 < computed < total_raw:
-                            active_b = round(computed / 1e9)
-                        else:
-                            active_b = round(total_b * expert_used / expert_count)
-                    else:
-                        active_b = round(total_b * expert_used / expert_count)
+                active_b = active_params_b(
+                    name, total_b, family,
+                    expert_count, expert_used,
+                    expert_ffn, embed_len, block_count,
+                )
                 active_b = round(active_b)
                 total_b = round(total_b)
 
@@ -223,11 +214,10 @@ async def discover_models():
         # MLX
         # Load MLX server config to map served names → HuggingFace paths
         _mlx_cfg_map = {}
-        _mlx_cfg_path = Path("~/.config/mlx-server/config.yaml").expanduser()
-        if _mlx_cfg_path.exists():
+        if MLX_SERVER_CONFIG.exists():
             try:
                 import yaml
-                _mcfg = yaml.safe_load(_mlx_cfg_path.read_text())
+                _mcfg = yaml.safe_load(MLX_SERVER_CONFIG.read_text())
                 for entry in _mcfg.get("models", []):
                     sn = entry.get("served_model_name", "")
                     mp = entry.get("model_path", "")
@@ -274,8 +264,7 @@ async def discover_models():
             "image_edit": "mflux",
             "image_gen": "mflux",
         }
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
-        from hf_scanner import scan_hf_cache
+        from lib.hf_scanner import scan_hf_cache
         for hf_model in scan_hf_cache(_TASK_BACKENDS.keys()):
             name = hf_model["name"]
             if name not in models:

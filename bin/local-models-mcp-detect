@@ -29,7 +29,7 @@ elif [ -f "$CONF" ]; then
 
     # Try 1: mDNS (LAN)
     if [ -n "${MODEL_SERVER_HOST:-}" ]; then
-        HOST_IP=$(python3 -c "import socket; print(socket.gethostbyname('${MODEL_SERVER_HOST}'))" 2>/dev/null || echo "")
+        HOST_IP=$(python3 -c "import socket,sys; print(socket.gethostbyname(sys.argv[1]))" "$MODEL_SERVER_HOST" 2>/dev/null || echo "")
 
         if [ -n "$HOST_IP" ]; then
             if curl -sf --connect-timeout "${PROBE_TIMEOUT:-2}" \

@@ -92,6 +92,8 @@ class _WebViewUIDelegate(NSObject):
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_DIR = os.path.dirname(SCRIPT_DIR)
+if REPO_DIR not in sys.path:
+    sys.path.insert(0, REPO_DIR)
 ICON_PATH = os.path.join(SCRIPT_DIR, "icon-menubar.png")
 ICONS_DIR = os.path.join(SCRIPT_DIR, "icons")
 NETWORK_CONF = os.path.expanduser("~/.config/local-models/network.conf")
@@ -105,6 +107,7 @@ UPDATE_IDLE_SECONDS = 60     # don't auto-update if MCP active within 60s
 UPDATE_CRASH_WINDOW = 30     # seconds — if app dies within this after update, roll back
 UPDATE_STARTED_FILE = os.path.expanduser("~/.config/local-models/update_started")
 UPDATE_SKIPPED_FILE = os.path.expanduser("~/.config/local-models/update_skipped")
+UPDATE_PRE_HASH_FILE = os.path.expanduser("~/.config/local-models/update_pre_hash")
 PRE_UPDATE_HEALTH_FILE = os.path.expanduser("~/.config/local-models/pre_update_health.json")
 MCP_LOG_FILE = "/tmp/local-models-mcp.log"
 
@@ -267,17 +270,15 @@ def get_mcp_models(mcp_url="http://127.0.0.1:8100", timeout=3):
 # MCP tool preferences
 # ---------------------------------------------------------------------------
 
-MCP_PREFS_FILE = os.path.expanduser("~/.config/local-models/mcp_preferences.json")
+from lib.models import (
+    STANDARD_TASKS, SPECIAL_TASKS, TASK_FILTERS, KNOWN_ACTIVE_PARAMS,
+    ALWAYS_EXCLUDE, active_params_b,
+    MCP_PREFS_FILE as _MCP_PREFS_PATH,
+)
+MCP_PREFS_FILE = str(_MCP_PREFS_PATH)
 
-# Task types that users can configure a preferred model for.
-# Keys match the MCP server's pick_model() task parameter.
-MCP_TASK_LABELS = {
-    "code": "Code Generation",
-    "general": "General Text",
-    "translation": "Translation",
-    "reasoning": "Reasoning & Review",
-    "long_context": "Long Context",
-}
+MCP_TASK_LABELS = {k: v for k, v in STANDARD_TASKS.items()}
+MCP_TASK_FILTERS = TASK_FILTERS
 
 MCP_DEFAULT_PREFS = {
     "code": ["qwen3-coder:480b", "qwen3-coder", "qwen2.5-coder:32b", "glm-4.7-flash", "qwen3.5"],
@@ -285,41 +286,6 @@ MCP_DEFAULT_PREFS = {
     "translation": ["cogito-2.1", "qwen3.5", "glm-4.7-flash"],
     "reasoning": ["deepseek-r1:671b", "cogito-2.1", "nemotron-3-super", "qwen3.5-large", "qwen3.5", "glm-4.7-flash"],
     "long_context": ["qwen3.5", "nemotron-3-super", "glm-4.7-flash", "deepseek-r1:671b"],
-}
-
-# Filters: include/exclude patterns and numeric thresholds.
-# "include_names" — model must match at least one prefix (if set).
-# "exclude_names" — model is hidden if it matches any prefix.
-# "min_active_b" / "min_ctx" — numeric minimums.
-MCP_TASK_FILTERS = {
-    "code": {
-        "priority_names": ["coder"],
-        "include_names": ["qwen3.5", "deepseek", "cogito", "nemotron",
-                          "gpt-oss", "llama3.3"],
-        "exclude_names": ["vl", "flux", "z-image", "whisper", "ocr", "tinyllama",
-                          "goonsai", "nsfw"],
-        "min_active_b": 3,
-    },
-    "general": {
-        "exclude_names": ["coder", "vl", "flux", "z-image", "whisper", "ocr",
-                          "tinyllama", "goonsai", "nsfw"],
-        "min_active_b": 3,
-    },
-    "translation": {
-        "exclude_names": ["coder", "vl", "flux", "z-image", "whisper", "ocr",
-                          "tinyllama", "goonsai", "nsfw"],
-        "min_active_b": 3,
-    },
-    "reasoning": {
-        "exclude_names": ["coder", "vl", "flux", "z-image", "whisper", "ocr",
-                          "tinyllama", "goonsai", "nsfw"],
-        "min_active_b": 10,
-    },
-    "long_context": {
-        "exclude_names": ["vl", "flux", "z-image", "whisper", "ocr",
-                          "tinyllama", "goonsai", "nsfw"],
-        "min_ctx": 64000,
-    },
 }
 
 
@@ -355,21 +321,7 @@ def _model_matches_filter(model_name, raw_info, task_filter):
 
     return True
 
-# Specialized task types matched by model name prefix.
-MCP_SPECIAL_TASKS = {
-    "vision": {
-        "label": "Vision",
-        "prefixes": ["qwen3-vl", "llava", "moondream"],
-    },
-    "image_gen": {
-        "label": "Image Generation",
-        "prefixes": ["x/flux2", "x/z-image", "flux", "stable-diffusion"],
-    },
-    "transcription": {
-        "label": "Transcription",
-        "prefixes": ["whisper"],
-    },
-}
+MCP_SPECIAL_TASKS = SPECIAL_TASKS
 
 
 # ---------------------------------------------------------------------------
@@ -615,12 +567,6 @@ def query_ollama_all_models(base_url, timeout=5):
     return result
 
 
-# Known active params for hybrid architectures where auto-detection fails.
-# Keyed by Ollama family name → {total_b: active_b}.
-_KNOWN_ACTIVE_PARAMS_B = {
-    "nemotron_h_moe": {124: 12},
-    "deepseek2": {671: 37},
-}
 
 
 def query_ollama_model_detail(base_url, model_name, timeout=5):
@@ -670,37 +616,17 @@ def query_ollama_model_detail(base_url, model_name, timeout=5):
         if expert_used:
             expert_used = int(expert_used)
 
-        # Active params — multi-strategy for MoE models
-        active_b = total_b
-        if expert_count and expert_used and expert_count > 1:
-            total_b_rounded = round(total_b)
-
-            # Strategy 1: Parse "AXB" from model name
-            match = re.search(r'[_-]A(\d+(?:\.\d+)?)B', model_name, re.IGNORECASE)
-            if match:
-                active_b = float(match.group(1))
-
-            # Strategy 2: Known hybrid model lookup
-            elif family in _KNOWN_ACTIVE_PARAMS_B:
-                known = _KNOWN_ACTIVE_PARAMS_B[family]
-                if total_b_rounded in known:
-                    active_b = known[total_b_rounded]
-
-            # Strategy 3: FFN subtraction (works for pure MoE like Qwen)
-            else:
-                expert_ffn = _get(".expert_feed_forward_length", 0)
-                embed_len = _get(".embedding_length", 0)
-                block_count = _get(".block_count", 0)
-                if expert_ffn and embed_len and block_count:
-                    total_moe = block_count * expert_count * expert_ffn * embed_len * 3
-                    active_moe = block_count * expert_used * expert_ffn * embed_len * 3
-                    computed = total_raw - total_moe + active_moe
-                    if 0 < computed < total_raw:
-                        active_b = computed / 1e9
-
-                # Strategy 4: Simple ratio (last resort)
-                if active_b == total_b:
-                    active_b = total_b * expert_used / expert_count
+        # Active params — delegate MoE computation to shared library
+        expert_ffn = _get(".expert_feed_forward_length", 0)
+        embed_len = _get(".embedding_length", 0)
+        block_count = _get(".block_count", 0)
+        active_b = active_params_b(
+            model_name, total_b, family,
+            expert_count, expert_used,
+            expert_ffn=expert_ffn or 0,
+            embed_len=embed_len or 0,
+            block_count=block_count or 0,
+        )
 
         has_vision = any("vision" in k for k in model_info)
 
@@ -1136,6 +1062,8 @@ class LocalModelsApp(rumps.App):
                                              callback=self._copy_playground_url)
         self.menu_version = rumps.MenuItem(f"v{self.app_version}")
         self.menu_restart = rumps.MenuItem("Restart", callback=self.restart_app)
+        self.menu_diagnostics = rumps.MenuItem("Copy Diagnostics",
+                                               callback=self._copy_diagnostics)
         self.menu_quit = rumps.MenuItem("Quit", callback=self.quit_app)
 
         self.remote_access_enabled = self._load_remote_access_pref()
@@ -1157,6 +1085,7 @@ class LocalModelsApp(rumps.App):
             ] + ([self.menu_share_url] if self.desktop else []) + [
             None,
             self.menu_version,
+            self.menu_diagnostics,
             None,
             self.menu_restart,
             self.menu_quit,
@@ -1252,8 +1181,7 @@ class LocalModelsApp(rumps.App):
         """Launch Ollama and MLX-OpenAI-Server via start-local-models."""
         try:
             env = os.environ.copy()
-            if self.desktop:
-                env["OLLAMA_HOST"] = f"0.0.0.0:{self.ollama_port}"
+            # Ollama always binds localhost; tailscale serve handles remote access
             # Ensure Homebrew is on PATH — launchd gives a minimal PATH
             if "/opt/homebrew/bin" not in env.get("PATH", ""):
                 env["PATH"] = f"/opt/homebrew/bin:{env.get('PATH', '')}"
@@ -1348,12 +1276,27 @@ class LocalModelsApp(rumps.App):
             entry["url"] = url
             # Preserve existing auth headers
             servers["local-models"] = entry
-            with open(MCP_TOOLS_FILE, "w") as f:
+            tmp = MCP_TOOLS_FILE + ".tmp"
+            with open(tmp, "w") as f:
                 json.dump(data, f, indent=2)
                 f.write("\n")
+            os.replace(tmp, MCP_TOOLS_FILE)
             logging.info("MCP config updated: %s", url)
         except Exception as e:
             logging.warning("Failed to update Claude MCP config: %s", e)
+
+    _last_connection_notify = 0
+
+    def _notify_connection(self, title, body):
+        """Send a connectivity notification, debounced to 60s minimum interval."""
+        now = time.time()
+        if now - self._last_connection_notify < 60:
+            return
+        self._last_connection_notify = now
+        try:
+            rumps.notification("Super Puppy", title, body)
+        except RuntimeError:
+            pass
 
     def _get_own_fqdn(self):
         """Get this machine's Tailscale FQDN."""
@@ -1410,7 +1353,8 @@ class LocalModelsApp(rumps.App):
                 capture_output=True, timeout=10)
         except Exception:
             pass
-        for port in (8100, self._profile_fixed_port):
+        for port in (8100, self._profile_fixed_port,
+                     int(self.ollama_port), int(self.mlx_port)):
             try:
                 result = subprocess.run(
                     ["tailscale", "serve", "--bg", "--https",
@@ -1432,6 +1376,41 @@ class LocalModelsApp(rumps.App):
                 capture_output=True, timeout=10)
         except Exception as e:
             logging.warning("tailscale serve reset failed: %s", e)
+
+    def _copy_diagnostics(self, _):
+        """Copy diagnostic info to clipboard for remote debugging."""
+        mcp_proc = getattr(self, '_mcp_proc', None)
+        mcp_alive = mcp_proc is not None and mcp_proc.poll() is None
+        lines = [
+            f"Super Puppy v{self.app_version}",
+            f"Mode: {self.mode}",
+            f"Desktop: {self.desktop}",
+            f"Force local: {self.force_local}",
+            f"Remote reachable: {self.remote_reachable}",
+            f"Desktop IP: {self.desktop_ip}",
+            f"Desktop FQDN: {getattr(self, 'desktop_fqdn', '')}",
+            f"Ollama: {'up' if self.ollama_ok else 'down'}",
+            f"MLX: {'up' if self.mlx_ok else 'down'}",
+            f"MCP process: {'alive' if mcp_alive else 'dead'}",
+            f"MCP models: {len(self.mcp_models)}",
+            f"Ollama models: {len(self.ollama_models)}",
+            f"MLX models: {len(self.mlx_models)}",
+            f"RAM: {self.ram_gb} GB",
+            f"TS hostname: {self.ts_hostname}",
+        ]
+        if self.desktop:
+            lines.append(f"Remote access: {self.remote_access_enabled}")
+        # Last 5 log lines
+        try:
+            with open("/tmp/local-models-menubar.log") as f:
+                log_lines = f.readlines()[-5:]
+            lines.append("\nRecent log:")
+            lines.extend(l.rstrip() for l in log_lines)
+        except Exception:
+            pass
+        text = "\n".join(lines)
+        subprocess.run(["pbcopy"], input=text.encode(), check=True)
+        rumps.notification("Super Puppy", "Diagnostics copied", "")
 
     def _copy_playground_url(self, _):
         """Copy the Playground URL to clipboard for phone/tablet setup."""
@@ -1554,8 +1533,6 @@ class LocalModelsApp(rumps.App):
                                capture_output=True, timeout=5)
                 time.sleep(2)
                 env = os.environ.copy()
-                if self.desktop:
-                    env["OLLAMA_HOST"] = f"0.0.0.0:{self.ollama_port}"
                 subprocess.Popen(
                     ["ollama", "serve"], env=env,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -1735,21 +1712,13 @@ class LocalModelsApp(rumps.App):
                 f"https://{self.desktop_fqdn}:8100" if self.desktop_fqdn
                 else f"http://{self.desktop_ip}:8100")
             if not was_remote:
-                try:
-                    rumps.notification(
-                        "Super Puppy", "Connected to desktop",
-                        f"via Tailscale ({self.desktop_ip})")
-                except RuntimeError:
-                    pass
+                self._notify_connection("Connected to desktop",
+                                        f"via Tailscale ({self.desktop_ip})")
             return
 
         if was_remote:
-            try:
-                rumps.notification(
-                    "Super Puppy", "Desktop unreachable",
-                    "Using local models")
-            except RuntimeError:
-                pass
+            self._notify_connection("Desktop unreachable",
+                                    "Using local models")
 
         self.ollama_ok = probe_service(OLLAMA_LOCAL, 2)
         self.mlx_ok = probe_service(MLX_LOCAL, 2)
@@ -1860,7 +1829,8 @@ class LocalModelsApp(rumps.App):
                 self._styled_menu(self.menu_mode_remote, "", "Remote",
                                   "unavailable")
                 self.menu_mode_remote.set_callback(None)
-            self._styled_menu(self.menu_mode_local, "", "Local")
+            local_detail = "override" if self.force_local and self.remote_reachable else ""
+            self._styled_menu(self.menu_mode_local, "", "Local", local_detail)
 
         # ── Remote Access toggle (desktop only) ──
         if self.desktop:
@@ -1887,13 +1857,18 @@ class LocalModelsApp(rumps.App):
             self.menu_ollama.show()
             self.menu_mlx.show()
             self.menu_mcp_restart.set_callback(self._restart_mcp)
+            restart_pending = (
+                self.servers_started
+                and time.time() - getattr(self, '_last_restart_attempt', 0) < 120)
+            down_detail = "restarting…" if restart_pending else "down"
+
             if self.ollama_ok:
                 self._styled_menu(self.menu_ollama, GRN, "Ollama",
                                   f"{ollama_n} models")
             elif ollama_loading:
                 self._styled_menu(self.menu_ollama, YEL, "Ollama", "starting…")
             else:
-                self._styled_menu(self.menu_ollama, RED, "Ollama", "down")
+                self._styled_menu(self.menu_ollama, RED, "Ollama", down_detail)
             self.menu_ollama_restart.set_callback(self._restart_ollama)
 
             if self.mlx_ok:
@@ -1902,7 +1877,7 @@ class LocalModelsApp(rumps.App):
             elif mlx_loading:
                 self._styled_menu(self.menu_mlx, YEL, "MLX", "starting…")
             else:
-                self._styled_menu(self.menu_mlx, RED, "MLX", "down")
+                self._styled_menu(self.menu_mlx, RED, "MLX", down_detail)
             self.menu_mlx_restart.set_callback(self._restart_mlx)
 
         mcp_proc = getattr(self, '_mcp_proc', None)
@@ -2149,6 +2124,17 @@ class LocalModelsApp(rumps.App):
             return False
 
     def _auto_update(self, remote_ver):
+        # Save pre-update commit hash for precise rollback
+        pre_hash = ""
+        try:
+            pre_hash = subprocess.check_output(
+                ["git", "-C", REPO_DIR, "rev-parse", "HEAD"],
+                text=True, timeout=5).strip()
+            with open(UPDATE_PRE_HASH_FILE, "w") as f:
+                f.write(pre_hash)
+        except Exception:
+            pass
+
         # Save pre-update health snapshot
         health = {
             "ollama": self.ollama_ok,
@@ -2175,10 +2161,17 @@ class LocalModelsApp(rumps.App):
         success, output = apply_repo_update()
         if not success:
             logging.error("Auto-update failed: %s", output)
+            # Reset to pre-update commit so we don't stay on broken code
+            if pre_hash:
+                subprocess.run(
+                    ["git", "-C", REPO_DIR, "reset", "--hard", pre_hash],
+                    capture_output=True, timeout=10)
             try:
-                rumps.notification("Super Puppy", "Update failed", output[:100])
+                rumps.notification("Super Puppy", "Update failed — rolled back",
+                                   output[:100])
             except RuntimeError:
                 pass
+            self._cleanup_update_files()
             return
 
         # Write update_started marker for crash rollback detection
@@ -2198,16 +2191,9 @@ class LocalModelsApp(rumps.App):
             os.unlink(lock_file)
         except FileNotFoundError:
             pass
-        bundle = os.path.join(SCRIPT_DIR, "SuperPuppy.app")
-        if os.path.isdir(bundle):
-            subprocess.Popen(
-                ["bash", "-c", f"sleep 2 && open '{bundle}'"],
-                start_new_session=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        from PyObjCTools import AppHelper
-        AppHelper.callAfter(rumps.quit_application)
+        # Exit non-zero so launchd's KeepAlive restarts us on the new code.
+        # os._exit bypasses atexit handlers to ensure a clean, fast exit.
+        os._exit(1)
 
     def _mcp_code_changed(self):
         """Check if mcp/ files differ between HEAD and origin/main."""
@@ -2245,8 +2231,17 @@ class LocalModelsApp(rumps.App):
             head = subprocess.check_output(
                 ["git", "-C", REPO_DIR, "rev-parse", "HEAD"],
                 text=True, timeout=5).strip()
+            # Roll back to the exact pre-update hash, not just HEAD~1
+            rollback_target = "HEAD~1"
+            try:
+                with open(UPDATE_PRE_HASH_FILE) as f:
+                    saved_hash = f.read().strip()
+                if saved_hash:
+                    rollback_target = saved_hash
+            except FileNotFoundError:
+                pass
             subprocess.run(
-                ["git", "-C", REPO_DIR, "reset", "--hard", "HEAD~1"],
+                ["git", "-C", REPO_DIR, "reset", "--hard", rollback_target],
                 capture_output=True, timeout=10)
             # Record skipped commit
             os.makedirs(os.path.dirname(UPDATE_SKIPPED_FILE), exist_ok=True)
@@ -2268,14 +2263,17 @@ class LocalModelsApp(rumps.App):
             except FileNotFoundError:
                 pass
 
+    def _cleanup_update_files(self):
+        for f in (UPDATE_STARTED_FILE, UPDATE_PRE_HASH_FILE):
+            try:
+                os.unlink(f)
+            except FileNotFoundError:
+                pass
+
     def _mark_startup_healthy(self):
-        """Clear the update_started marker after surviving the crash window."""
-        try:
-            os.unlink(UPDATE_STARTED_FILE)
-        except FileNotFoundError:
-            pass
-        # If we survived an update that moved past the previously-skipped
-        # commit, clear the skip marker so future updates aren't blocked.
+        """Clear update markers after surviving the crash window."""
+        self._cleanup_update_files()
+        # If we survived an update past the previously-skipped commit, unblock.
         try:
             with open(UPDATE_SKIPPED_FILE) as f:
                 skipped = f.read().strip()
@@ -2426,5 +2424,15 @@ if __name__ == "__main__":
         print(f"{libdir}/libpython{ldver}.dylib")
         print(site.getsitepackages()[0])
         sys.exit(0)
+    # Rotate log on startup (keep last 1000 lines)
+    log_path = "/tmp/local-models-menubar.log"
+    try:
+        with open(log_path) as f:
+            lines = f.readlines()
+        if len(lines) > 1000:
+            with open(log_path, "w") as f:
+                f.writelines(lines[-500:])
+    except FileNotFoundError:
+        pass
     acquire_lock()
     LocalModelsApp().run()
