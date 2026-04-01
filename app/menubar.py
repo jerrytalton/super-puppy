@@ -100,7 +100,13 @@ OLLAMA_LOCAL = "http://localhost:11434"
 MLX_LOCAL = "http://localhost:8000"
 MODE_CONF = os.path.expanduser("~/.config/local-models/mode.conf")
 POLL_INTERVAL = 8           # seconds between status refreshes
-UPDATE_CHECK_INTERVAL = 3600 # seconds between git update checks (1 hour)
+UPDATE_CHECK_INTERVAL = 600  # seconds between git update checks (10 min)
+UPDATE_IDLE_SECONDS = 60     # don't auto-update if MCP active within 60s
+UPDATE_CRASH_WINDOW = 30     # seconds — if app dies within this after update, roll back
+UPDATE_STARTED_FILE = os.path.expanduser("~/.config/local-models/update_started")
+UPDATE_SKIPPED_FILE = os.path.expanduser("~/.config/local-models/update_skipped")
+PRE_UPDATE_HEALTH_FILE = os.path.expanduser("~/.config/local-models/pre_update_health.json")
+MCP_LOG_FILE = "/tmp/local-models-mcp.log"
 
 MODEL_PREFS_FILE = os.path.expanduser("~/.config/local-models/model_preferences.json")
 
@@ -177,6 +183,44 @@ def resolve_mdns(hostname, timeout=5):
     except (socket.gaierror, OSError):
         pass
     return ""
+
+
+# Cache for resolve_desktop_tailscale (avoids repeated slow `tailscale status`)
+_ts_cache = {"ip": "", "ts": 0}
+_TS_CACHE_TTL = 30
+
+
+def resolve_desktop_tailscale(hostname):
+    """Resolve the desktop's Tailscale IP from its hostname in the peer list.
+
+    Results are cached for 30 seconds to avoid repeated slow calls.
+    """
+    if not hostname:
+        return ""
+    now = time.time()
+    if now - _ts_cache["ts"] < _TS_CACHE_TTL and _ts_cache.get("host") == hostname:
+        return _ts_cache["ip"]
+    ip = ""
+    try:
+        result = subprocess.run(
+            ["tailscale", "status", "--json"],
+            capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            if data.get("BackendState") == "Running":
+                for peer in data.get("Peer", {}).values():
+                    if peer.get("HostName") == hostname:
+                        for addr in peer.get("TailscaleIPs", []):
+                            if "." in addr:
+                                ip = addr
+                                break
+                        break
+    except Exception:
+        pass
+    _ts_cache["ip"] = ip
+    _ts_cache["host"] = hostname
+    _ts_cache["ts"] = now
+    return ip
 
 
 def probe_service(base_url, timeout=2):
@@ -347,27 +391,66 @@ MCP_SPECIAL_TASKS = {
 # Update detection (git)
 # ---------------------------------------------------------------------------
 
+def get_version(ref="HEAD"):
+    """Derive a CalVer version string from the git commit date at *ref*.
+
+    Format: YYYY.M.D (no zero-padding). If multiple commits share the same
+    date, appends a build number: 2026.4.1.2.  Returns "dev" on failure.
+    """
+    try:
+        # Author date of the commit
+        date_str = subprocess.check_output(
+            ["git", "-C", REPO_DIR, "log", "-1", "--format=%ai", ref],
+            text=True, timeout=5).strip()[:10]           # "2026-04-01"
+        y, m, d = (int(x) for x in date_str.split("-"))  # strip leading zeros
+        # Count how many commits share this date (for build number)
+        count = int(subprocess.check_output(
+            ["git", "-C", REPO_DIR, "rev-list", "--count", "--after",
+             f"{date_str}T00:00:00", "--before", f"{date_str}T23:59:59", ref],
+            text=True, timeout=5).strip())
+        if count > 1:
+            return f"{y}.{m}.{d}.{count}"
+        return f"{y}.{m}.{d}"
+    except Exception:
+        return "dev"
+
+
+def get_remote_version():
+    """Version string for origin/main (after a fetch). Returns "" on failure."""
+    try:
+        subprocess.run(
+            ["git", "-C", REPO_DIR, "rev-list", "--count",
+             "HEAD..origin/main"],
+            capture_output=True, text=True, timeout=5)
+        return get_version("origin/main")
+    except Exception:
+        return ""
+
+
 def check_repo_update_available():
-    """Check if the local repo is behind origin/main. Returns (behind, summary)."""
+    """Check if the local repo is behind origin/main.
+
+    Returns (behind_count, remote_version, remote_head_hash).
+    """
     try:
         fetch = subprocess.run(["git", "-C", REPO_DIR, "fetch", "--quiet"],
                                capture_output=True, text=True, timeout=15)
         if fetch.returncode != 0:
             logging.warning("git fetch failed: %s", fetch.stderr.strip())
-            return 0, ""
+            return 0, "", ""
         result = subprocess.run(
             ["git", "-C", REPO_DIR, "rev-list", "--count", "HEAD..origin/main"],
             capture_output=True, text=True, timeout=5)
         behind = int(result.stdout.strip())
         if behind > 0:
-            log_result = subprocess.run(
-                ["git", "-C", REPO_DIR, "log", "--oneline", "HEAD..origin/main"],
-                capture_output=True, text=True, timeout=5)
-            summary = log_result.stdout.strip()
-            return behind, summary
+            remote_ver = get_version("origin/main")
+            remote_hash = subprocess.check_output(
+                ["git", "-C", REPO_DIR, "rev-parse", "origin/main"],
+                text=True, timeout=5).strip()
+            return behind, remote_ver, remote_hash
     except Exception as e:
         logging.warning("Update check failed: %s", e)
-    return 0, ""
+    return 0, "", ""
 
 
 def apply_repo_update():
@@ -998,6 +1081,7 @@ class LocalModelsApp(rumps.App):
         self.mlx_port = self.conf["MLX_PORT"]
         self.probe_timeout = int(self.conf["PROBE_TIMEOUT"])
         self._profile_fixed_port = int(self.conf.get("PROFILE_PORT", "8101"))
+        self.ts_hostname = self.conf.get("TAILSCALE_HOSTNAME", "")
 
         # Resolve mDNS hostname to IP once (avoids repeated cold-cache
         # lookups that eat into the probe timeout window)
@@ -1010,6 +1094,7 @@ class LocalModelsApp(rumps.App):
         # the desktop is reachable.  On startup, if not forced, prefer remote.
         self.force_local = load_force_local() if not self.desktop else False
         self.remote_reachable = False  # tracked every poll for greying out
+        self.connection_path = ""      # "lan", "tailscale", or "local"
 
         # State (protected by _lock for cross-thread access)
         self._lock = threading.Lock()
@@ -1027,8 +1112,9 @@ class LocalModelsApp(rumps.App):
         self.mlx_config_info = query_mlx_model_info_from_config()
         self.last_update_check = 0
         self.update_available = 0      # commits behind
-        self.update_summary = ""
+        self.app_version = get_version()
         self.app_ready = False         # set True once run loop starts
+        self._health_checked = False   # post-update health comparison done
 
         # Profile viewer / tool tester state
         self.profile_server = None
@@ -1066,7 +1152,7 @@ class LocalModelsApp(rumps.App):
                                                 callback=self._toggle_remote_access)
         self.menu_share_url = rumps.MenuItem("Copy Playground URL",
                                              callback=self._copy_playground_url)
-        self.menu_update = rumps.MenuItem("Update Available")
+        self.menu_version = rumps.MenuItem(f"v{self.app_version}")
         self.menu_restart = rumps.MenuItem("Restart", callback=self.restart_app)
         self.menu_quit = rumps.MenuItem("Quit", callback=self.quit_app)
 
@@ -1088,7 +1174,7 @@ class LocalModelsApp(rumps.App):
             self.menu_tools,
             ] + ([self.menu_share_url] if self.desktop else []) + [
             None,
-            self.menu_update,
+            self.menu_version,
             None,
             self.menu_restart,
             self.menu_quit,
@@ -1107,8 +1193,12 @@ class LocalModelsApp(rumps.App):
         """Timer callback. Handles first-run initialization and periodic refresh."""
         if not self.app_ready:
             self.app_ready = True
+            self._startup_rollback_check()
             threading.Thread(target=self._start_services_bg, daemon=True).start()
             self._schedule_update_check()
+            # Schedule clearing the update_started marker after the crash window
+            threading.Timer(
+                UPDATE_CRASH_WINDOW, self._mark_startup_healthy).start()
             return
         self.refresh(None)
 
@@ -1120,27 +1210,54 @@ class LocalModelsApp(rumps.App):
                 self._refresh_server_mode()
             else:
                 self._refresh_client_mode()
+        self._post_update_health_check()
         self._main_thread_update()
 
     # -------------------------------------------------------------------
     # Service management
     # -------------------------------------------------------------------
 
+    def _resolve_desktop(self):
+        """Try mDNS then Tailscale to find the desktop. Updates remote URLs.
+
+        Returns the connection path ("lan", "tailscale") or "" if unreachable.
+        """
+        # Try 1: mDNS (LAN)
+        mdns_ip = resolve_mdns(self.desktop_host)
+        if mdns_ip:
+            self.desktop_ip = mdns_ip
+            self.ollama_remote = f"http://{mdns_ip}:{self.ollama_port}"
+            self.mlx_remote = f"http://{mdns_ip}:{self.mlx_port}"
+            if (probe_service(self.ollama_remote, self.probe_timeout)
+                    or probe_service(self.mlx_remote, self.probe_timeout)):
+                return "lan"
+
+        # Try 2: Tailscale (off-LAN)
+        ts_ip = resolve_desktop_tailscale(self.ts_hostname)
+        if ts_ip:
+            self.desktop_ip = ts_ip
+            self.ollama_remote = f"http://{ts_ip}:{self.ollama_port}"
+            self.mlx_remote = f"http://{ts_ip}:{self.mlx_port}"
+            if (probe_service(self.ollama_remote, self.probe_timeout)
+                    or probe_service(self.mlx_remote, self.probe_timeout)):
+                return "tailscale"
+
+        return ""
+
     def start_services(self):
         """Start local servers (or detect desktop)."""
         if self.desktop:
             self._start_local_servers()
         else:
-            remote_ok = (
-                not self.force_local
-                and self.desktop_host
-                and (probe_service(self.ollama_remote, self.probe_timeout)
-                     or probe_service(self.mlx_remote, self.probe_timeout))
-            )
-            if remote_ok:
+            path = ""
+            if not self.force_local and self.desktop_host:
+                path = self._resolve_desktop()
+            if path:
                 self.mode = "client"
                 self.remote_reachable = True
+                self.connection_path = path
             else:
+                self.connection_path = "local"
                 self._start_local_servers()
         self._start_mcp_server()
         self._ensure_active_profile()
@@ -1596,61 +1713,68 @@ class LocalModelsApp(rumps.App):
             self.mode = "stopped"
 
     def _refresh_client_mode(self):
-        # Always probe desktop so we know whether to enable the Remote option
-        desktop_ollama = False
-        desktop_mlx = False
+        # Probe desktop via mDNS, then Tailscale fallback
+        path = ""
+        if self.desktop_host and not self.force_local:
+            path = self._resolve_desktop()
 
-        if self.desktop_host:
-            if not self.desktop_ip:
-                self.desktop_ip = resolve_mdns(self.desktop_host)
-                if self.desktop_ip:
-                    self.ollama_remote = (
-                        f"http://{self.desktop_ip}:{self.ollama_port}")
-                    self.mlx_remote = (
-                        f"http://{self.desktop_ip}:{self.mlx_port}")
-            desktop_ollama = probe_service(self.ollama_remote, self.probe_timeout)
-            desktop_mlx = probe_service(self.mlx_remote, self.probe_timeout)
+        self.remote_reachable = bool(path)
+        prev_path = self.connection_path
 
-        self.remote_reachable = desktop_ollama or desktop_mlx
-
-        # Use remote if reachable AND user hasn't forced local
-        use_remote = self.remote_reachable and not self.force_local
-
-        if use_remote:
+        if path:
+            self.connection_path = path
             self.mode = "client"
-            self.ollama_ok = desktop_ollama
-            self.mlx_ok = desktop_mlx
+            self.ollama_ok = probe_service(self.ollama_remote, self.probe_timeout)
+            self.mlx_ok = probe_service(self.mlx_remote, self.probe_timeout)
             self.ollama_models = (
-                get_ollama_models(self.ollama_remote) if desktop_ollama else [])
+                get_ollama_models(self.ollama_remote) if self.ollama_ok else [])
             self.mlx_models = (
-                get_mlx_models(self.mlx_remote) if desktop_mlx else [])
+                get_mlx_models(self.mlx_remote) if self.mlx_ok else [])
             self.mcp_models = get_mcp_models(f"http://{self.desktop_ip}:8100")
+            # Notify on path change
+            if prev_path and prev_path != path:
+                label = "LAN" if path == "lan" else "Tailscale"
+                try:
+                    rumps.notification(
+                        "Super Puppy", f"Switched to {label}",
+                        f"Desktop at {self.desktop_ip}")
+                except RuntimeError:
+                    pass
             return
-        else:
+
+        self.connection_path = "local"
+        if prev_path and prev_path != "local":
+            try:
+                rumps.notification(
+                    "Super Puppy", "Desktop unreachable",
+                    "Using local models")
+            except RuntimeError:
+                pass
+
+        self.ollama_ok = probe_service(OLLAMA_LOCAL, 2)
+        self.mlx_ok = probe_service(MLX_LOCAL, 2)
+
+        if self.ollama_ok or self.mlx_ok:
+            self.mode = "offline"
+            self.ollama_models = get_ollama_models(OLLAMA_LOCAL) if self.ollama_ok else []
+            self.mlx_models = get_mlx_models(MLX_LOCAL) if self.mlx_ok else []
+        elif not self.servers_started:
+            rumps.notification(
+                "Local Models", "Desktop unreachable",
+                "Starting local models for offline use")
+            self._start_local_servers()
+            time.sleep(3)
             self.ollama_ok = probe_service(OLLAMA_LOCAL, 2)
             self.mlx_ok = probe_service(MLX_LOCAL, 2)
-
-            if self.ollama_ok or self.mlx_ok:
-                self.mode = "offline"
-                self.ollama_models = get_ollama_models(OLLAMA_LOCAL) if self.ollama_ok else []
-                self.mlx_models = get_mlx_models(MLX_LOCAL) if self.mlx_ok else []
-            elif not self.servers_started:
-                rumps.notification(
-                    "Local Models", "Desktop unreachable",
-                    "Starting local models for offline use")
-                self._start_local_servers()
-                time.sleep(3)
-                self.ollama_ok = probe_service(OLLAMA_LOCAL, 2)
-                self.mlx_ok = probe_service(MLX_LOCAL, 2)
-                self.mode = "offline"
-                self.ollama_models = (
-                    get_ollama_models(OLLAMA_LOCAL) if self.ollama_ok else [])
-                self.mlx_models = (
-                    get_mlx_models(MLX_LOCAL) if self.mlx_ok else [])
-            else:
-                self.mode = "offline"
-                self.ollama_models = []
-                self.mlx_models = []
+            self.mode = "offline"
+            self.ollama_models = (
+                get_ollama_models(OLLAMA_LOCAL) if self.ollama_ok else [])
+            self.mlx_models = (
+                get_mlx_models(MLX_LOCAL) if self.mlx_ok else [])
+        else:
+            self.mode = "offline"
+            self.ollama_models = []
+            self.mlx_models = []
 
         self.mcp_models = get_mcp_models()
 
@@ -1730,7 +1854,10 @@ class LocalModelsApp(rumps.App):
             self.menu_mode_remote.state = is_remote
             self.menu_mode_local.state = not is_remote
             if self.remote_reachable:
-                self._styled_menu(self.menu_mode_remote, "", "Remote")
+                path_label = {"lan": "LAN", "tailscale": "Tailscale"
+                              }.get(self.connection_path, "")
+                self._styled_menu(self.menu_mode_remote, "", "Remote",
+                                  path_label)
                 self.menu_mode_remote.set_callback(self._select_remote)
             else:
                 self._styled_menu(self.menu_mode_remote, "", "Remote",
@@ -1790,20 +1917,16 @@ class LocalModelsApp(rumps.App):
         if mcp_alive:
             self._styled_menu(self.menu_mcp, GRN, "MCP",
                               f"{mcp_n} model{'s' if mcp_n != 1 else ''}")
+        elif self.mode == "client":
+            self._styled_menu(self.menu_mcp, RED, "MCP", "not shared")
         else:
             self._styled_menu(self.menu_mcp, RED, "MCP", "down")
-            if self.mode != "client" and self.servers_started:
+            if self.servers_started:
                 self._start_mcp_server()
 
-        # ── Update (only actionable when available) ──
-        if self.update_available > 0:
-            n = self.update_available
-            self.menu_update.title = (
-                f"Update Available ({n} commit{'s' if n != 1 else ''})")
-            self.menu_update.set_callback(self._update_now)
-        else:
-            self.menu_update.title = "Up to date"
-            self.menu_update.set_callback(None)
+        # ── Version ──
+        self.menu_version.title = f"v{self.app_version}"
+        self.menu_version.set_callback(None)
 
         # ── Restart (always available) ──
         self.menu_restart.set_callback(self.restart_app)
@@ -1992,56 +2115,201 @@ class LocalModelsApp(rumps.App):
         thread.start()
 
     def _check_for_updates(self):
-        behind, summary = check_repo_update_available()
+        behind, remote_ver, remote_hash = check_repo_update_available()
         self.update_available = behind
-        self.update_summary = summary
-        if behind > 0:
-            self.menu_update.title = f"Update Available ({behind} commit{'s' if behind != 1 else ''})"
-            self.menu_update.set_callback(self._update_now)
-            try:
-                rumps.notification(
-                    "Super Puppy",
-                    "Update available",
-                    f"{behind} new commit{'s' if behind != 1 else ''}",
-                )
-            except RuntimeError:
-                pass
-        else:
-            self.menu_update.title = "Up to date"
-            self.menu_update.set_callback(None)
+        if behind <= 0:
+            return
 
-    def _update_now(self, _):
-        self.menu_update.title = "Updating..."
-        thread = threading.Thread(target=self._apply_update, daemon=True)
-        thread.start()
+        # Skip if this exact remote commit was already rolled back
+        skipped = ""
+        try:
+            with open(UPDATE_SKIPPED_FILE) as f:
+                skipped = f.read().strip()
+        except FileNotFoundError:
+            pass
+        if skipped and skipped == remote_hash:
+            logging.info("Skipping update to %s (previously rolled back)", remote_hash[:8])
+            return
 
-    def _apply_update(self):
+        # Idle gate: don't interrupt active MCP sessions
+        if self._mcp_recently_active():
+            logging.info("Deferring update — MCP recently active")
+            return
+
+        logging.info("Auto-updating: %d commits behind → v%s", behind, remote_ver)
+        self._auto_update(remote_ver)
+
+    def _mcp_recently_active(self):
+        try:
+            mtime = os.path.getmtime(MCP_LOG_FILE)
+            return (time.time() - mtime) < UPDATE_IDLE_SECONDS
+        except OSError:
+            return False
+
+    def _auto_update(self, remote_ver):
+        # Save pre-update health snapshot
+        health = {
+            "ollama": self.ollama_ok,
+            "mlx": self.mlx_ok,
+            "mcp": bool(self.mcp_models),
+            "version": self.app_version,
+        }
+        try:
+            os.makedirs(os.path.dirname(PRE_UPDATE_HEALTH_FILE), exist_ok=True)
+            with open(PRE_UPDATE_HEALTH_FILE, "w") as f:
+                json.dump(health, f)
+        except Exception as e:
+            logging.warning("Failed to save pre-update health: %s", e)
+
+        try:
+            rumps.notification(
+                "Super Puppy", f"Updating to v{remote_ver}", "Restarting…")
+        except RuntimeError:
+            pass
+
+        # Check if MCP server code changed (to decide whether to restart it)
+        mcp_changed = self._mcp_code_changed()
+
         success, output = apply_repo_update()
-        if success:
-            try:
-                rumps.notification("Super Puppy", "Updated successfully", "Restarting...")
-            except RuntimeError:
-                pass
-            bundle = os.path.join(SCRIPT_DIR, "SuperPuppy.app")
-            if os.path.isdir(bundle):
-                # Detached relaunch: sleep past our quit, then open the app.
-                # Must be fully detached so it survives our exit.
-                subprocess.Popen(
-                    ["bash", "-c",
-                     f"sleep 2 && open '{bundle}'"],
-                    start_new_session=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-            from PyObjCTools import AppHelper
-            AppHelper.callAfter(rumps.quit_application)
-        else:
-            logging.error("Update failed: %s", output)
-            short = output[:80] if output else "unknown error"
-            self.menu_update.title = f"Update Failed: {short}"
-            self.menu_update.set_callback(self._update_now)
+        if not success:
+            logging.error("Auto-update failed: %s", output)
             try:
                 rumps.notification("Super Puppy", "Update failed", output[:100])
+            except RuntimeError:
+                pass
+            return
+
+        # Write update_started marker for crash rollback detection
+        try:
+            with open(UPDATE_STARTED_FILE, "w") as f:
+                f.write(str(time.time()))
+        except Exception:
+            pass
+
+        # Restart — skip MCP kill if its code didn't change
+        if self.profile_server and self.profile_server.poll() is None:
+            self.profile_server.terminate()
+        if mcp_changed:
+            self._stop_mcp_server()
+        lock_file = os.path.expanduser("~/.config/local-models/menubar.lock")
+        try:
+            os.unlink(lock_file)
+        except FileNotFoundError:
+            pass
+        bundle = os.path.join(SCRIPT_DIR, "SuperPuppy.app")
+        if os.path.isdir(bundle):
+            subprocess.Popen(
+                ["bash", "-c", f"sleep 2 && open '{bundle}'"],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        from PyObjCTools import AppHelper
+        AppHelper.callAfter(rumps.quit_application)
+
+    def _mcp_code_changed(self):
+        """Check if mcp/ files differ between HEAD and origin/main."""
+        try:
+            result = subprocess.run(
+                ["git", "-C", REPO_DIR, "diff", "--name-only",
+                 "HEAD", "origin/main", "--", "mcp/"],
+                capture_output=True, text=True, timeout=5)
+            return bool(result.stdout.strip())
+        except Exception:
+            return True  # assume changed on failure
+
+    # -------------------------------------------------------------------
+    # Startup: crash rollback + post-update health check
+    # -------------------------------------------------------------------
+
+    def _startup_rollback_check(self):
+        """If the previous launch crashed right after an update, roll back."""
+        try:
+            with open(UPDATE_STARTED_FILE) as f:
+                started = float(f.read().strip())
+        except (FileNotFoundError, ValueError):
+            return
+        elapsed = time.time() - started
+        if elapsed > UPDATE_CRASH_WINDOW:
+            # Previous launch survived long enough — all good
+            try:
+                os.unlink(UPDATE_STARTED_FILE)
+            except FileNotFoundError:
+                pass
+            return
+        # Previous launch died within the crash window after an update
+        logging.warning("Crash detected within %ds of update — rolling back", int(elapsed))
+        try:
+            head = subprocess.check_output(
+                ["git", "-C", REPO_DIR, "rev-parse", "HEAD"],
+                text=True, timeout=5).strip()
+            subprocess.run(
+                ["git", "-C", REPO_DIR, "reset", "--hard", "HEAD~1"],
+                capture_output=True, timeout=10)
+            # Record skipped commit
+            os.makedirs(os.path.dirname(UPDATE_SKIPPED_FILE), exist_ok=True)
+            with open(UPDATE_SKIPPED_FILE, "w") as f:
+                f.write(head)
+            self.app_version = get_version()
+            logging.warning("Rolled back to v%s (skipped %s)", self.app_version, head[:8])
+            try:
+                rumps.notification(
+                    "Super Puppy", "Rolled back bad update",
+                    f"Now on v{self.app_version}")
+            except RuntimeError:
+                pass
+        except Exception as e:
+            logging.error("Rollback failed: %s", e)
+        finally:
+            try:
+                os.unlink(UPDATE_STARTED_FILE)
+            except FileNotFoundError:
+                pass
+
+    def _mark_startup_healthy(self):
+        """Clear the update_started marker after surviving the crash window."""
+        try:
+            os.unlink(UPDATE_STARTED_FILE)
+        except FileNotFoundError:
+            pass
+        # If we survived an update that moved past the previously-skipped
+        # commit, clear the skip marker so future updates aren't blocked.
+        try:
+            with open(UPDATE_SKIPPED_FILE) as f:
+                skipped = f.read().strip()
+            head = subprocess.check_output(
+                ["git", "-C", REPO_DIR, "rev-parse", "HEAD"],
+                text=True, timeout=5).strip()
+            if head != skipped:
+                os.unlink(UPDATE_SKIPPED_FILE)
+        except (FileNotFoundError, Exception):
+            pass
+
+    def _post_update_health_check(self):
+        """Compare current health against pre-update snapshot. Notify on regressions."""
+        if self._health_checked:
+            return
+        self._health_checked = True
+        try:
+            with open(PRE_UPDATE_HEALTH_FILE) as f:
+                prev = json.load(f)
+            os.unlink(PRE_UPDATE_HEALTH_FILE)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return
+        regressions = []
+        if prev.get("ollama") and not self.ollama_ok:
+            regressions.append("Ollama")
+        if prev.get("mlx") and not self.mlx_ok:
+            regressions.append("MLX")
+        if prev.get("mcp") and not self.mcp_models:
+            regressions.append("MCP")
+        if regressions:
+            names = ", ".join(regressions)
+            logging.warning("Post-update regression: %s", names)
+            try:
+                rumps.notification(
+                    "Super Puppy", "Post-update issue",
+                    f"{names} was healthy before update, now down")
             except RuntimeError:
                 pass
 
