@@ -1137,6 +1137,8 @@ class LocalModelsApp(rumps.App):
                                              callback=self._copy_playground_url)
         self.menu_version = rumps.MenuItem(f"v{self.app_version}")
         self.menu_restart = rumps.MenuItem("Restart", callback=self.restart_app)
+        self.menu_diagnostics = rumps.MenuItem("Copy Diagnostics",
+                                               callback=self._copy_diagnostics)
         self.menu_quit = rumps.MenuItem("Quit", callback=self.quit_app)
 
         self.remote_access_enabled = self._load_remote_access_pref()
@@ -1158,6 +1160,7 @@ class LocalModelsApp(rumps.App):
             ] + ([self.menu_share_url] if self.desktop else []) + [
             None,
             self.menu_version,
+            self.menu_diagnostics,
             None,
             self.menu_restart,
             self.menu_quit,
@@ -1448,6 +1451,41 @@ class LocalModelsApp(rumps.App):
                 capture_output=True, timeout=10)
         except Exception as e:
             logging.warning("tailscale serve reset failed: %s", e)
+
+    def _copy_diagnostics(self, _):
+        """Copy diagnostic info to clipboard for remote debugging."""
+        mcp_proc = getattr(self, '_mcp_proc', None)
+        mcp_alive = mcp_proc is not None and mcp_proc.poll() is None
+        lines = [
+            f"Super Puppy v{self.app_version}",
+            f"Mode: {self.mode}",
+            f"Desktop: {self.desktop}",
+            f"Force local: {self.force_local}",
+            f"Remote reachable: {self.remote_reachable}",
+            f"Desktop IP: {self.desktop_ip}",
+            f"Desktop FQDN: {getattr(self, 'desktop_fqdn', '')}",
+            f"Ollama: {'up' if self.ollama_ok else 'down'}",
+            f"MLX: {'up' if self.mlx_ok else 'down'}",
+            f"MCP process: {'alive' if mcp_alive else 'dead'}",
+            f"MCP models: {len(self.mcp_models)}",
+            f"Ollama models: {len(self.ollama_models)}",
+            f"MLX models: {len(self.mlx_models)}",
+            f"RAM: {self.ram_gb} GB",
+            f"TS hostname: {self.ts_hostname}",
+        ]
+        if self.desktop:
+            lines.append(f"Remote access: {self.remote_access_enabled}")
+        # Last 5 log lines
+        try:
+            with open("/tmp/local-models-menubar.log") as f:
+                log_lines = f.readlines()[-5:]
+            lines.append("\nRecent log:")
+            lines.extend(l.rstrip() for l in log_lines)
+        except Exception:
+            pass
+        text = "\n".join(lines)
+        subprocess.run(["pbcopy"], input=text.encode(), check=True)
+        rumps.notification("Super Puppy", "Diagnostics copied", "")
 
     def _copy_playground_url(self, _):
         """Copy the Playground URL to clipboard for phone/tablet setup."""
@@ -1866,7 +1904,8 @@ class LocalModelsApp(rumps.App):
                 self._styled_menu(self.menu_mode_remote, "", "Remote",
                                   "unavailable")
                 self.menu_mode_remote.set_callback(None)
-            self._styled_menu(self.menu_mode_local, "", "Local")
+            local_detail = "override" if self.force_local and self.remote_reachable else ""
+            self._styled_menu(self.menu_mode_local, "", "Local", local_detail)
 
         # ── Remote Access toggle (desktop only) ──
         if self.desktop:
@@ -1893,13 +1932,18 @@ class LocalModelsApp(rumps.App):
             self.menu_ollama.show()
             self.menu_mlx.show()
             self.menu_mcp_restart.set_callback(self._restart_mcp)
+            restart_pending = (
+                self.servers_started
+                and time.time() - getattr(self, '_last_restart_attempt', 0) < 120)
+            down_detail = "restarting…" if restart_pending else "down"
+
             if self.ollama_ok:
                 self._styled_menu(self.menu_ollama, GRN, "Ollama",
                                   f"{ollama_n} models")
             elif ollama_loading:
                 self._styled_menu(self.menu_ollama, YEL, "Ollama", "starting…")
             else:
-                self._styled_menu(self.menu_ollama, RED, "Ollama", "down")
+                self._styled_menu(self.menu_ollama, RED, "Ollama", down_detail)
             self.menu_ollama_restart.set_callback(self._restart_ollama)
 
             if self.mlx_ok:
@@ -1908,7 +1952,7 @@ class LocalModelsApp(rumps.App):
             elif mlx_loading:
                 self._styled_menu(self.menu_mlx, YEL, "MLX", "starting…")
             else:
-                self._styled_menu(self.menu_mlx, RED, "MLX", "down")
+                self._styled_menu(self.menu_mlx, RED, "MLX", down_detail)
             self.menu_mlx_restart.set_callback(self._restart_mlx)
 
         mcp_proc = getattr(self, '_mcp_proc', None)
@@ -2462,5 +2506,15 @@ if __name__ == "__main__":
         print(f"{libdir}/libpython{ldver}.dylib")
         print(site.getsitepackages()[0])
         sys.exit(0)
+    # Rotate log on startup (keep last 1000 lines)
+    log_path = "/tmp/local-models-menubar.log"
+    try:
+        with open(log_path) as f:
+            lines = f.readlines()
+        if len(lines) > 1000:
+            with open(log_path, "w") as f:
+                f.writelines(lines[-500:])
+    except FileNotFoundError:
+        pass
     acquire_lock()
     LocalModelsApp().run()
