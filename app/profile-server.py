@@ -33,7 +33,7 @@ NETWORK_CONF = Path("~/.config/local-models/network.conf").expanduser()
 HTML_FILE = Path(__file__).parent / "profiles.html"
 TOOLS_HTML = Path(__file__).parent / "tools.html"
 
-IDLE_TIMEOUT = 600  # 10 minutes
+IDLE_TIMEOUT = int(os.environ.get("PROFILE_IDLE_TIMEOUT", "600"))
 PORT = int(os.environ.get("PROFILE_SERVER_PORT", "0"))  # 0 = random
 HOST = os.environ.get("PROFILE_HOST", "127.0.0.1")
 
@@ -107,6 +107,8 @@ _last_request = time.time()
 
 
 def _idle_watcher():
+    if IDLE_TIMEOUT <= 0:
+        return  # disabled — keep running forever
     while True:
         time.sleep(30)
         if time.time() - _last_request > IDLE_TIMEOUT:

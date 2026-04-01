@@ -1223,8 +1223,9 @@ class LocalModelsApp(rumps.App):
                 self._start_local_servers()
         self._start_mcp_server()
         self._ensure_active_profile()
-        # Auto-start Tailscale serve if Remote Access was previously enabled
+        # Auto-start Tailscale serve and profile server for remote clients
         if self.desktop and self.remote_access_enabled:
+            self._ensure_profile_server()
             self._start_tailscale_serve()
 
     def _ensure_active_profile(self):
@@ -1361,6 +1362,7 @@ class LocalModelsApp(rumps.App):
         self.remote_access_enabled = not self.remote_access_enabled
         self._save_remote_access_pref(self.remote_access_enabled)
         if self.remote_access_enabled:
+            self._ensure_profile_server()
             self._start_tailscale_serve()
         else:
             self._stop_tailscale_serve()
@@ -1938,6 +1940,9 @@ class LocalModelsApp(rumps.App):
             self.ollama_remote if self.mode == "client" else OLLAMA_LOCAL)
         env["MLX_URL"] = (
             self.mlx_remote if self.mode == "client" else MLX_LOCAL)
+        # Keep profile server alive when serving remote clients
+        if self.desktop and getattr(self, 'remote_access_enabled', False):
+            env["PROFILE_IDLE_TIMEOUT"] = "0"
 
         # Profile server always runs plain HTTP on localhost;
         # Tailscale serve handles TLS for remote access.

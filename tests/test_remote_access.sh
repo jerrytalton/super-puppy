@@ -73,9 +73,6 @@ check() {
 # --- MCP server (port 8100) ---
 echo "== MCP Server (port 8100) =="
 
-echo "  Direct TCP (Tailscale IP):"
-check "TCP connect" "http://$DESKTOP_IP:8100/api/mcp-models"
-
 echo "  Via tailscale serve (HTTPS):"
 if [ -n "$DESKTOP_FQDN" ]; then
     check "HTTPS connect" "https://$DESKTOP_FQDN:8100/api/mcp-models"
@@ -88,9 +85,6 @@ echo ""
 # --- Profile server / Playground (port 8101) ---
 PROFILE_PORT=$(grep '^PROFILE_PORT' "$CONF" | sed 's/.*=//; s/"//g; s/^ *//' || echo "8101")
 echo "== Profile Server / Playground (port $PROFILE_PORT) =="
-
-echo "  Direct TCP (Tailscale IP):"
-check "TCP connect" "http://$DESKTOP_IP:$PROFILE_PORT/"
 
 echo "  Via tailscale serve (HTTPS):"
 if [ -n "$DESKTOP_FQDN" ]; then
