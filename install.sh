@@ -101,7 +101,7 @@ if [ -f "$CLAUDE_JSON" ]; then
         # Register open-websearch if not already present
         if ! grep -q '"open-websearch"' ~/.claude.json 2>/dev/null; then
             claude mcp add-json -s user open-websearch \
-                '{"type":"stdio","command":"npx","args":["-y","open-websearch@latest"],"env":{"MODE":"stdio"}}' 2>/dev/null || true
+                '{"type":"stdio","command":"npx","args":["-y","open-websearch@2.0.2"],"env":{"MODE":"stdio"}}' 2>/dev/null || true
             echo "  Registered open-websearch MCP"
         else
             echo "  open-websearch MCP already registered"
