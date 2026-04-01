@@ -173,16 +173,17 @@ _TS_CACHE_TTL = 30
 
 
 def resolve_desktop_tailscale(hostname):
-    """Resolve the desktop's Tailscale IP from its hostname in the peer list.
+    """Resolve the desktop's Tailscale IP and FQDN from the peer list.
 
-    Results are cached for 30 seconds to avoid repeated slow calls.
+    Returns (ip, fqdn) tuple. Results are cached for 30 seconds.
     """
     if not hostname:
-        return ""
+        return "", ""
     now = time.time()
     if now - _ts_cache["ts"] < _TS_CACHE_TTL and _ts_cache.get("host") == hostname:
-        return _ts_cache["ip"]
+        return _ts_cache["ip"], _ts_cache.get("fqdn", "")
     ip = ""
+    fqdn = ""
     try:
         result = subprocess.run(
             ["tailscale", "status", "--json"],
@@ -192,6 +193,7 @@ def resolve_desktop_tailscale(hostname):
             if data.get("BackendState") == "Running":
                 for peer in data.get("Peer", {}).values():
                     if peer.get("HostName") == hostname:
+                        fqdn = peer.get("DNSName", "").rstrip(".")
                         for addr in peer.get("TailscaleIPs", []):
                             if "." in addr:
                                 ip = addr
@@ -200,9 +202,10 @@ def resolve_desktop_tailscale(hostname):
     except Exception:
         pass
     _ts_cache["ip"] = ip
+    _ts_cache["fqdn"] = fqdn
     _ts_cache["host"] = hostname
     _ts_cache["ts"] = now
-    return ip
+    return ip, fqdn
 
 
 def probe_service(base_url, timeout=2):
@@ -1064,8 +1067,9 @@ class LocalModelsApp(rumps.App):
         self._profile_fixed_port = int(self.conf.get("PROFILE_PORT", "8101"))
         self.ts_hostname = self.conf.get("TAILSCALE_HOSTNAME", "")
 
-        # Desktop IP resolved via Tailscale on first probe (laptops only)
+        # Desktop IP/FQDN resolved via Tailscale on first probe (laptops only)
         self.desktop_ip = ""
+        self.desktop_fqdn = ""
         self.ollama_remote = OLLAMA_LOCAL
         self.mlx_remote = MLX_LOCAL
 
@@ -1200,12 +1204,13 @@ class LocalModelsApp(rumps.App):
 
         Returns True if reachable, False otherwise.
         """
-        ts_ip = resolve_desktop_tailscale(self.ts_hostname)
+        ts_ip, ts_fqdn = resolve_desktop_tailscale(self.ts_hostname)
         if not ts_ip:
             return False
         reachable = probe_port(8100, host=ts_ip, timeout=self.probe_timeout)
         if reachable:
             self.desktop_ip = ts_ip
+            self.desktop_fqdn = ts_fqdn
             self.ollama_remote = f"http://{ts_ip}:{self.ollama_port}"
             self.mlx_remote = f"http://{ts_ip}:{self.mlx_port}"
             return True
@@ -1292,8 +1297,10 @@ class LocalModelsApp(rumps.App):
         if not self.desktop and not self.force_local and self.remote_reachable:
             # Remote mode: don't run a local server, point at the desktop
             self._stop_mcp_server()
-            self._configure_claude_mcp(
-                f"http://{self.desktop_ip}:8100/mcp")
+            mcp_base = (f"https://{self.desktop_fqdn}:8100"
+                        if self.desktop_fqdn
+                        else f"http://{self.desktop_ip}:8100")
+            self._configure_claude_mcp(f"{mcp_base}/mcp")
             return
         if getattr(self, '_mcp_proc', None) is not None:
             if self._mcp_proc.poll() is None:
@@ -1706,7 +1713,9 @@ class LocalModelsApp(rumps.App):
             self.mlx_ok = False
             self.ollama_models = []
             self.mlx_models = []
-            self.mcp_models = get_mcp_models(f"http://{self.desktop_ip}:8100")
+            self.mcp_models = get_mcp_models(
+                f"https://{self.desktop_fqdn}:8100" if self.desktop_fqdn
+                else f"http://{self.desktop_ip}:8100")
             if not was_remote:
                 try:
                     rumps.notification(
@@ -1852,12 +1861,14 @@ class LocalModelsApp(rumps.App):
         is_local = self.mode in ("server", "offline")
 
         if self.mode == "client":
-            # Remote: hide Ollama/MLX — they're the desktop's concern
+            # Remote: hide local service details — they're the desktop's concern
             self.menu_ollama.hide()
             self.menu_mlx.hide()
+            self.menu_mcp_restart.set_callback(None)
         else:
             self.menu_ollama.show()
             self.menu_mlx.show()
+            self.menu_mcp_restart.set_callback(self._restart_mcp)
             if self.ollama_ok:
                 self._styled_menu(self.menu_ollama, GRN, "Ollama",
                                   f"{ollama_n} models")
