@@ -1223,6 +1223,9 @@ class LocalModelsApp(rumps.App):
                 self._start_local_servers()
         self._start_mcp_server()
         self._ensure_active_profile()
+        # Auto-start Tailscale serve if Remote Access was previously enabled
+        if self.desktop and self.remote_access_enabled:
+            self._start_tailscale_serve()
 
     def _ensure_active_profile(self):
         """Make sure a valid profile is active on startup."""
@@ -1305,8 +1308,7 @@ class LocalModelsApp(rumps.App):
         env = os.environ.copy()
         if "/opt/homebrew/bin" not in env.get("PATH", ""):
             env["PATH"] = f"/opt/homebrew/bin:{env.get('PATH', '')}"
-        if self.desktop and getattr(self, 'remote_access_enabled', False):
-            env["MCP_HOST"] = "0.0.0.0"
+        # MCP always binds localhost; Tailscale serve handles remote access
         self._mcp_log = open("/tmp/local-models-mcp.log", "w")
         self._mcp_proc = subprocess.Popen(
             [os.path.expanduser("~/bin/local-models-mcp-detect")],
@@ -1337,20 +1339,6 @@ class LocalModelsApp(rumps.App):
         except Exception as e:
             logging.warning("Failed to update Claude MCP config: %s", e)
 
-    def _tailscale_available(self):
-        """Check if Tailscale is connected."""
-        try:
-            result = subprocess.run(
-                ["tailscale", "status", "--json"],
-                capture_output=True, text=True, timeout=3)
-            if result.returncode != 0:
-                return False
-            import json as _json
-            data = _json.loads(result.stdout)
-            return data.get("BackendState") == "Running"
-        except Exception:
-            return False
-
     def _load_remote_access_pref(self):
         conf = os.path.expanduser("~/.config/local-models/remote_access.conf")
         if os.path.exists(conf):
@@ -1372,41 +1360,55 @@ class LocalModelsApp(rumps.App):
     def _toggle_remote_access(self, _):
         self.remote_access_enabled = not self.remote_access_enabled
         self._save_remote_access_pref(self.remote_access_enabled)
-        # Restart profile server with new bind settings
-        self._restart_profile_server_and_reload()
+        if self.remote_access_enabled:
+            self._start_tailscale_serve()
+        else:
+            self._stop_tailscale_serve()
         status = "enabled" if self.remote_access_enabled else "disabled"
         try:
-            rumps.notification("Super Puppy", f"Remote access {status}",
-                               "Profile server restarted")
+            rumps.notification("Super Puppy", f"Remote access {status}", "")
         except RuntimeError:
             pass
         self._update_menu()
+
+    def _start_tailscale_serve(self):
+        """Expose MCP and profile server ports via Tailscale serve."""
+        for port in (8100, self._profile_fixed_port):
+            try:
+                subprocess.run(
+                    ["tailscale", "serve", "--bg", "--https",
+                     str(port), f"http://127.0.0.1:{port}"],
+                    capture_output=True, timeout=10)
+            except Exception as e:
+                logging.warning("tailscale serve %d failed: %s", port, e)
+
+    def _stop_tailscale_serve(self):
+        """Remove Tailscale serve proxies."""
+        try:
+            subprocess.run(
+                ["tailscale", "serve", "reset"],
+                capture_output=True, timeout=10)
+        except Exception as e:
+            logging.warning("tailscale serve reset failed: %s", e)
 
     def _copy_playground_url(self, _):
         """Copy the Playground URL to clipboard for phone/tablet setup."""
         if not self.profile_port:
             rumps.notification("Super Puppy", "No URL", "Profile server not running")
             return
-        # Prefer Tailscale HTTPS URL if available
-        cert_dir = os.path.expanduser("~/.config/local-models/certs")
-        has_certs = os.path.isdir(cert_dir) and any(
-            f.endswith(".crt") for f in os.listdir(cert_dir))
-        scheme = getattr(self, '_profile_scheme', 'http')
-        if has_certs and self._tailscale_available():
-            try:
-                result = subprocess.run(
-                    ["tailscale", "status", "--json"],
-                    capture_output=True, text=True, timeout=3)
-                data = json.loads(result.stdout)
-                fqdn = data.get("Self", {}).get("DNSName", "").rstrip(".")
-                if fqdn:
-                    url = f"https://{fqdn}:{self.profile_port}/tools"
-                else:
-                    url = f"{scheme}://127.0.0.1:{self.profile_port}/tools"
-            except Exception:
-                url = f"{scheme}://127.0.0.1:{self.profile_port}/tools"
-        else:
-            url = f"{scheme}://127.0.0.1:{self.profile_port}/tools"
+        # Tailscale serve provides HTTPS on the fixed port
+        try:
+            result = subprocess.run(
+                ["tailscale", "status", "--json"],
+                capture_output=True, text=True, timeout=3)
+            data = json.loads(result.stdout)
+            fqdn = data.get("Self", {}).get("DNSName", "").rstrip(".")
+            if fqdn:
+                url = f"https://{fqdn}:{self.profile_port}/tools"
+            else:
+                url = f"http://127.0.0.1:{self.profile_port}/tools"
+        except Exception:
+            url = f"http://127.0.0.1:{self.profile_port}/tools"
 
         subprocess.run(["pbcopy"], input=url.encode(), check=True)
         rumps.notification("Super Puppy", "URL copied", url)
@@ -1905,17 +1907,17 @@ class LocalModelsApp(rumps.App):
             if hasattr(self, '_profile_log') and self._profile_log:
                 self._profile_log.close()
 
-        # Use fixed port + 0.0.0.0 when remote access is enabled
-        if self.desktop and getattr(self, 'remote_access_enabled', False):
+        # Desktop: fixed port (Tailscale serve proxies it remotely)
+        # Laptop: random port (local use only)
+        if self.desktop:
             self.profile_port = int(getattr(self, '_profile_fixed_port', 8101))
-            profile_host = "0.0.0.0"
         else:
             import socket
             s = socket.socket()
             s.bind(("127.0.0.1", 0))
             self.profile_port = s.getsockname()[1]
             s.close()
-            profile_host = "127.0.0.1"
+        profile_host = "127.0.0.1"
 
         env = os.environ.copy()
         env["PROFILE_SERVER_PORT"] = str(self.profile_port)
@@ -1925,9 +1927,9 @@ class LocalModelsApp(rumps.App):
         env["MLX_URL"] = (
             self.mlx_remote if self.mode == "client" else MLX_LOCAL)
 
-        # HTTPS only when remote access is on (profile server binds 0.0.0.0
-        # with Tailscale certs). On localhost the cert's FQDN won't match.
-        self._profile_scheme = "https" if profile_host == "0.0.0.0" else "http"
+        # Profile server always runs plain HTTP on localhost;
+        # Tailscale serve handles TLS for remote access.
+        self._profile_scheme = "http"
 
         log_path = "/tmp/local-models-profile-server.log"
         self._profile_log = open(log_path, "a")
