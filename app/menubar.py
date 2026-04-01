@@ -92,6 +92,8 @@ class _WebViewUIDelegate(NSObject):
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_DIR = os.path.dirname(SCRIPT_DIR)
+if REPO_DIR not in sys.path:
+    sys.path.insert(0, REPO_DIR)
 ICON_PATH = os.path.join(SCRIPT_DIR, "icon-menubar.png")
 ICONS_DIR = os.path.join(SCRIPT_DIR, "icons")
 NETWORK_CONF = os.path.expanduser("~/.config/local-models/network.conf")
