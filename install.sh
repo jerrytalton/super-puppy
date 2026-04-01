@@ -131,21 +131,26 @@ if ! command -v op > /dev/null; then
 fi
 
 if ! command -v tailscale > /dev/null; then
-    if command -v brew > /dev/null; then
-        echo "  Installing tailscale..."
-        brew install --cask tailscale || true
-    else
-        echo "  WARNING: tailscale not found. Install manually: brew install --cask tailscale"
-    fi
+    echo "  WARNING: tailscale not found."
+    echo "           Install the standalone (non-sandboxed) build from: https://tailscale.com/download/mac"
+    echo "           Do NOT use 'brew install --cask tailscale' — that installs the sandboxed version"
+    echo "           which cannot run Tailscale SSH."
 fi
 
 # Enable Tailscale SSH (allows ssh between tailnet machines without sshd)
 if command -v tailscale > /dev/null; then
     TS_STATUS=$(tailscale status --json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('BackendState',''))" 2>/dev/null || true)
     if [ "$TS_STATUS" = "Running" ]; then
-        sudo tailscale set --ssh 2>/dev/null \
+        TS_SSH_OUT=$(sudo tailscale set --ssh 2>&1) \
             && echo "  Tailscale SSH enabled" \
-            || echo "  WARNING: could not enable Tailscale SSH (needs sudo)"
+            || {
+                if echo "$TS_SSH_OUT" | grep -qi "sandbox"; then
+                    echo "  ERROR: Tailscale SSH requires the standalone (non-sandboxed) build."
+                    echo "         Uninstall the current version and download from: https://tailscale.com/download/mac"
+                else
+                    echo "  WARNING: could not enable Tailscale SSH (needs sudo)"
+                fi
+            }
     else
         echo "  Tailscale installed but not running — run 'tailscale up' first"
     fi
