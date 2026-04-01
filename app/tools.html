@@ -631,8 +631,6 @@ async function run() {
               if (loggedThinking && !output.textContent) log(`Generating output...`);
               output.textContent = streamText;
             }
-          } catch (parseErr) {
-            if (selected === runTool) log(`Parse error: ${parseErr.message}`);
           }
           if (evt.done) { if (selected === runTool) log(`Stream complete`); break; }
         }
