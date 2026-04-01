@@ -139,20 +139,15 @@ if ! command -v tailscale > /dev/null; then
     fi
 fi
 
-# Generate Tailscale certs for HTTPS (if Tailscale is up on the desktop)
-if command -v tailscale > /dev/null && [ "$RAM_GB" -ge 256 ]; then
+# Enable Tailscale SSH (allows ssh between tailnet machines without sshd)
+if command -v tailscale > /dev/null; then
     TS_STATUS=$(tailscale status --json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('BackendState',''))" 2>/dev/null || true)
     if [ "$TS_STATUS" = "Running" ]; then
-        TS_FQDN=$(tailscale status --json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('Self',{}).get('DNSName','').rstrip('.'))" 2>/dev/null || true)
-        if [ -n "$TS_FQDN" ]; then
-            CERT_DIR="$HOME/.config/local-models/certs"
-            mkdir -p "$CERT_DIR"
-            tailscale cert --cert-file "$CERT_DIR/$TS_FQDN.crt" --key-file "$CERT_DIR/$TS_FQDN.key" "$TS_FQDN" 2>/dev/null \
-                && echo "  Generated Tailscale HTTPS cert for $TS_FQDN" \
-                || echo "  WARNING: could not generate Tailscale cert (run 'tailscale up' first)"
-        fi
+        sudo tailscale set --ssh 2>/dev/null \
+            && echo "  Tailscale SSH enabled" \
+            || echo "  WARNING: could not enable Tailscale SSH (needs sudo)"
     else
-        echo "  Tailscale installed but not running — run 'tailscale up' to enable remote access"
+        echo "  Tailscale installed but not running — run 'tailscale up' first"
     fi
 fi
 
