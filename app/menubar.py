@@ -1548,9 +1548,8 @@ class LocalModelsApp(rumps.App):
         self._ensure_profile_server()
         if self.profile_window is not None:
             from Foundation import NSURL, NSURLRequest
-            scheme = getattr(self, '_profile_scheme', 'http')
             url = NSURL.URLWithString_(
-                f"{scheme}://127.0.0.1:{self.profile_port}/")
+                f"http://127.0.0.1:{self.profile_port}/")
             req = NSURLRequest.requestWithURL_(url)
             wv = self.profile_window.contentView().subviews()[0]
             wv.loadRequest_(req)
@@ -1911,8 +1910,7 @@ class LocalModelsApp(rumps.App):
         self._ui_delegate = _WebViewUIDelegate.alloc().init()
         webview.setUIDelegate_(self._ui_delegate)
         webview.setAutoresizingMask_(0x12)
-        scheme = getattr(self, '_profile_scheme', 'http')
-        full_url = f"{scheme}://127.0.0.1:{self.profile_port}{path}"
+        full_url = f"http://127.0.0.1:{self.profile_port}{path}"
         url = NSURL.URLWithString_(full_url)
         req = NSURLRequest.requestWithURL_cachePolicy_timeoutInterval_(
             url, 1, 30)  # 1 = NSURLRequestReloadIgnoringLocalCacheData
