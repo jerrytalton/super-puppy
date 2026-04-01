@@ -1319,7 +1319,12 @@ class LocalModelsApp(rumps.App):
         env = os.environ.copy()
         if "/opt/homebrew/bin" not in env.get("PATH", ""):
             env["PATH"] = f"/opt/homebrew/bin:{env.get('PATH', '')}"
-        # MCP always binds localhost; Tailscale serve handles remote access
+        # MCP always binds localhost; Tailscale serve handles remote access.
+        # Allow Tailscale FQDN in Host header for proxied requests.
+        if self.ts_hostname:
+            ts_fqdn = getattr(self, 'desktop_fqdn', '') or self._get_own_fqdn()
+            if ts_fqdn:
+                env["MCP_ALLOWED_HOSTS"] = f"{ts_fqdn}:*"
         self._mcp_log = open("/tmp/local-models-mcp.log", "w")
         self._mcp_proc = subprocess.Popen(
             [os.path.expanduser("~/bin/local-models-mcp-detect")],
@@ -1349,6 +1354,19 @@ class LocalModelsApp(rumps.App):
             logging.info("MCP config updated: %s", url)
         except Exception as e:
             logging.warning("Failed to update Claude MCP config: %s", e)
+
+    def _get_own_fqdn(self):
+        """Get this machine's Tailscale FQDN."""
+        try:
+            result = subprocess.run(
+                ["tailscale", "status", "--json"],
+                capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                data = json.loads(result.stdout)
+                return data.get("Self", {}).get("DNSName", "").rstrip(".")
+        except Exception:
+            pass
+        return ""
 
     def _load_remote_access_pref(self):
         conf = os.path.expanduser("~/.config/local-models/remote_access.conf")
