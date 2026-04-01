@@ -1373,12 +1373,24 @@ class LocalModelsApp(rumps.App):
 
     def _start_tailscale_serve(self):
         """Expose MCP and profile server ports via Tailscale serve."""
+        # Reset any stale proxies first
+        try:
+            subprocess.run(
+                ["tailscale", "serve", "reset"],
+                capture_output=True, timeout=10)
+        except Exception:
+            pass
         for port in (8100, self._profile_fixed_port):
             try:
-                subprocess.run(
+                result = subprocess.run(
                     ["tailscale", "serve", "--bg", "--https",
                      str(port), f"http://127.0.0.1:{port}"],
-                    capture_output=True, timeout=10)
+                    capture_output=True, text=True, timeout=10)
+                if result.returncode != 0:
+                    logging.warning("tailscale serve %d failed: %s",
+                                    port, result.stderr.strip())
+                else:
+                    logging.info("tailscale serve %d: ok", port)
             except Exception as e:
                 logging.warning("tailscale serve %d failed: %s", port, e)
 
