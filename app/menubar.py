@@ -391,18 +391,30 @@ def check_repo_update_available():
 
 
 def apply_repo_update():
-    """Pull latest and re-run install.sh. Returns (success, output)."""
+    """Pull latest from origin. Returns (success, output).
+
+    Only does git pull — install.sh is for initial setup and pulls models,
+    which is too slow for an in-app update. Symlinks already point into the
+    repo so pulling new code is enough; the restart picks up changes.
+    """
     try:
-        pull = subprocess.run(
-            ["git", "-C", REPO_DIR, "pull", "--rebase", "--autostash"],
-            capture_output=True, text=True, timeout=30)
+        status = subprocess.run(
+            ["git", "-C", REPO_DIR, "status", "--porcelain"],
+            capture_output=True, text=True, timeout=5)
+        has_changes = bool(status.stdout.strip())
+        if has_changes:
+            subprocess.run(["git", "-C", REPO_DIR, "stash", "--quiet"],
+                           capture_output=True, timeout=10)
+        pull = subprocess.run(["git", "-C", REPO_DIR, "pull", "--rebase"],
+                              capture_output=True, text=True, timeout=30)
         if pull.returncode != 0:
-            return False, pull.stderr.strip() or pull.stdout.strip()
-        install = subprocess.run(
-            ["bash", os.path.join(REPO_DIR, "install.sh")],
-            capture_output=True, text=True, timeout=60)
-        if install.returncode != 0:
-            return False, f"install.sh failed: {install.stderr.strip()}"
+            return False, pull.stderr.strip()
+        if has_changes:
+            pop = subprocess.run(
+                ["git", "-C", REPO_DIR, "stash", "pop", "--quiet"],
+                capture_output=True, text=True, timeout=10)
+            if pop.returncode != 0:
+                return False, f"Stash pop failed: {pop.stderr.strip()}"
         return True, pull.stdout.strip()
     except Exception as e:
         return False, str(e)
