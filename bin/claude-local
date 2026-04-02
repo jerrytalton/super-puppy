@@ -63,7 +63,7 @@ echo "Local mode: $MODEL via Super Puppy ($SP_URL)" >&2
 exec env \
     ANTHROPIC_AUTH_TOKEN=local \
     ANTHROPIC_BASE_URL="$SP_URL" \
-    ANTHROPIC_API_KEY="" \
+    ANTHROPIC_API_KEY=not-needed \
     ANTHROPIC_CUSTOM_MODEL_OPTION="$MODEL" \
     ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="$MODEL (local)" \
-    claude --model "$MODEL" "$@"
+    claude "$@"
