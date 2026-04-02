@@ -163,18 +163,26 @@ const fmtP = (t,a) => t===a||!a ? t+'B' : t+'B/'+a+'B';
 const fmtC = c => c>=1e6?Math.round(c/1e6)+'M':c>=1024?Math.floor(c/1024)+'K':c>0?''+c:'';
 const findModel = name => S.models.find(m => m.name === name) || S.models.find(m => m.name.startsWith(name + ':'));
 
+function _fetch(url) {
+  const ctrl = new AbortController();
+  setTimeout(() => ctrl.abort(), 15000);
+  return fetch(url, {signal: ctrl.signal}).then(r => r.json());
+}
+
 async function init() {
   const sub = document.getElementById('subtitle');
-  sub.innerHTML = '<span class="spinner"></span>Loading config…';
-  const [sys,tasks,profiles] = await Promise.all([
-    fetch('/api/system').then(r=>r.json()),
-    fetch('/api/tasks').then(r=>r.json()),
-    fetch('/api/profiles').then(r=>r.json()),
-  ]);
-  Object.assign(S, {sys,tasks,profiles});
-  sub.innerHTML = '<span class="spinner"></span>Discovering models…';
-  const models = await fetch('/api/models').then(r=>r.json());
-  S.models = models;
+  try {
+    sub.innerHTML = '<span class="spinner"></span>Loading config…';
+    const [sys,tasks,profiles] = await Promise.all([
+      _fetch('/api/system'), _fetch('/api/tasks'), _fetch('/api/profiles'),
+    ]);
+    Object.assign(S, {sys,tasks,profiles});
+    sub.innerHTML = '<span class="spinner"></span>Discovering models…';
+    S.models = await _fetch('/api/models');
+  } catch (err) {
+    sub.innerHTML = `Connection failed — <a href="#" onclick="init();return false" style="color:var(--accent)">retry</a>`;
+    return;
+  }
   S.sel = profiles.active || Object.keys(profiles.profiles)[0] || null;
   if (S.sel) {
     const p = S.profiles.profiles[S.sel];
