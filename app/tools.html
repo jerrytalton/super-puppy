@@ -238,12 +238,16 @@ const fmtC = c => c>=1e6?Math.round(c/1e6)+'M':c>=1024?Math.floor(c/1024)+'K':c>
 
 async function init() {
   let models, tasks, profiles;
+  const status = document.getElementById('model-picker-selected');
   try {
-    [models, tasks, profiles] = await Promise.all([
-      fetch('/api/models').then(r => r.json()),
+    status.textContent = 'Loading tasks…';
+    const [tasksR, profilesR] = await Promise.all([
       fetch('/api/tasks').then(r => r.json()),
       fetch('/api/profiles').then(r => r.json()),
     ]);
+    tasks = tasksR; profiles = profilesR;
+    status.textContent = 'Discovering models…';
+    models = await fetch('/api/models').then(r => r.json());
   } catch (err) {
     document.getElementById('output').innerHTML =
       `<div style="color:#e55;padding:2em;text-align:center">

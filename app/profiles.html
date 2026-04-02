@@ -164,13 +164,17 @@ const fmtC = c => c>=1e6?Math.round(c/1e6)+'M':c>=1024?Math.floor(c/1024)+'K':c>
 const findModel = name => S.models.find(m => m.name === name) || S.models.find(m => m.name.startsWith(name + ':'));
 
 async function init() {
-  const [sys,models,tasks,profiles] = await Promise.all([
+  const sub = document.getElementById('subtitle');
+  sub.textContent = 'Loading config…';
+  const [sys,tasks,profiles] = await Promise.all([
     fetch('/api/system').then(r=>r.json()),
-    fetch('/api/models').then(r=>r.json()),
     fetch('/api/tasks').then(r=>r.json()),
     fetch('/api/profiles').then(r=>r.json()),
   ]);
-  Object.assign(S, {sys,models,tasks,profiles});
+  Object.assign(S, {sys,tasks,profiles});
+  sub.textContent = 'Discovering models…';
+  const models = await fetch('/api/models').then(r=>r.json());
+  S.models = models;
   S.sel = profiles.active || Object.keys(profiles.profiles)[0] || null;
   if (S.sel) {
     const p = S.profiles.profiles[S.sel];
