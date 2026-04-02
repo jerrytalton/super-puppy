@@ -307,12 +307,21 @@ def thinking_enabled(task: str) -> bool:
 
 
 def _resolve_model(name: str) -> tuple[str, str] | None:
-    """Try exact match, then prefix match (e.g. 'qwen3-vl' → 'qwen3-vl:235b')."""
+    """Try exact match, then prefix match (e.g. 'qwen3-vl' → 'qwen3-vl:235b').
+
+    Prefers tagged names over base-name aliases so backends get a name
+    they recognize (e.g. 'qwen3.5:9b' instead of 'qwen3.5').
+    """
+    # Exact match on a tagged name
+    if name in _models and ":" in name:
+        return name, _models[name]["backend"]
+    # Prefix match: bare name → tagged variant
+    for full_name in _models:
+        if full_name == name + ":latest" or full_name.startswith(name + ":"):
+            return full_name, _models[full_name]["backend"]
+    # Exact match on base-name alias (still valid for HF/MLX models without tags)
     if name in _models:
         return name, _models[name]["backend"]
-    for full_name in _models:
-        if full_name.startswith(name + ":"):
-            return full_name, _models[full_name]["backend"]
     return None
 
 
