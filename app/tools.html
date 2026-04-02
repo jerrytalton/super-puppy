@@ -240,18 +240,23 @@ const toolState = {};  // per-tool saved state: {fields, model, think, output, o
 const fmtP = (t,a) => t===a||!a ? t+'B' : t+'B/'+a+'B';
 const fmtC = c => c>=1e6?Math.round(c/1e6)+'M':c>=1024?Math.floor(c/1024)+'K':c>0?''+c:'';
 
+function _fetch(url) {
+  const ctrl = new AbortController();
+  setTimeout(() => ctrl.abort(), 15000);
+  return fetch(url, {signal: ctrl.signal}).then(r => r.json());
+}
+
 async function init() {
   let models, tasks, profiles;
   const status = document.getElementById('model-picker-selected');
   try {
     status.innerHTML = '<span class="spinner"></span>Loading tasks…';
     const [tasksR, profilesR] = await Promise.all([
-      fetch('/api/tasks').then(r => r.json()),
-      fetch('/api/profiles').then(r => r.json()),
+      _fetch('/api/tasks'), _fetch('/api/profiles'),
     ]);
     tasks = tasksR; profiles = profilesR;
     status.innerHTML = '<span class="spinner"></span>Discovering models…';
-    models = await fetch('/api/models').then(r => r.json());
+    models = await _fetch('/api/models');
   } catch (err) {
     document.getElementById('output').innerHTML =
       `<div style="color:#e55;padding:2em;text-align:center">
