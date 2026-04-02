@@ -11,10 +11,10 @@ REPO_DIR="$(cd "$(dirname "$(readlink "$0" || echo "$0")")/.." && pwd)"
 OLLAMA_URL="http://localhost:11434"
 MLX_URL="http://localhost:8000"
 
-# User can force local mode via mode.conf (written by the menu bar app)
+# User can force local mode via env var or mode.conf (written by the menu bar app)
 MODE_CONF="$HOME/.config/local-models/mode.conf"
-FORCE_LOCAL=false
-if [ -f "$MODE_CONF" ]; then
+FORCE_LOCAL="${FORCE_LOCAL:-false}"
+if [ "$FORCE_LOCAL" != "true" ] && [ -f "$MODE_CONF" ]; then
     # shellcheck source=/dev/null
     source "$MODE_CONF"
 fi
