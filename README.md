@@ -8,7 +8,7 @@ Two ways to use Claude Code with local models:
 
 **`claude`** — Claude Max does the reasoning. Local models are available as MCP tools for bulk work, vision, transcription, translation, and image generation. Best of both worlds.
 
-**`claude-local`** — Entirely local. All requests go to Ollama (e.g. qwen3.5). No Anthropic, no internet required. Great for offline work, sensitive code, or when you just want to use the hardware you paid for.
+**`claude-local`** — Fully offline. All requests go to a local Ollama model (e.g. qwen3.5). No cloud calls, no internet required. Great for airplane mode, sensitive code, or when you just want to use the hardware you paid for. Some Claude Code features may work differently since the local model isn't Claude.
 
 ```
 claude ──> Anthropic (reasoning) + MCP tools ──> Ollama / MLX (local heavy lifting)
@@ -92,7 +92,7 @@ pkill -f menubar.py; sleep 1; open ~/super-puppy/app/SuperPuppy.app
 
 ### `claude-local`
 
-Installed by `install.sh`. Reads the preferred "General Text" model from the menu bar preferences. Auto-detects the desktop via Tailscale. Falls back to the first available qwen3.5 variant if no preference is set.
+Fully offline mode. Routes all Claude Code requests to a local Ollama model — no cloud, no Tailscale, no desktop. Reads the preferred "General Text" model from menu bar preferences, falls back to the first available qwen3.5 variant. Ollama must be running locally (`ollama serve` or via the menu bar app in Local mode).
 
 ### Testing
 
