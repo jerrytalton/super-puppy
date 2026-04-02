@@ -1,16 +1,14 @@
 # Tailscale Setup for Remote Access
 
-Super Puppy uses Tailscale to securely access local models from outside the LAN.
+Super Puppy uses Tailscale for all remote access. No LAN binding, no firewall exceptions, no manual cert management.
 
 ## First-time setup
 
-### 1. Install Tailscale
+### 1. Install Tailscale (standalone build)
 
-`install.sh` installs it automatically, or:
+**Do NOT use `brew install --cask tailscale`** — that installs the sandboxed App Store version which can't run Tailscale SSH.
 
-```bash
-brew install --cask tailscale
-```
+Download the standalone `.pkg` from: https://tailscale.com/download/mac
 
 ### 2. Set the hostname
 
@@ -18,50 +16,57 @@ brew install --cask tailscale
 tailscale set --hostname super-puppy
 ```
 
-This keeps your real machine name private. The Tailscale hostname is only visible within your tailnet.
-
 ### 3. Start Tailscale
-
-Open the Tailscale app or:
 
 ```bash
 tailscale up
 ```
 
-Log in with your identity provider (Google, GitHub, etc.). Enable 2FA on that account.
+Log in with your identity provider. Enable 2FA on that account.
 
-### 4. Generate HTTPS certs
-
-`install.sh` does this automatically when Tailscale is running on the desktop. To do it manually:
+### 4. Enable Tailscale SSH (optional)
 
 ```bash
-mkdir -p ~/.config/local-models/certs
-tailscale cert \
-  --cert-file ~/.config/local-models/certs/super-puppy.<tailnet>.ts.net.crt \
-  --key-file ~/.config/local-models/certs/super-puppy.<tailnet>.ts.net.key \
-  super-puppy.<tailnet>.ts.net
+sudo tailscale set --ssh
 ```
 
-Replace `<tailnet>` with your tailnet name (visible in Tailscale admin console).
+Allows SSH between tailnet machines without sshd. `install.sh` attempts this automatically.
 
 ### 5. Enable Remote Access
 
-In the Super Puppy menu bar: click **Remote Access** to toggle it on. The profile server restarts on port 8101 with HTTPS.
+In the Super Puppy menu bar on the desktop: click **Remote Access** to toggle it on. This runs `tailscale serve` to proxy all service ports over HTTPS:
 
-### 6. Add family devices
+| Port | Service |
+|------|---------|
+| 8100 | MCP server |
+| 8101 | Profile server / Playground |
+| 11434 | Ollama |
+| 8000 | MLX |
 
-Each person installs Tailscale on their phone/laptop and joins your tailnet. You approve them in the Tailscale admin console.
+No manual cert management needed — Tailscale handles TLS automatically.
+
+## How it works
+
+All services bind to `127.0.0.1` (localhost only). `tailscale serve` intercepts incoming Tailscale traffic and proxies it to localhost with TLS termination. Remote clients use `https://{fqdn}:{port}`.
+
+When Remote Access is toggled off, `tailscale serve reset` removes all proxies.
 
 ## Accessing from iPhone/iPad
 
 1. Install Tailscale on the iOS device and join the tailnet
-2. On the Mac Studio, click **Copy Playground URL** in the Super Puppy menu
+2. On the desktop, click **Copy Playground URL** in the Super Puppy menu
 3. On the phone, open the URL in Safari
-4. Tap Share → Add to Home Screen
+4. Tap Share → Add to Home Screen (PWA — works offline for cached pages)
+
+## Accessing from a laptop
+
+The laptop's Super Puppy app automatically detects the desktop via Tailscale and switches to Client mode. No manual configuration needed. The menu shows **Remote** (checked) when connected to the desktop.
+
+To force local mode: click **Local** in the menu. The desktop stays available — click **Remote** to switch back anytime.
 
 ## Recommended ACLs
 
-In the [Tailscale admin console](https://login.tailscale.com/admin/acls), restrict access:
+In the [Tailscale admin console](https://login.tailscale.com/admin/acls):
 
 ```json
 {
@@ -69,20 +74,14 @@ In the [Tailscale admin console](https://login.tailscale.com/admin/acls), restri
     {
       "action": "accept",
       "src": ["autogroup:owner"],
-      "dst": ["super-puppy:8100"],
-      "comment": "MCP server — owner only"
+      "dst": ["super-puppy:*"],
+      "comment": "Owner — full access to all Super Puppy ports"
     },
     {
       "action": "accept",
       "src": ["group:family"],
       "dst": ["super-puppy:8101"],
       "comment": "Playground — family"
-    },
-    {
-      "action": "accept",
-      "src": ["group:family"],
-      "dst": ["super-puppy:11434", "super-puppy:8000"],
-      "comment": "Model backends — family (needed for Playground)"
     }
   ],
   "groups": {
@@ -91,6 +90,11 @@ In the [Tailscale admin console](https://login.tailscale.com/admin/acls), restri
 }
 ```
 
-## Cert renewal
+## Troubleshooting
 
-Tailscale certs last 90 days and auto-renew. `install.sh --rotate-token` or restarting with Remote Access enabled will refresh them. If certs expire, the Playground falls back to HTTP on localhost (LAN still works).
+**"Connection failed" in Playground or Profiles:**
+- Is Remote Access enabled on the desktop? (Check for checkmark in menu)
+- Run `tailscale serve status` on the desktop to verify proxies are active
+- Verify the device is on the same tailnet: `tailscale status`
+
+**Copy Diagnostics** (desktop menu bar) dumps mode, versions, service status, and recent logs to clipboard — useful for remote debugging.

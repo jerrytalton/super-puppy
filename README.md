@@ -58,22 +58,24 @@ uv tool install --python 3.12 mlx-openai-server
 
 ## Three Environments
 
-The system auto-detects where you are:
+The system auto-detects where you are via Tailscale:
 
 | Environment | What happens |
 |-------------|-------------|
-| **Desktop** (512GB M3 Ultra) | All models run locally. Serves to LAN. |
-| **Laptop at home** | MCP tools route to desktop over LAN. |
-| **Laptop away** | Falls back to local models. Claude does the rest itself. |
+| **Desktop** (512GB M3 Ultra) | All models run locally. Serves to tailnet via `tailscale serve`. |
+| **Laptop, desktop reachable** | MCP tools route to desktop over Tailscale. Works from anywhere. |
+| **Laptop, desktop unreachable** | Falls back to local models. Claude does the rest itself. |
 
 ## Menu Bar App
 
 A puppy icon in the menu bar provides:
 
-- **Status** — Ollama/MLX running or down, MCP configured or not
-- **Task preferences** — pick which model backs each MCP tool (code gen, reasoning, translation, etc.)
-- **Capabilities** — vision, image generation, transcription availability
-- **Model Discovery** — checks HuggingFace hourly for trending models that fit your hardware
+- **Status** — Ollama/MLX/MCP running or down, with actionable detail ("restarting…", "not shared")
+- **Remote / Local** — toggle between desktop and local models. Shows "override" when desktop is available but you chose local.
+- **Model Profiles** — pick which model backs each MCP tool task
+- **Playground** — test any tool interactively with streaming output
+- **Copy Diagnostics** — dumps mode, versions, status, and recent logs to clipboard
+- **Version** — CalVer display, auto-updates every 2 minutes from git
 
 ## Commands
 
@@ -90,26 +92,38 @@ pkill -f menubar.py; sleep 1; open ~/super-puppy/app/SuperPuppy.app
 
 ### `claude-local`
 
-Installed by `install.sh`. Reads the preferred "General Text" model from the menu bar preferences. Auto-detects the desktop on LAN. Falls back to the first available qwen3.5 variant if no preference is set.
+Installed by `install.sh`. Reads the preferred "General Text" model from the menu bar preferences. Auto-detects the desktop via Tailscale. Falls back to the first available qwen3.5 variant if no preference is set.
+
+### Testing
+
+```bash
+uv run --with pytest pytest tests/ -v    # 96 tests (unit + e2e)
+```
 
 ## Structure
 
 ```
 super-puppy/
 ├── mcp/
-│   └── local-models-server.py   # MCP server (PEP 723, runs via uv)
+│   └── local-models-server.py   # MCP server (PEP 723, pinned deps)
 ├── app/
 │   ├── menubar.py               # Menu bar app (PEP 723, rumps)
-│   ├── icon.png
-│   └── icons/
+│   ├── profile-server.py        # Flask server for Profiles/Playground UI
+│   ├── tools.html               # Playground UI
+│   ├── profiles.html            # Model Profiles UI
+│   └── SuperPuppy.app/          # macOS app bundle (built by install.sh)
+├── lib/
+│   └── models.py                # Shared constants, filters, MoE computation
 ├── bin/
-│   ├── local-models-mcp-detect  # MCP wrapper with LAN detection
+│   ├── local-models-mcp-detect  # MCP wrapper with Tailscale detection
 │   ├── start-local-models       # Service manager
 │   └── local-models-menubar     # App launcher
 ├── config/
 │   ├── mlx-server/              # MLX configs (desktop + laptop)
-│   ├── local-models/            # Network config (desktop hostname)
+│   ├── local-models/            # Network config, Tailscale hostname
 │   └── launchd/                 # LaunchAgent plists
+├── tests/                       # pytest unit + e2e tests
+├── docs/                        # Setup guides
 ├── install.sh
 └── README.md
 ```
@@ -124,14 +138,11 @@ Use the menu bar app to pick which model backs each task type. Saved to `~/.conf
 
 Edit `config/mlx-server/config.yaml` (desktop) or `config-laptop.yaml` (laptop). Set `on_demand: true` for models that should only load when requested.
 
-### LAN Serving
+### Remote Access
 
-The desktop hostname is in `config/local-models/network.conf`. Ollama listens on `0.0.0.0` via a LaunchAgent (desktop only). If the macOS firewall is enabled, allow Ollama through:
+All remote access uses Tailscale. No services bind to `0.0.0.0`. See [docs/tailscale-setup.md](docs/tailscale-setup.md) for setup instructions.
 
-```bash
-sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add /usr/local/bin/ollama
-sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp /usr/local/bin/ollama
-```
+Toggle **Remote Access** in the desktop menu bar to expose services via `tailscale serve`. The laptop auto-detects the desktop and connects over Tailscale regardless of network.
 
 ## Adding a New Model
 
