@@ -58,7 +58,7 @@ mcp = FastMCP("local-models", host=MCP_HOST, port=MCP_PORT,
               transport_security=_transport_security)
 
 
-_AUTH_EXEMPT_PATHS = {"/gpu", "/api/mcp-models", "/v1/messages", "/v1/messages/count_tokens"}
+_AUTH_EXEMPT_PATHS = {"/gpu", "/api/mcp-models", "/v1/messages", "/v1/messages/count_tokens", "/v1/models"}
 _authenticated_sessions: set[str] = set()
 _session_lock = threading.Lock()
 
@@ -1557,6 +1557,21 @@ async def _stream_mlx(model, messages, max_tokens):
                     continue
 
 
+async def _proxy_list_models(request):
+    """Anthropic /v1/models — list available models."""
+    from starlette.responses import JSONResponse as StarletteJSON
+    models = []
+    for name, info in _models.items():
+        if info.get("backend") in ("ollama", "mlx"):
+            models.append({
+                "id": name,
+                "object": "model",
+                "created": 0,
+                "owned_by": info.get("backend", "local"),
+            })
+    return StarletteJSON({"object": "list", "data": models})
+
+
 async def _proxy_count_tokens(request):
     """Stub for /v1/messages/count_tokens — returns approximate count."""
     from starlette.responses import JSONResponse as StarletteJSON
@@ -1580,6 +1595,7 @@ def main():
         app.routes.append(Route("/gpu", _gpu_status))
         app.routes.append(Route("/api/mcp-models", _mcp_models))
         # Anthropic Messages API proxy for claude-local
+        app.routes.append(Route("/v1/models", _proxy_list_models))
         app.routes.append(Route("/v1/messages/count_tokens", _proxy_count_tokens, methods=["POST"]))
         app.routes.append(Route("/v1/messages", _proxy_messages, methods=["POST"]))
         config = uvicorn.Config(
