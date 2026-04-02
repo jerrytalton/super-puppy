@@ -1152,8 +1152,10 @@ class LocalModelsApp(rumps.App):
         if reachable:
             self.desktop_ip = ts_ip
             self.desktop_fqdn = ts_fqdn
-            self.ollama_remote = f"http://{ts_ip}:{self.ollama_port}"
-            self.mlx_remote = f"http://{ts_ip}:{self.mlx_port}"
+            # Use HTTPS via Tailscale FQDN (tailscale serve proxies these ports)
+            fqdn = self.desktop_fqdn or ts_ip
+            self.ollama_remote = f"https://{fqdn}:{self.ollama_port}"
+            self.mlx_remote = f"https://{fqdn}:{self.mlx_port}"
             return True
         return False
 
