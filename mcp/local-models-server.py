@@ -154,7 +154,9 @@ async def discover_models():
         # Ollama
         try:
             resp = await client.get(f"{OLLAMA_URL}/api/tags")
-            for m in resp.json().get("models", []):
+            tag_models = resp.json().get("models", [])
+
+            async def _show_model(m):
                 name = m["name"]
                 details = m.get("details", {})
                 total_b = 0.0
@@ -165,6 +167,8 @@ async def discover_models():
 
                 ctx, has_vision = 0, False
                 expert_count, expert_used = None, None
+                family = ""
+                expert_ffn, embed_len, block_count = 0, 0, 0
                 try:
                     show = await client.post(
                         f"{OLLAMA_URL}/api/show",
@@ -173,7 +177,6 @@ async def discover_models():
                     mi = show.json().get("model_info", {})
                     family = show.json().get("details", {}).get("family", "")
                     has_vision = any("vision" in k for k in mi)
-                    expert_ffn, embed_len, block_count = 0, 0, 0
                     for k, v in mi.items():
                         if k.endswith(".context_length"):
                             ctx = int(v)
@@ -190,24 +193,30 @@ async def discover_models():
                 except Exception:
                     pass
 
-                active_b = active_params_b(
+                ab = active_params_b(
                     name, total_b, family,
                     expert_count, expert_used,
                     expert_ffn, embed_len, block_count,
                 )
-                active_b = round(active_b)
-                total_b = round(total_b)
-
-                models[name] = {
+                return name, {
                     "backend": "ollama",
-                    "total_params_b": total_b,
-                    "active_params_b": active_b,
+                    "total_params_b": round(total_b),
+                    "active_params_b": round(ab),
                     "context": ctx,
                     "vision": has_vision,
                 }
+
+            results = await asyncio.gather(
+                *[_show_model(m) for m in tag_models],
+                return_exceptions=True)
+            for r in results:
+                if isinstance(r, Exception):
+                    continue
+                name, info = r
+                models[name] = info
                 base = name.split(":")[0]
-                if base not in models or total_b > models[base]["total_params_b"]:
-                    models[base] = models[name]
+                if base not in models or info["total_params_b"] > models[base]["total_params_b"]:
+                    models[base] = info
         except Exception as e:
             print(f"Ollama discovery failed: {e}", file=sys.stderr, flush=True)
 

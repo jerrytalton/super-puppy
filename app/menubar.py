@@ -94,10 +94,11 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_DIR = os.path.dirname(SCRIPT_DIR)
 if REPO_DIR not in sys.path:
     sys.path.insert(0, REPO_DIR)
+from lib.models import CLAUDE_CONFIG_FILE  # early import for MCP_TOOLS_FILE
 ICON_PATH = os.path.join(SCRIPT_DIR, "icon-menubar.png")
 ICONS_DIR = os.path.join(SCRIPT_DIR, "icons")
 NETWORK_CONF = os.path.expanduser("~/.config/local-models/network.conf")
-MCP_TOOLS_FILE = os.path.expanduser("~/.claude.json")
+MCP_TOOLS_FILE = str(CLAUDE_CONFIG_FILE)
 OLLAMA_LOCAL = "http://localhost:11434"
 MLX_LOCAL = "http://localhost:8000"
 MODE_CONF = os.path.expanduser("~/.config/local-models/mode.conf")
@@ -272,8 +273,8 @@ def get_mcp_models(mcp_url="http://127.0.0.1:8100", timeout=3):
 
 from lib.models import (
     STANDARD_TASKS, SPECIAL_TASKS, TASK_FILTERS, KNOWN_ACTIVE_PARAMS,
-    ALWAYS_EXCLUDE, active_params_b,
-    MCP_PREFS_FILE as _MCP_PREFS_PATH,
+    ALWAYS_EXCLUDE, active_params_b, model_matches_filter,
+    MCP_PREFS_FILE as _MCP_PREFS_PATH, CLAUDE_CONFIG_FILE,
 )
 MCP_PREFS_FILE = str(_MCP_PREFS_PATH)
 
@@ -290,36 +291,12 @@ MCP_DEFAULT_PREFS = {
 
 
 def _model_matches_filter(model_name, raw_info, task_filter):
-    """Check if a model passes the task filter."""
-    name_lower = model_name.lower()
-
-    # Always exclude models matching exclude patterns
-    excludes = task_filter.get("exclude_names", [])
-    if any(p.lower() in name_lower for p in excludes):
-        return False
-
-    # Models matching "priority_names" always pass (e.g. coder models for code tasks)
-    priority = task_filter.get("priority_names", [])
-    if any(p.lower() in name_lower for p in priority):
-        return True
-
-    # Must match at least one include pattern (if set)
-    includes = task_filter.get("include_names")
-    if includes and not any(p.lower() in name_lower for p in includes):
-        return False
-
-    # Numeric thresholds
-    active = raw_info.get("active", 0)
-    min_active = task_filter.get("min_active_b", 0)
-    if min_active and active > 0 and active < min_active:
-        return False
-
-    ctx = raw_info.get("ctx", 0)
-    min_ctx = task_filter.get("min_ctx", 0)
-    if min_ctx and ctx > 0 and ctx < min_ctx:
-        return False
-
-    return True
+    return model_matches_filter(
+        model_name,
+        raw_info.get("active", 0),
+        raw_info.get("ctx", 0),
+        task_filter,
+    )
 
 MCP_SPECIAL_TASKS = SPECIAL_TASKS
 
