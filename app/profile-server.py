@@ -36,6 +36,7 @@ from lib.models import (
     STANDARD_TASKS,
     TASK_FILTERS,
     active_params_b,
+    model_matches_filter as _model_matches_filter,
 )
 
 # ── Config ───────────────────────────────────────────────────────────
@@ -348,32 +349,12 @@ def _fetch_all_models():
 
 
 def model_matches_filter(name, model_info, task_filter):
-    """Check if model is suitable for a task."""
-    name_lower = name.lower()
-
-    excludes = task_filter.get("exclude_names", [])
-    if any(p.lower() in name_lower for p in excludes):
-        return False
-
-    priority = task_filter.get("priority_names", [])
-    if any(p.lower() in name_lower for p in priority):
-        return True
-
-    includes = task_filter.get("include_names")
-    if includes and not any(p.lower() in name_lower for p in includes):
-        return False
-
-    active = model_info.get("active_params_b", 0)
-    min_active = task_filter.get("min_active_b", 0)
-    if min_active and active > 0 and active < min_active:
-        return False
-
-    ctx = model_info.get("context", 0)
-    min_ctx = task_filter.get("min_ctx", 0)
-    if min_ctx and ctx > 0 and ctx < min_ctx:
-        return False
-
-    return True
+    return _model_matches_filter(
+        name,
+        model_info.get("active_params_b", 0),
+        model_info.get("context", 0),
+        task_filter,
+    )
 
 
 _LLM_BACKENDS = {"ollama", "mlx"}

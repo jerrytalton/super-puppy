@@ -19,6 +19,7 @@ MCP_PREFS_FILE = CONFIG_DIR / "mcp_preferences.json"
 MODEL_PREFS_FILE = CONFIG_DIR / "model_preferences.json"
 NETWORK_CONF = CONFIG_DIR / "network.conf"
 MLX_SERVER_CONFIG = Path("~/.config/mlx-server/config.yaml").expanduser()
+CLAUDE_CONFIG_FILE = Path("~/.claude.json").expanduser()
 
 # ── MoE active parameter table ───────────────────────────────────────
 # Keyed by Ollama family name → {total_b_rounded: active_b}.
@@ -157,3 +158,39 @@ def active_params_b(
 
     # Strategy 4: simple ratio
     return round(total_b * expert_used / expert_count)
+
+
+def model_matches_filter(
+    name: str,
+    active_params_b: float,
+    context: int,
+    task_filter: dict[str, Any],
+) -> bool:
+    """Check if a model passes a task filter.
+
+    Accepts explicit active_params_b and context values so callers
+    don't need to agree on dict key names.
+    """
+    name_lower = name.lower()
+
+    excludes = task_filter.get("exclude_names", [])
+    if any(p.lower() in name_lower for p in excludes):
+        return False
+
+    priority = task_filter.get("priority_names", [])
+    if any(p.lower() in name_lower for p in priority):
+        return True
+
+    includes = task_filter.get("include_names")
+    if includes and not any(p.lower() in name_lower for p in includes):
+        return False
+
+    min_active = task_filter.get("min_active_b", 0)
+    if min_active and active_params_b > 0 and active_params_b < min_active:
+        return False
+
+    min_ctx = task_filter.get("min_ctx", 0)
+    if min_ctx and context > 0 and context < min_ctx:
+        return False
+
+    return True
