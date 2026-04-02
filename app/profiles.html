@@ -165,14 +165,14 @@ const findModel = name => S.models.find(m => m.name === name) || S.models.find(m
 
 async function init() {
   const sub = document.getElementById('subtitle');
-  sub.textContent = 'Loading config…';
+  sub.innerHTML = '<span class="spinner"></span>Loading config…';
   const [sys,tasks,profiles] = await Promise.all([
     fetch('/api/system').then(r=>r.json()),
     fetch('/api/tasks').then(r=>r.json()),
     fetch('/api/profiles').then(r=>r.json()),
   ]);
   Object.assign(S, {sys,tasks,profiles});
-  sub.textContent = 'Discovering models…';
+  sub.innerHTML = '<span class="spinner"></span>Discovering models…';
   const models = await fetch('/api/models').then(r=>r.json());
   S.models = models;
   S.sel = profiles.active || Object.keys(profiles.profiles)[0] || null;
