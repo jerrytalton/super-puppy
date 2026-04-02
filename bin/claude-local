@@ -1,30 +1,20 @@
 #!/bin/bash
 #
-# Launch Claude Code fully local — all requests go to Ollama.
+# Launch Claude Code fully offline — all requests go to a local Ollama model.
+# No cloud calls. Works without internet.
+#
 # Reads the preferred model from menu bar preferences, or falls back to defaults.
+# Uses localhost Ollama only (no Tailscale, no desktop — fully self-contained).
 
 set -euo pipefail
 
 PREFS="$HOME/.config/local-models/mcp_preferences.json"
-CONF="$HOME/.config/local-models/network.conf"
-
-# Determine Ollama URL (desktop on LAN or localhost)
 OLLAMA_URL="http://localhost:11434"
-if [ -f "$CONF" ]; then
-    source "$CONF"
-    if [ -n "${MODEL_SERVER_HOST:-}" ]; then
-        HOST_IP=$(python3 -c "import socket; print(socket.gethostbyname('${MODEL_SERVER_HOST}'))" 2>/dev/null || echo "")
-        if [ -n "$HOST_IP" ] && curl -sf --connect-timeout "${PROBE_TIMEOUT:-2}" \
-             "http://${HOST_IP}:${OLLAMA_PORT:-11434}/api/version" > /dev/null 2>&1; then
-            OLLAMA_URL="http://${HOST_IP}:${OLLAMA_PORT:-11434}"
-        fi
-    fi
-fi
 
 # Read preferred model from menu bar preferences
 MODEL=""
 if [ -f "$PREFS" ]; then
-    MODEL=$(python3 -c "import json; print(json.load(open('$PREFS')).get('general',''))" 2>/dev/null || echo "")
+    MODEL=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('general',''))" "$PREFS" 2>/dev/null || echo "")
 fi
 
 # Fallback: pick first available model from Ollama
