@@ -1,53 +1,67 @@
 #!/bin/bash
 #
-# Launch Claude Code fully offline — all requests go to a local Ollama model.
-# No cloud calls. Works without internet.
-#
-# Reads the preferred model from menu bar preferences, or falls back to defaults.
-# Uses localhost Ollama only (no Tailscale, no desktop — fully self-contained).
+# Launch Claude Code fully offline — all requests route through Super Puppy's
+# local MCP server, which picks the best model (Ollama or MLX) based on your
+# preferences. No cloud calls. Works without internet.
 
 set -euo pipefail
 
+SP_URL="http://127.0.0.1:8100"
 PREFS="$HOME/.config/local-models/mcp_preferences.json"
-OLLAMA_URL="http://localhost:11434"
 
-# Read preferred model from menu bar preferences
+# Ensure MCP server is running (force local — no desktop, no Tailscale)
+if ! curl -sf --connect-timeout 2 "$SP_URL/gpu" > /dev/null 2>&1; then
+    echo "Starting Super Puppy MCP server (local only)..." >&2
+    FORCE_LOCAL=true ~/bin/local-models-mcp-detect &
+    # Wait for it to come up
+    for i in $(seq 1 15); do
+        if curl -sf --connect-timeout 1 "$SP_URL/gpu" > /dev/null 2>&1; then
+            break
+        fi
+        sleep 1
+    done
+    if ! curl -sf --connect-timeout 2 "$SP_URL/gpu" > /dev/null 2>&1; then
+        echo "ERROR: MCP server failed to start" >&2
+        exit 1
+    fi
+fi
+
+# Read preferred model from menu bar preferences (SP will route regardless,
+# but Claude Code needs a model name for its --model flag)
 MODEL=""
 if [ -f "$PREFS" ]; then
-    MODEL=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('general',''))" "$PREFS" 2>/dev/null || echo "")
+    MODEL=$(python3 -c "
+import json, sys
+prefs = json.load(open(sys.argv[1]))
+# Try general preference first (list or string)
+g = prefs.get('general', [])
+if isinstance(g, list) and g:
+    print(g[0])
+elif isinstance(g, str) and g:
+    print(g)
+" "$PREFS" 2>/dev/null || echo "")
 fi
 
-# Fallback: pick first available model from Ollama
-# Prefer base names without tags — Claude Code may strip the tag.
+# Fallback: ask SP what model it would pick
 if [ -z "$MODEL" ]; then
-    MODEL=$(curl -sf "$OLLAMA_URL/v1/models" 2>/dev/null \
+    MODEL=$(curl -sf "$SP_URL/api/mcp-models" 2>/dev/null \
         | python3 -c "
 import sys, json
-models = [m['id'] for m in json.loads(sys.stdin.read()).get('data', [])]
-skip = ('flux', 'image', 'whisper', 'ocr', 'nsfw')
-# Prefer :latest variants (Claude Code sends bare names)
+data = json.loads(sys.stdin.read())
+models = data.get('models', [])
+skip = ('flux', 'image', 'whisper', 'ocr', 'nsfw', 'embed', 'voxtral', 'chatterbox')
 for m in models:
-    if 'qwen3.5' in m and m.endswith(':latest'):
-        print(m.split(':')[0]); exit()
-for m in models:
-    if m.endswith(':latest') and not any(s in m for s in skip):
-        print(m.split(':')[0]); exit()
-# Any model
-for m in models:
-    if not any(s in m for s in skip):
+    if not any(s in m.lower() for s in skip):
         print(m); exit()
-" 2>/dev/null || echo "")
+if models:
+    print(models[0])
+" 2>/dev/null || echo "qwen3.5")
 fi
 
-if [ -z "$MODEL" ]; then
-    echo "No models available at $OLLAMA_URL" >&2
-    exit 1
-fi
-
-echo "Local mode: $MODEL at $OLLAMA_URL" >&2
+echo "Local mode: $MODEL via Super Puppy ($SP_URL)" >&2
 
 exec env \
-    ANTHROPIC_AUTH_TOKEN=ollama \
-    ANTHROPIC_BASE_URL="$OLLAMA_URL" \
+    ANTHROPIC_AUTH_TOKEN=local \
+    ANTHROPIC_BASE_URL="$SP_URL" \
     ANTHROPIC_API_KEY="" \
     claude --model "$MODEL" "$@"
