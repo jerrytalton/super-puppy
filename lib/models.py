@@ -69,6 +69,10 @@ SPECIAL_TASKS: dict[str, dict[str, Any]] = {
         "label": "Uncensored",
         "prefixes": ["wizard-vicuna-uncensored", "dolphin", "nous-hermes"],
     },
+    "computer_use": {
+        "label": "Computer Use",
+        "prefixes": ["ui-tars", "fara"],
+    },
 }
 
 # ── Task filters ──────────────────────────────────────────────────────

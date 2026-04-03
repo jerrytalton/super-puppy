@@ -280,3 +280,22 @@ class TestForceLocal:
         path.write_text("FORCE_LOCAL='false'\n")
         with patch.object(menubar, "MODE_CONF", str(path)):
             assert menubar.load_force_local() is False
+
+
+class TestComputerUseTask:
+    def test_computer_use_in_special_tasks(self):
+        from lib.models import SPECIAL_TASKS
+        assert "computer_use" in SPECIAL_TASKS
+
+    def test_computer_use_has_prefixes(self):
+        from lib.models import SPECIAL_TASKS
+        task = SPECIAL_TASKS["computer_use"]
+        assert "label" in task
+        assert "prefixes" in task
+        assert len(task["prefixes"]) > 0
+
+    def test_computer_use_matches_known_models(self):
+        from lib.models import SPECIAL_TASKS
+        prefixes = SPECIAL_TASKS["computer_use"]["prefixes"]
+        assert any("ui-tars" in p for p in prefixes)
+        assert any("fara" in p for p in prefixes)

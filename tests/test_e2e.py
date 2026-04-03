@@ -501,7 +501,7 @@ class TestLibModels:
     def test_special_tasks_nonempty(self):
         from lib.models import SPECIAL_TASKS
         assert len(SPECIAL_TASKS) > 0, "SPECIAL_TASKS is empty"
-        for key in ("vision", "image_gen", "transcription", "tts", "embedding"):
+        for key in ("vision", "image_gen", "transcription", "tts", "embedding", "computer_use"):
             assert key in SPECIAL_TASKS, f"Missing special task '{key}'"
 
     def test_task_filters_covers_standard_tasks(self):
