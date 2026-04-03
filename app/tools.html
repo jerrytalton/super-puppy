@@ -32,6 +32,17 @@ body {
   padding: 24px 32px; max-width: 720px; margin: 0 auto;
   -webkit-font-smoothing: antialiased;
 }
+nav {
+  display: flex; gap: 4px; margin-bottom: 24px;
+  border-bottom: 1px solid var(--border); padding-bottom: 12px;
+}
+nav a {
+  padding: 6px 16px; border-radius: 20px; text-decoration: none;
+  color: var(--text2); font-size: 13px; font-weight: 500;
+  transition: all 0.15s;
+}
+nav a:hover { color: var(--text); background: var(--surface2); }
+nav a.active { color: #fff; background: var(--accent); }
 h2 { font-size: 13px; font-weight: 600; color: var(--text2); text-transform: uppercase;
      letter-spacing: 0.5px; margin-bottom: 8px; }
 
@@ -151,6 +162,12 @@ h2 { font-size: 13px; font-weight: 600; color: var(--text2); text-transform: upp
 </style>
 </head>
 <body>
+
+<nav>
+  <a href="/profiles">Profiles</a>
+  <a href="/tools" class="active">Playground</a>
+  <a href="/activity">Activity</a>
+</nav>
 
 <h2>Tool</h2>
 <div class="tool-grid" id="tool-grid"></div>

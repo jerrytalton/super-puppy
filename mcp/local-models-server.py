@@ -99,10 +99,15 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
 
 # ── GPU activity tracking ────────────────────────────────────────────
 # Tracks concurrent requests per backend so tools can warn about contention.
+# Also maintains a ring buffer of completed requests for the activity dashboard.
 
 _gpu_active: dict[str, int] = {"ollama": 0, "mlx": 0}
-_gpu_active_details: dict[str, list[str]] = {"ollama": [], "mlx": []}
+_gpu_active_details: dict[str, list[dict]] = {"ollama": [], "mlx": []}
 _gpu_lock = threading.Lock()
+_REQUEST_HISTORY_MAX = 200
+_request_history: list[dict] = []
+_request_stats: dict[str, int] = {}  # tool:count
+_server_start_time = time.time()
 
 
 class _gpu_request:
@@ -111,32 +116,45 @@ class _gpu_request:
     def __init__(self, backend: str, description: str):
         self.backend = backend
         self.description = description
+        self.started = 0.0
 
     def __enter__(self):
+        self.started = time.time()
+        entry = {"description": self.description, "started": self.started}
         with _gpu_lock:
             _gpu_active[self.backend] += 1
-            _gpu_active_details[self.backend].append(self.description)
+            _gpu_active_details[self.backend].append(entry)
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, exc_type, *exc):
+        elapsed_ms = int((time.time() - self.started) * 1000)
         with _gpu_lock:
             _gpu_active[self.backend] -= 1
-            try:
-                _gpu_active_details[self.backend].remove(self.description)
-            except ValueError:
-                pass
+            _gpu_active_details[self.backend] = [
+                e for e in _gpu_active_details[self.backend]
+                if e["description"] != self.description
+            ]
+            _request_history.append({
+                "description": self.description,
+                "backend": self.backend,
+                "duration_ms": elapsed_ms,
+                "completed_at": time.time(),
+                "status": "error" if exc_type else "ok",
+            })
+            if len(_request_history) > _REQUEST_HISTORY_MAX:
+                _request_history.pop(0)
+            tool = self.description.split(":")[0]
+            _request_stats[tool] = _request_stats.get(tool, 0) + 1
 
 
 def _gpu_contention_warning(backend: str) -> str:
     """Return a warning string if there are other active requests on the backend."""
     with _gpu_lock:
-        # Count OTHER requests (subtract 1 for the current request)
         others = _gpu_active[backend] - 1
         if others <= 0:
             return ""
-        details = [d for d in _gpu_active_details[backend]
-                   if d != "current"]
-        queue_info = f" ({', '.join(details[:3])})" if details else ""
+        descs = [e["description"] for e in _gpu_active_details[backend]]
+        queue_info = f" ({', '.join(descs[:3])})" if descs else ""
         return (f"⚠ GPU contention: {others} other request{'s' if others > 1 else ''} "
                 f"active on {backend}{queue_info}. Response may be slow.\n\n")
 
@@ -1460,14 +1478,24 @@ async def _startup():
 
 async def _gpu_status(request):
     """Lightweight endpoint for Playground to poll GPU activity."""
+    now = time.time()
     with _gpu_lock:
         data = {
-            "ollama": {"active": _gpu_active["ollama"],
-                       "tasks": list(_gpu_active_details["ollama"])},
-            "mlx": {"active": _gpu_active["mlx"],
-                    "tasks": list(_gpu_active_details["mlx"])},
+            "ollama": {
+                "active": _gpu_active["ollama"],
+                "tasks": [
+                    {**e, "elapsed_ms": int((now - e["started"]) * 1000)}
+                    for e in _gpu_active_details["ollama"]
+                ],
+            },
+            "mlx": {
+                "active": _gpu_active["mlx"],
+                "tasks": [
+                    {**e, "elapsed_ms": int((now - e["started"]) * 1000)}
+                    for e in _gpu_active_details["mlx"]
+                ],
+            },
         }
-    # Quick liveness probe: is MLX actually responsive?
     try:
         async with httpx.AsyncClient(timeout=2) as client:
             await client.get(f"{MLX_URL}/v1/models")
@@ -1481,6 +1509,29 @@ async def _gpu_status(request):
     except Exception:
         data["ollama"]["responsive"] = False
     return JSONResponse(data)
+
+
+async def _activity_status(request):
+    """Activity dashboard endpoint: current + recent requests + stats."""
+    now = time.time()
+    with _gpu_lock:
+        active = []
+        for backend in ("ollama", "mlx"):
+            for e in _gpu_active_details[backend]:
+                active.append({
+                    "description": e["description"],
+                    "backend": backend,
+                    "started": e["started"],
+                    "elapsed_ms": int((now - e["started"]) * 1000),
+                })
+        history = list(_request_history[-50:])
+        stats = dict(_request_stats)
+    return JSONResponse({
+        "active": active,
+        "history": history,
+        "stats": stats,
+        "server_uptime_s": int(now - _server_start_time),
+    })
 
 
 async def _mcp_models(request):
@@ -1502,6 +1553,7 @@ def main():
         app.add_middleware(BearerAuthMiddleware)
         # Add unauthenticated status endpoint
         app.routes.append(Route("/gpu", _gpu_status))
+        app.routes.append(Route("/activity", _activity_status))
         app.routes.append(Route("/api/mcp-models", _mcp_models))
         config = uvicorn.Config(
             app, host=mcp.settings.host, port=mcp.settings.port,
