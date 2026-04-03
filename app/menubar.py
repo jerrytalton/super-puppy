@@ -1089,10 +1089,11 @@ class LocalModelsApp(rumps.App):
             self.menu_profiles,
             self.menu_tools,
             self.menu_activity,
+            None,
             ] + ([self.menu_share_url] if self.desktop else []) + [
+            self.menu_diagnostics,
             None,
             self.menu_version,
-            self.menu_diagnostics,
             None,
             self.menu_restart,
             self.menu_quit,
