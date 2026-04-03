@@ -194,11 +194,13 @@ async function init() {
   try {
     sub.innerHTML = '<span class="spinner"></span>Loading config…';
     const [sys,tasks,profiles] = await Promise.all([
-      _fetch('/api/system'), _fetch('/api/tasks'), _fetch('/api/profiles'),
+      fetch('/api/system').then(r=>r.json()),
+      fetch('/api/tasks').then(r=>r.json()),
+      fetch('/api/profiles').then(r=>r.json()),
     ]);
     Object.assign(S, {sys,tasks,profiles});
     sub.innerHTML = '<span class="spinner"></span>Discovering models…';
-    S.models = await _fetch('/api/models');
+    S.models = await fetch('/api/models').then(r=>r.json());
   } catch (err) {
     sub.innerHTML = `Error: ${err.name}: ${err.message} — <a href="#" onclick="init();return false" style="color:var(--accent)">retry</a>`;
     return;
