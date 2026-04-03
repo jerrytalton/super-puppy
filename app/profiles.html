@@ -203,6 +203,12 @@ async function init() {
     sub.innerHTML = `Error: ${err.name}: ${err.message} — <a href="#" onclick="init();return false" style="color:var(--accent)">retry</a>`;
     return;
   }
+  console.log('profiles response:', JSON.stringify(profiles).slice(0, 200));
+  if (!profiles || !profiles.profiles) {
+    document.getElementById('subtitle').textContent =
+      'Error: bad profiles response: ' + JSON.stringify(profiles).slice(0, 100);
+    return;
+  }
   S.sel = profiles.active || Object.keys(profiles.profiles)[0] || null;
   if (S.sel) {
     const p = S.profiles.profiles[S.sel];
