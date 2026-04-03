@@ -389,7 +389,7 @@ def get_eligible_tasks(name, model_info):
 
 # ── Profiles ─────────────────────────────────────────────────────────
 
-PROFILES_VERSION = 15  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 16  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -412,6 +412,7 @@ DEFAULT_PROFILES = {
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
                 "embedding": "all-minilm:latest",
                 "uncensored": "dolphin3:8b",
+                "computer_use": "avil/ui-tars:latest",
             },
         },
         "desktop": {
@@ -430,6 +431,7 @@ DEFAULT_PROFILES = {
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
                 "embedding": "all-minilm:latest",
                 "uncensored": "dolphin3:8b",
+                "computer_use": "maternion/fara:7b",
             },
         },
         "maximum": {
@@ -449,6 +451,7 @@ DEFAULT_PROFILES = {
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
                 "embedding": "mxbai-embed-large:latest",
                 "uncensored": "dolphin3:8b",
+                "computer_use": "avil/ui-tars:latest",
             },
         },
         "laptop": {
@@ -467,6 +470,7 @@ DEFAULT_PROFILES = {
                 "tts": "mlx-community/Kokoro-82M-bf16",
                 "embedding": "all-minilm:latest",
                 "uncensored": "dolphin3:8b",
+                "computer_use": "maternion/fara:7b",
             },
         },
     },
