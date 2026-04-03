@@ -183,9 +183,9 @@ const fmtP = (t,a) => t===a||!a ? t+'B' : t+'B/'+a+'B';
 const fmtC = c => c>=1e6?Math.round(c/1e6)+'M':c>=1024?Math.floor(c/1024)+'K':c>0?''+c:'';
 const findModel = name => S.models.find(m => m.name === name) || S.models.find(m => m.name.startsWith(name + ':'));
 
-function _fetch(url) {
+function _fetch(url, timeoutMs = 15000) {
   const ctrl = new AbortController();
-  setTimeout(() => ctrl.abort(), 15000);
+  setTimeout(() => ctrl.abort(), timeoutMs);
   return fetch(url, {signal: ctrl.signal}).then(r => r.json());
 }
 
@@ -198,7 +198,7 @@ async function init() {
     ]);
     Object.assign(S, {sys,tasks,profiles});
     sub.innerHTML = '<span class="spinner"></span>Discovering models…';
-    S.models = await _fetch('/api/models');
+    S.models = await _fetch('/api/models', 120000);
   } catch (err) {
     sub.innerHTML = `Connection failed — <a href="#" onclick="init();return false" style="color:var(--accent)">retry</a>`;
     return;
