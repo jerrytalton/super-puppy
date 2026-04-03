@@ -512,17 +512,8 @@ ROLE_LABELS = {
     "image": "Vision",
 }
 
-ROLE_FILTERS_FILE = os.path.expanduser("~/.config/claude-code-router/role_filters.json")
-
-
 def load_role_filters():
-    """Load role filter config from JSON file."""
-    if os.path.exists(ROLE_FILTERS_FILE):
-        try:
-            with open(ROLE_FILTERS_FILE) as f:
-                return json.load(f)
-        except Exception:
-            pass
+    """Load role filter config (unused, kept for compatibility)."""
     return {}
 
 
@@ -654,28 +645,28 @@ def query_ollama_model_detail(base_url, model_name, timeout=5):
         return None
 
 
-def match_ollama_model(ccr_name, installed_models):
-    """Match a CCR model name (e.g. 'qwen3.5') to an installed Ollama model.
+def match_ollama_model(pref_name, installed_models):
+    """Match a preference model name (e.g. 'qwen3.5') to an installed Ollama model.
 
     Tries exact match, then :latest tag, then exact base name match with
     any tag. Only falls back to prefix match as a last resort, preferring
-    the variant whose tag best matches the CCR name.
+    the variant whose tag best matches the preference name.
     """
     # Exact match (includes tag)
-    if ccr_name in installed_models:
-        return ccr_name
+    if pref_name in installed_models:
+        return pref_name
     # With :latest tag
-    if f"{ccr_name}:latest" in installed_models:
-        return f"{ccr_name}:latest"
+    if f"{pref_name}:latest" in installed_models:
+        return f"{pref_name}:latest"
 
-    # If CCR name has a tag (e.g. "qwen3.5:35b-a3b"), try matching base:tag
-    if ":" in ccr_name:
+    # If preference name has a tag (e.g. "qwen3.5:35b-a3b"), try matching base:tag
+    if ":" in pref_name:
         # The exact name wasn't found — no good match
         return None
 
-    # CCR name has no tag (e.g. "qwen3.5") — find installed models with same base
+    # preference name has no tag (e.g. "qwen3.5") — find installed models with same base
     matches = [n for n in installed_models
-               if n.split(":")[0] == ccr_name]
+               if n.split(":")[0] == pref_name]
     if matches:
         # Prefer :latest, then pick the largest
         for m in matches:
@@ -855,7 +846,7 @@ class ModelInfoCache:
         self._role_filters = load_role_filters()
 
     def populate(self, ccr_models, ollama_url, mlx_config_info, mlx_live_models):
-        """Bulk-populate cache for all CCR models.
+        """Bulk-populate cache for all preference models.
 
         mlx_live_models: list of model IDs currently served by MLX-OpenAI-Server.
         """
@@ -965,7 +956,7 @@ class ModelInfoCache:
 # ---------------------------------------------------------------------------
 
 def load_routing_prefs():
-    """Load {role: "provider,model"} overrides. Falls back to CCR defaults."""
+    """Load {role: "provider,model"} overrides. Falls back to preference defaults."""
     if os.path.exists(MODEL_PREFS_FILE):
         try:
             with open(MODEL_PREFS_FILE) as f:

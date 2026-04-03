@@ -2,7 +2,7 @@
 # Serves MLX-optimized models via an OpenAI-compatible API on port 8000.
 # Each model runs in an isolated subprocess (no Metal/GPU semaphore leaks).
 #
-# High-memory config for machines with 128GB+ RAM. For smaller machines,
+# High-memory config (used when system RAM >= 256GB). For smaller machines,
 # use config-laptop.yaml instead. The start-local-models script
 # auto-selects based on system memory.
 #

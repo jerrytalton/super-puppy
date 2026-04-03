@@ -50,7 +50,6 @@ echo "Installing Super Puppy..."
 echo ""
 
 # Scripts
-link bin/claude-local              ~/bin/claude-local
 link bin/start-local-models        ~/bin/start-local-models
 link bin/local-models-menubar      ~/bin/local-models-menubar
 link bin/local-models-mcp-detect   ~/bin/local-models-mcp-detect
@@ -169,14 +168,15 @@ if $RECONFIGURE; then
     fi
     TOKEN_CACHE="$HOME/.config/local-models/mcp_auth_token"
     if [ -z "${op_ref:-}" ] && [ ! -f "$TOKEN_CACHE" ]; then
-        printf "  Paste your MCP auth token (or press Enter to skip): "
+        printf "  Paste your MCP auth token (or press Enter to auto-generate one): "
         read -r manual_token
         if [ -n "$manual_token" ]; then
-            echo "$manual_token" > "$TOKEN_CACHE"
-            chmod 600 "$TOKEN_CACHE"
+            (umask 077 && echo "$manual_token" > "$TOKEN_CACHE")
             echo "  → Token saved to $TOKEN_CACHE"
         else
-            echo "  → No token configured. MCP server will require one before starting."
+            auto_token=$(openssl rand -hex 32)
+            (umask 077 && echo "$auto_token" > "$TOKEN_CACHE")
+            echo "  → Generated random token and saved to $TOKEN_CACHE"
         fi
     fi
 
@@ -328,8 +328,7 @@ if [ -f "$CLAUDE_JSON" ]; then
     elif [ -n "${OP_REF:-}" ]; then
         MCP_TOKEN=$(op read "$OP_REF" 2>/dev/null || true)
         if [ -n "$MCP_TOKEN" ]; then
-            echo "$MCP_TOKEN" > "$TOKEN_CACHE"
-            chmod 600 "$TOKEN_CACHE"
+            (umask 077 && echo "$MCP_TOKEN" > "$TOKEN_CACHE")
         fi
     fi
     if command -v claude > /dev/null; then
@@ -365,13 +364,9 @@ if ! command -v uv > /dev/null; then
     source "$HOME/.local/bin/env" 2>/dev/null || export PATH="$HOME/.local/bin:$PATH"
 fi
 
-if ! command -v op > /dev/null; then
-    if command -v brew > /dev/null; then
-        echo "  Installing 1password-cli..."
-        brew install 1password-cli || true
-    else
-        echo "  WARNING: 1password-cli not found. Install manually: brew install 1password-cli"
-    fi
+if ! command -v op > /dev/null && [ -n "${OP_REF:-}" ]; then
+    echo "  1password-cli not found (needed for OP_REF in network.conf)."
+    echo "  Install with: brew install 1password-cli"
 fi
 
 if ! command -v ollama > /dev/null; then

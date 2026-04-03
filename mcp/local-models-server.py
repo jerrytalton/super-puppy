@@ -59,6 +59,7 @@ mcp = FastMCP("local-models", host=MCP_HOST, port=MCP_PORT,
 
 
 _AUTH_EXEMPT_PATHS = {"/gpu", "/api/mcp-models"}
+_MAX_SESSIONS = 1000
 _authenticated_sessions: set[str] = set()
 _session_lock = threading.Lock()
 
@@ -84,6 +85,8 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             # Track session ID from authenticated /mcp init requests
             if path == "/mcp" and session_id:
                 with _session_lock:
+                    if len(_authenticated_sessions) >= _MAX_SESSIONS:
+                        _authenticated_sessions.pop()
                     _authenticated_sessions.add(session_id)
             response = await call_next(request)
             # Also capture session IDs from response headers (MCP protocol)
@@ -666,7 +669,6 @@ async def local_computer_use(
     The tool observes and plans — it does NOT execute the actions.
     """
     model_name, backend = pick_model("computer_use", model)
-    warning = _gpu_warning(backend, f"computer_use:{model_name}")
 
     # Take or read screenshot
     if screenshot_path:
