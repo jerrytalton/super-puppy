@@ -25,15 +25,10 @@ claude    # local-models MCP auto-connects
 
 ## How It Works
 
-Two ways to use Claude Code with local models:
-
-**`claude`** — Claude Max does the reasoning. Local models are available as MCP tools for bulk work, vision, transcription, translation, and image generation. Best of both worlds.
-
-**`claude-local`** — Entirely local. All requests go to Ollama (e.g. qwen3.5). No Anthropic, no internet required. Great for offline work, sensitive code, or when you just want to use the hardware you paid for.
+Claude does the reasoning. Local models are available as MCP tools for bulk work, image generation, transcription, translation, and more.
 
 ```
 claude ──> Anthropic (reasoning) + MCP tools ──> Ollama / MLX (local heavy lifting)
-claude-local ──> Ollama only (fully local, no cloud)
 ```
 
 ### MCP Tools
@@ -45,6 +40,7 @@ When using `claude` with Max, these tools let Claude delegate to local models:
 | `local_generate` | Code & text generation | qwen3-coder (code), qwen3.5 (text) |
 | `local_review` | Second opinion on code | qwen3.5-large (397B) |
 | `local_vision` | Analyze images on disk | qwen3-vl |
+| `local_computer_use` | Plan GUI actions from screenshots | UI-TARS, Fara |
 | `local_image` | Generate images | Flux2, Z-Image |
 | `local_image_edit` | Edit existing images | Flux Kontext |
 | `local_transcribe` | Audio to text | Whisper v3 |
@@ -162,8 +158,6 @@ A puppy icon in the menu bar provides:
 
 ```bash
 claude                        # Claude Max + local model MCP tools
-claude-local                  # fully local (Ollama only, no Anthropic)
-
 start-local-models            # start Ollama + MLX servers
 start-local-models --status   # show what's running
 start-local-models --stop     # stop servers
@@ -228,7 +222,6 @@ super-puppy/
 ├── bin/
 │   ├── local-models-mcp-detect  # MCP wrapper with LAN detection
 │   ├── start-local-models       # Service manager
-│   ├── claude-local             # Fully local Claude
 │   └── local-models-menubar     # App launcher
 ├── config/
 │   ├── mlx-server/              # MLX configs (high-memory + lightweight)
