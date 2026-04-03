@@ -15,3 +15,4 @@ web/dist/
 
 # Generated PWA icons (built by install.sh from icon.png)
 app/pwa/
+uv.lock
