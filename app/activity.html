@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Super Puppy — Activity</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/pwa/icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
+<style>
+:root {
+  --bg: #f5f5f7; --surface: #fff; --surface2: #f0f0f2;
+  --text: #1d1d1f; --text2: #86868b; --text3: #aeaeb2;
+  --border: #d2d2d7; --accent: #007aff;
+  --green: #34c759; --amber: #ff9f0a; --red: #ff3b30;
+  --r: 12px; --rs: 8px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #000; --surface: #1c1c1e; --surface2: #2c2c2e;
+    --text: #f5f5f7; --text2: #98989d; --text3: #636366;
+    --border: #38383a;
+  }
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  background: var(--bg); color: var(--text);
+  padding: 24px 32px; max-width: 960px; margin: 0 auto;
+  -webkit-font-smoothing: antialiased;
+  padding-top: env(safe-area-inset-top, 24px);
+}
+
+/* ── Nav ── */
+nav {
+  display: flex; gap: 4px; margin-bottom: 24px;
+  border-bottom: 1px solid var(--border); padding-bottom: 12px;
+}
+nav a {
+  padding: 6px 16px; border-radius: 20px; text-decoration: none;
+  color: var(--text2); font-size: 13px; font-weight: 500;
+  transition: all 0.15s;
+}
+nav a:hover { color: var(--text); background: var(--surface2); }
+nav a.active { color: #fff; background: var(--accent); }
+
+/* ── Stats row ── */
+.stats {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px; margin-bottom: 24px;
+}
+.stat {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--rs); padding: 16px; text-align: center;
+}
+.stat-value { font-size: 28px; font-weight: 700; line-height: 1.1; }
+.stat-label { font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
+
+/* ── Active requests ── */
+.section-title {
+  font-size: 13px; font-weight: 600; color: var(--text2);
+  text-transform: uppercase; letter-spacing: 0.5px;
+  margin-bottom: 12px;
+}
+.active-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 24px; }
+.active-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--rs); padding: 12px 16px;
+  display: flex; align-items: center; gap: 12px;
+}
+.active-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+.active-info { flex: 1; }
+.active-desc { font-weight: 600; font-size: 14px; }
+.active-meta { font-size: 12px; color: var(--text2); }
+.active-elapsed {
+  font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums;
+  min-width: 60px; text-align: right;
+}
+.empty-state {
+  text-align: center; color: var(--text3); padding: 32px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--rs); margin-bottom: 24px;
+}
+
+/* ── History table ── */
+.history-table {
+  width: 100%; border-collapse: collapse;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--rs); overflow: hidden;
+}
+.history-table th {
+  text-align: left; padding: 8px 12px; font-size: 11px;
+  color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border); background: var(--surface2);
+}
+.history-table td {
+  padding: 8px 12px; font-size: 13px;
+  border-bottom: 1px solid var(--border);
+}
+.history-table tr:last-child td { border-bottom: none; }
+.history-table .dur { font-variant-numeric: tabular-nums; text-align: right; }
+.history-table .status-ok { color: var(--green); }
+.history-table .status-error { color: var(--red); }
+.backend-tag {
+  display: inline-block; padding: 2px 8px; border-radius: 10px;
+  font-size: 11px; font-weight: 600;
+}
+.backend-ollama { background: #e8f5e9; color: #2e7d32; }
+.backend-mlx { background: #e3f2fd; color: #1565c0; }
+@media (prefers-color-scheme: dark) {
+  .backend-ollama { background: #1b3a1e; color: #66bb6a; }
+  .backend-mlx { background: #0d2744; color: #42a5f5; }
+}
+
+/* ── Tool breakdown ── */
+.tool-bars { margin-bottom: 24px; }
+.tool-row {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+}
+.tool-name { width: 120px; font-size: 12px; color: var(--text2); text-align: right; }
+.tool-bar-wrap {
+  flex: 1; height: 20px; background: var(--surface2);
+  border-radius: 4px; overflow: hidden;
+}
+.tool-bar {
+  height: 100%; background: var(--accent); border-radius: 4px;
+  transition: width 0.4s ease; min-width: 2px;
+}
+.tool-count { width: 40px; font-size: 12px; color: var(--text2); font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+
+<nav>
+  <a href="/profiles">Profiles</a>
+  <a href="/tools">Playground</a>
+  <a href="/activity" class="active">Activity</a>
+</nav>
+
+<div class="stats" id="stats">
+  <div class="stat"><div class="stat-value" id="s-active">0</div><div class="stat-label">Active</div></div>
+  <div class="stat"><div class="stat-value" id="s-total">0</div><div class="stat-label">Total Requests</div></div>
+  <div class="stat"><div class="stat-value" id="s-avg">--</div><div class="stat-label">Avg Duration</div></div>
+  <div class="stat"><div class="stat-value" id="s-uptime">--</div><div class="stat-label">Server Uptime</div></div>
+</div>
+
+<div class="section-title">Active Requests</div>
+<div class="active-list" id="active-list">
+  <div class="empty-state">No active requests</div>
+</div>
+
+<div class="section-title">Tool Breakdown</div>
+<div class="tool-bars" id="tool-bars"></div>
+
+<div class="section-title">Recent History</div>
+<table class="history-table">
+  <thead><tr><th>Tool</th><th>Model</th><th>Backend</th><th>Status</th><th class="dur">Duration</th><th>When</th></tr></thead>
+  <tbody id="history-body"><tr><td colspan="6" style="text-align:center;color:var(--text3)">Waiting for data...</td></tr></tbody>
+</table>
+
+<script>
+const POLL_MS = 2000;
+let lastData = null;
+
+function fmtDuration(ms) {
+  if (ms < 1000) return ms + 'ms';
+  if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+  return (ms / 60000).toFixed(1) + 'm';
+}
+
+function fmtUptime(s) {
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.floor(s / 60) + 'm';
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h + 'h ' + m + 'm';
+}
+
+function fmtAgo(ts) {
+  const ago = (Date.now() / 1000) - ts;
+  if (ago < 60) return Math.floor(ago) + 's ago';
+  if (ago < 3600) return Math.floor(ago / 60) + 'm ago';
+  return Math.floor(ago / 3600) + 'h ago';
+}
+
+function parseDesc(desc) {
+  const parts = desc.split(':');
+  return { tool: parts[0] || '', model: parts.slice(1).join(':') || '' };
+}
+
+function render(data) {
+  lastData = data;
+
+  // Stats
+  const totalReqs = Object.values(data.stats).reduce((a, b) => a + b, 0);
+  document.getElementById('s-active').textContent = data.active.length;
+  document.getElementById('s-total').textContent = totalReqs;
+  document.getElementById('s-uptime').textContent = fmtUptime(data.server_uptime_s);
+
+  if (data.history.length > 0) {
+    const avg = data.history.reduce((a, r) => a + r.duration_ms, 0) / data.history.length;
+    document.getElementById('s-avg').textContent = fmtDuration(Math.round(avg));
+  }
+
+  // Active requests
+  const activeEl = document.getElementById('active-list');
+  if (data.active.length === 0) {
+    activeEl.innerHTML = '<div class="empty-state">No active requests</div>';
+  } else {
+    activeEl.innerHTML = data.active.map(r => {
+      const p = parseDesc(r.description);
+      const color = r.backend === 'ollama' ? 'var(--green)' : 'var(--accent)';
+      return `<div class="active-card">
+        <div class="active-dot" style="background:${color}"></div>
+        <div class="active-info">
+          <div class="active-desc">${p.tool}</div>
+          <div class="active-meta">${p.model} <span class="backend-tag backend-${r.backend}">${r.backend}</span></div>
+        </div>
+        <div class="active-elapsed">${fmtDuration(r.elapsed_ms)}</div>
+      </div>`;
+    }).join('');
+  }
+
+  // Tool breakdown bars
+  const toolBars = document.getElementById('tool-bars');
+  const entries = Object.entries(data.stats).sort((a, b) => b[1] - a[1]);
+  const maxCount = entries.length > 0 ? entries[0][1] : 1;
+  if (entries.length === 0) {
+    toolBars.innerHTML = '<div class="empty-state" style="padding:16px">No requests yet</div>';
+  } else {
+    toolBars.innerHTML = entries.map(([tool, count]) => {
+      const pct = (count / maxCount) * 100;
+      return `<div class="tool-row">
+        <div class="tool-name">${tool}</div>
+        <div class="tool-bar-wrap"><div class="tool-bar" style="width:${pct}%"></div></div>
+        <div class="tool-count">${count}</div>
+      </div>`;
+    }).join('');
+  }
+
+  // History table (newest first)
+  const tbody = document.getElementById('history-body');
+  if (data.history.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text3)">No completed requests yet</td></tr>';
+  } else {
+    tbody.innerHTML = data.history.slice().reverse().map(r => {
+      const p = parseDesc(r.description);
+      const statusCls = r.status === 'ok' ? 'status-ok' : 'status-error';
+      const statusIcon = r.status === 'ok' ? '\u2713' : '\u2717';
+      return `<tr>
+        <td>${p.tool}</td>
+        <td>${p.model}</td>
+        <td><span class="backend-tag backend-${r.backend}">${r.backend}</span></td>
+        <td class="${statusCls}">${statusIcon}</td>
+        <td class="dur">${fmtDuration(r.duration_ms)}</td>
+        <td>${fmtAgo(r.completed_at)}</td>
+      </tr>`;
+    }).join('');
+  }
+}
+
+async function poll() {
+  try {
+    const resp = await fetch('/api/activity');
+    if (resp.ok) render(await resp.json());
+  } catch {}
+}
+
+// Update elapsed times between polls
+setInterval(() => {
+  if (!lastData || lastData.active.length === 0) return;
+  const now = Date.now() / 1000;
+  document.querySelectorAll('.active-elapsed').forEach((el, i) => {
+    if (lastData.active[i]) {
+      const ms = Math.round((now - lastData.active[i].started) * 1000);
+      el.textContent = fmtDuration(ms);
+    }
+  });
+}, 1000);
+
+poll();
+setInterval(poll, POLL_MS);
+</script>
+</body>
+</html>

@@ -523,6 +523,7 @@ def _touch_idle():
 
 
 @app.route("/")
+@app.route("/profiles")
 def index():
     return send_file(str(HTML_FILE))
 
@@ -1265,6 +1266,34 @@ def api_gpu():
         "playground": own,
         "other_active": other_active,
     })
+
+
+@app.route("/api/activity")
+def api_activity():
+    """Proxy the MCP server's /activity endpoint for the dashboard."""
+    try:
+        resp = requests.get(f"http://127.0.0.1:{MCP_PORT}/activity", timeout=3)
+        data = resp.json()
+    except Exception:
+        data = {"active": [], "history": [], "stats": {}, "server_uptime_s": 0}
+
+    # Merge playground activity into active list
+    now = time.time()
+    with _playground_lock:
+        for task in _playground_active.values():
+            data["active"].append({
+                "description": f"playground:{task['tool']}:{task['model']}",
+                "backend": task["backend"],
+                "started": task["started"],
+                "elapsed_ms": int((now - task["started"]) * 1000),
+                "source": "playground",
+            })
+    return jsonify(data)
+
+
+@app.route("/activity")
+def activity_page():
+    return send_file(os.path.join(SCRIPT_DIR, "activity.html"))
 
 
 # ── PWA assets ───────────────────────────────────────────────────────
