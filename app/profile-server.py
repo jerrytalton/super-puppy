@@ -523,8 +523,12 @@ def _touch_idle():
 
 
 @app.route("/")
-@app.route("/profiles")
 def index():
+    return send_file(str(HTML_FILE))
+
+
+@app.route("/profiles")
+def profiles_page():
     return send_file(str(HTML_FILE))
 
 
