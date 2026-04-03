@@ -302,77 +302,99 @@ MCP_SPECIAL_TASKS = SPECIAL_TASKS
 
 
 # ---------------------------------------------------------------------------
-# Update detection (git)
+# Update detection (git tags)
 # ---------------------------------------------------------------------------
 
 def get_version(ref="HEAD"):
-    """Derive a CalVer version string from the git commit date at *ref*.
+    """Get the version tag describing *ref*.
 
-    Format: YYYY.M.D (no zero-padding). If multiple commits share the same
-    date, appends a build number: 2026.4.1.2.  Returns "dev" on failure.
+    Returns the most recent reachable tag (e.g. "v1.0.0"), or the tag with a
+    short distance suffix (e.g. "v1.0.0+3") if HEAD is ahead of the tag.
+    Returns "dev" if no tags exist.
     """
     try:
-        # Author date of the commit
-        date_str = subprocess.check_output(
-            ["git", "-C", REPO_DIR, "log", "-1", "--format=%ai", ref],
-            text=True, timeout=5).strip()[:10]           # "2026-04-01"
-        y, m, d = (int(x) for x in date_str.split("-"))  # strip leading zeros
-        # Count how many commits share this date (for build number)
-        count = int(subprocess.check_output(
-            ["git", "-C", REPO_DIR, "rev-list", "--count", "--after",
-             f"{date_str}T00:00:00", "--before", f"{date_str}T23:59:59", ref],
-            text=True, timeout=5).strip())
-        if count > 1:
-            return f"{y}.{m}.{d}.{count}"
-        return f"{y}.{m}.{d}"
+        desc = subprocess.check_output(
+            ["git", "-C", REPO_DIR, "describe", "--tags", "--always", ref],
+            text=True, stderr=subprocess.DEVNULL, timeout=5).strip()
+        # git describe returns "v1.0.0" if exactly on tag, or
+        # "v1.0.0-3-gabcdef0" if 3 commits past. Normalize the latter.
+        if "-" in desc and desc.startswith("v"):
+            parts = desc.rsplit("-", 2)
+            if len(parts) == 3:
+                return f"{parts[0]}+{parts[1]}"
+        return desc
     except Exception:
         return "dev"
 
 
-def get_remote_version():
-    """Version string for origin/main (after a fetch). Returns "" on failure."""
+def get_latest_remote_tag():
+    """Return (tag_name, tag_hash) for the latest semver tag on origin.
+
+    Tags are sorted by version (v1.0.0 < v1.1.0 < v2.0.0). Returns ("", "")
+    if no version tags exist.
+    """
     try:
-        subprocess.run(
-            ["git", "-C", REPO_DIR, "rev-list", "--count",
-             "HEAD..origin/main"],
+        result = subprocess.run(
+            ["git", "-C", REPO_DIR, "tag", "--list", "v*", "--sort=-version:refname"],
             capture_output=True, text=True, timeout=5)
-        return get_version("origin/main")
+        tags = result.stdout.strip().splitlines()
+        if not tags:
+            return "", ""
+        latest = tags[0]
+        tag_hash = subprocess.check_output(
+            ["git", "-C", REPO_DIR, "rev-parse", latest],
+            text=True, timeout=5).strip()
+        return latest, tag_hash
     except Exception:
-        return ""
+        return "", ""
 
 
 def check_repo_update_available():
-    """Check if the local repo is behind origin/main.
+    """Check if a newer tagged release exists on origin.
 
-    Returns (behind_count, remote_version, remote_head_hash).
+    Returns (behind_count, remote_version, remote_tag_hash).
+    behind_count is 1 if a newer tag exists, 0 otherwise (exact commit count
+    isn't meaningful for tag-based updates).
     """
     try:
-        fetch = subprocess.run(["git", "-C", REPO_DIR, "fetch", "--quiet"],
-                               capture_output=True, text=True, timeout=15)
+        fetch = subprocess.run(
+            ["git", "-C", REPO_DIR, "fetch", "--quiet", "--tags"],
+            capture_output=True, text=True, timeout=15)
         if fetch.returncode != 0:
             logging.warning("git fetch failed: %s", fetch.stderr.strip())
             return 0, "", ""
-        result = subprocess.run(
-            ["git", "-C", REPO_DIR, "rev-list", "--count", "HEAD..origin/main"],
-            capture_output=True, text=True, timeout=5)
-        behind = int(result.stdout.strip())
-        if behind > 0:
-            remote_ver = get_version("origin/main")
-            remote_hash = subprocess.check_output(
-                ["git", "-C", REPO_DIR, "rev-parse", "origin/main"],
-                text=True, timeout=5).strip()
-            return behind, remote_ver, remote_hash
+
+        latest_tag, tag_hash = get_latest_remote_tag()
+        if not latest_tag:
+            return 0, "", ""
+
+        # Check if HEAD is already at or past this tag
+        current_hash = subprocess.check_output(
+            ["git", "-C", REPO_DIR, "rev-parse", "HEAD"],
+            text=True, timeout=5).strip()
+        if current_hash == tag_hash:
+            return 0, "", ""
+
+        # Check if the tag is an ancestor of HEAD (already past it)
+        merge_base = subprocess.run(
+            ["git", "-C", REPO_DIR, "merge-base", "--is-ancestor",
+             tag_hash, "HEAD"],
+            capture_output=True, timeout=5)
+        if merge_base.returncode == 0:
+            return 0, "", ""  # HEAD is ahead of or at the latest tag
+
+        return 1, latest_tag, tag_hash
     except Exception as e:
         logging.warning("Update check failed: %s", e)
     return 0, "", ""
 
 
-def apply_repo_update():
-    """Pull latest from origin. Returns (success, output).
+def apply_repo_update(target_tag):
+    """Check out a tagged release. Returns (success, output).
 
-    Only does git pull — install.sh is for initial setup and pulls models,
-    which is too slow for an in-app update. Symlinks already point into the
-    repo so pulling new code is enough; the restart picks up changes.
+    Stashes local changes, checks out the tag (detached HEAD), and pops the
+    stash. Symlinks point into the repo, so checking out new code is enough;
+    the restart picks up changes.
     """
     try:
         status = subprocess.run(
@@ -382,17 +404,18 @@ def apply_repo_update():
         if has_changes:
             subprocess.run(["git", "-C", REPO_DIR, "stash", "--quiet"],
                            capture_output=True, timeout=10)
-        pull = subprocess.run(["git", "-C", REPO_DIR, "pull", "--rebase"],
-                              capture_output=True, text=True, timeout=30)
-        if pull.returncode != 0:
-            return False, pull.stderr.strip()
+        checkout = subprocess.run(
+            ["git", "-C", REPO_DIR, "checkout", target_tag],
+            capture_output=True, text=True, timeout=30)
+        if checkout.returncode != 0:
+            return False, checkout.stderr.strip()
         if has_changes:
             pop = subprocess.run(
                 ["git", "-C", REPO_DIR, "stash", "pop", "--quiet"],
                 capture_output=True, text=True, timeout=10)
             if pop.returncode != 0:
                 return False, f"Stash pop failed: {pop.stderr.strip()}"
-        return True, pull.stdout.strip()
+        return True, f"Checked out {target_tag}"
     except Exception as e:
         return False, str(e)
 
@@ -1081,7 +1104,7 @@ class LocalModelsApp(rumps.App):
         ]
         self.menu = menu_items
 
-        # Easter egg: periodic cute notifications (only for non-Jerry machines)
+        # Easter egg: periodic cute notifications (opt-in via config)
         self._next_woof = 0
         self._schedule_woof()
 
@@ -2083,12 +2106,12 @@ class LocalModelsApp(rumps.App):
         thread.start()
 
     def _check_for_updates(self):
-        behind, remote_ver, remote_hash = check_repo_update_available()
+        behind, remote_tag, remote_hash = check_repo_update_available()
         self.update_available = behind
         if behind <= 0:
             return
 
-        # Skip if this exact remote commit was already rolled back
+        # Skip if this exact release was already rolled back
         skipped = ""
         try:
             with open(UPDATE_SKIPPED_FILE) as f:
@@ -2096,7 +2119,7 @@ class LocalModelsApp(rumps.App):
         except FileNotFoundError:
             pass
         if skipped and skipped == remote_hash:
-            logging.info("Skipping update to %s (previously rolled back)", remote_hash[:8])
+            logging.info("Skipping update to %s (previously rolled back)", remote_tag)
             return
 
         # Idle gate: don't interrupt active MCP sessions
@@ -2104,8 +2127,8 @@ class LocalModelsApp(rumps.App):
             logging.info("Deferring update — MCP recently active")
             return
 
-        logging.info("Auto-updating: %d commits behind → v%s", behind, remote_ver)
-        self._auto_update(remote_ver)
+        logging.info("Auto-updating to %s", remote_tag)
+        self._auto_update(remote_tag)
 
     def _mcp_recently_active(self):
         try:
@@ -2114,9 +2137,10 @@ class LocalModelsApp(rumps.App):
         except OSError:
             return False
 
-    def _auto_update(self, remote_ver):
-        # Save pre-update commit hash for precise rollback
+    def _auto_update(self, target_tag):
+        # Save pre-update tag/hash for precise rollback
         pre_hash = ""
+        pre_tag = get_version()
         try:
             pre_hash = subprocess.check_output(
                 ["git", "-C", REPO_DIR, "rev-parse", "HEAD"],
@@ -2142,14 +2166,14 @@ class LocalModelsApp(rumps.App):
 
         try:
             rumps.notification(
-                "Super Puppy", f"Updating to v{remote_ver}", "Restarting…")
+                "Super Puppy", f"Updating to {target_tag}", "Restarting…")
         except RuntimeError:
             pass
 
         # Check if MCP server code changed (to decide whether to restart it)
-        mcp_changed = self._mcp_code_changed()
+        mcp_changed = self._mcp_code_changed(target_tag)
 
-        success, output = apply_repo_update()
+        success, output = apply_repo_update(target_tag)
         if not success:
             logging.error("Auto-update failed: %s", output)
             # Reset to pre-update commit so we don't stay on broken code
@@ -2186,12 +2210,12 @@ class LocalModelsApp(rumps.App):
         # os._exit bypasses atexit handlers to ensure a clean, fast exit.
         os._exit(1)
 
-    def _mcp_code_changed(self):
-        """Check if mcp/ files differ between HEAD and origin/main."""
+    def _mcp_code_changed(self, target_ref="origin/main"):
+        """Check if mcp/ files differ between HEAD and the target ref."""
         try:
             result = subprocess.run(
                 ["git", "-C", REPO_DIR, "diff", "--name-only",
-                 "HEAD", "origin/main", "--", "mcp/"],
+                 "HEAD", target_ref, "--", "mcp/"],
                 capture_output=True, text=True, timeout=5)
             return bool(result.stdout.strip())
         except Exception:
@@ -2219,11 +2243,11 @@ class LocalModelsApp(rumps.App):
         # Previous launch died within the crash window after an update
         logging.warning("Crash detected within %ds of update — rolling back", int(elapsed))
         try:
-            head = subprocess.check_output(
+            current_hash = subprocess.check_output(
                 ["git", "-C", REPO_DIR, "rev-parse", "HEAD"],
                 text=True, timeout=5).strip()
-            # Roll back to the exact pre-update hash, not just HEAD~1
-            rollback_target = "HEAD~1"
+            # Roll back to the pre-update hash (which should be a tagged release)
+            rollback_target = None
             try:
                 with open(UPDATE_PRE_HASH_FILE) as f:
                     saved_hash = f.read().strip()
@@ -2231,19 +2255,23 @@ class LocalModelsApp(rumps.App):
                     rollback_target = saved_hash
             except FileNotFoundError:
                 pass
+            if not rollback_target:
+                logging.error("No pre-update hash found, cannot roll back")
+                return
             subprocess.run(
-                ["git", "-C", REPO_DIR, "reset", "--hard", rollback_target],
+                ["git", "-C", REPO_DIR, "checkout", rollback_target],
                 capture_output=True, timeout=10)
-            # Record skipped commit
+            # Record skipped release hash so we don't retry it
             os.makedirs(os.path.dirname(UPDATE_SKIPPED_FILE), exist_ok=True)
             with open(UPDATE_SKIPPED_FILE, "w") as f:
-                f.write(head)
+                f.write(current_hash)
             self.app_version = get_version()
-            logging.warning("Rolled back to v%s (skipped %s)", self.app_version, head[:8])
+            logging.warning("Rolled back to %s (skipped %s)",
+                            self.app_version, current_hash[:8])
             try:
                 rumps.notification(
                     "Super Puppy", "Rolled back bad update",
-                    f"Now on v{self.app_version}")
+                    f"Now on {self.app_version}")
             except RuntimeError:
                 pass
         except Exception as e:
@@ -2305,49 +2333,46 @@ class LocalModelsApp(rumps.App):
                 pass
 
     # -------------------------------------------------------------------
-    # Easter egg
+    # Easter egg (opt-in via ~/.config/local-models/easter_eggs.json)
     # -------------------------------------------------------------------
 
-    _W = [
-        "s61&3@p611:@-07&4@:06N",
-        "s61&3@p611:@4\":4@w00'N",
-        "s61&3@p611:@3&.*/%4@:06@50@4501@'03@\"@s/6#j6#@#3&\",N",
-        "s61&3@p611:@806-%@-*,&@50@506$)@:063@#655N",
-        "s61&3@p611:@5)*/,4@:063@4/065@*4@really@$65&N",
-        "s61&3@p611:@8\"/54@50@,/08@8)\"5@you@8\"/5@'03@%*//&3_",
-        "s61&3@p611:@8\"/54@50@45\"35@\"@)08-N",
-        "s61&3@p611:@*4@\"4,*/(@ '03@1&3.*44*0/@50@)6(_",
-        "s61&3@p611:@4\":4@0/-:@you@$\"/@13&7&/5@'03&45@'*3&4N@w*5)@:063@#655N",
-        "s61&3@p611:@5)*/,4@1\"/%\"4@\"3&@5)&@best@\"/*.\"-4N@a'5&3@1611*&4L@0'@$0634&N",
-        "s61&3@p611:@5)*/,4@)&@+645@4\"8@\"@.064&N",
-        "s61&3@p611:@806-%@/&7&3@&\"5@\"@16''*/N",
-        "s61&3@p611:@*4@\"-8\":4@8\"5$)*/(N",
-    ]
-
-    @staticmethod
-    def _d(s):
-        return "".join(
-            chr(32 + (ord(c) - 32 - 32) % 95) if 32 <= ord(c) <= 126 else c
-            for c in s)
+    def _load_easter_eggs(self):
+        path = os.path.expanduser("~/.config/local-models/easter_eggs.json")
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            if not data.get("enabled"):
+                return None
+            return data
+        except (FileNotFoundError, json.JSONDecodeError, KeyError):
+            return None
 
     def _schedule_woof(self):
         import random
-        user = os.environ.get("USER", "")
-        if user in ("jerry", "jerrytalton"):
+        eggs = self._load_easter_eggs()
+        if not eggs:
             self._next_woof = 0
             return
-        delay = 48 * 3600 + random.randint(0, 24 * 3600)
-        self._next_woof = time.time() + delay
+        interval = eggs.get("interval_hours", [48, 72])
+        lo = int(interval[0] * 3600)
+        hi = int(interval[1] * 3600) if len(interval) > 1 else lo
+        self._next_woof = time.time() + random.randint(lo, hi)
 
     def _woof(self):
         import random
+        eggs = self._load_easter_eggs()
+        if not eggs:
+            self._next_woof = 0
+            return
+        messages = eggs.get("messages", [])
+        if not messages:
+            self._next_woof = 0
+            return
         try:
-            rumps.notification(self._d("s61&3@p611:"), "",
-                               self._d(random.choice(self._W)))
+            rumps.notification("Super Puppy", "", random.choice(messages))
         except RuntimeError:
             pass
         self._schedule_woof()
-
     # -------------------------------------------------------------------
     # Quit — rumps' built-in Quit button calls this before exiting
     # -------------------------------------------------------------------

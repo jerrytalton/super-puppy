@@ -83,8 +83,9 @@ TOKEN_CACHE="$HOME/.config/local-models/mcp_auth_token"
 if [ -f "$TOKEN_CACHE" ] && [ -s "$TOKEN_CACHE" ]; then
     MCP_AUTH_TOKEN=$(cat "$TOKEN_CACHE")
 else
-    OP_REF="op://kasngocpevbljoznv5mz2equga/Super Puppy MCP/credential"
-    MCP_AUTH_TOKEN=$(op read "$OP_REF" 2>/dev/null || true)
+    if [ -n "${OP_REF:-}" ]; then
+        MCP_AUTH_TOKEN=$(op read "$OP_REF" 2>/dev/null || true)
+    fi
     if [ -n "$MCP_AUTH_TOKEN" ]; then
         echo "$MCP_AUTH_TOKEN" > "$TOKEN_CACHE"
         chmod 600 "$TOKEN_CACHE"

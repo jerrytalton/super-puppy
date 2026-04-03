@@ -1,17 +1,20 @@
 #!/bin/bash
 #
 # Super Puppy installer.
-# Symlinks configs, scripts, and LaunchAgents into place.
-# Auto-detects desktop vs laptop.
+# Symlinks scripts, copies configs, and walks through setup interactively.
 #
 # Run from the repo root: ./install.sh
+#   --rotate-token   Force re-reading the MCP auth token from 1Password
+#   --reconfigure    Re-run interactive setup even if network.conf exists
 
 set -euo pipefail
 
 FORCE_TOKEN_REFRESH=false
+RECONFIGURE=false
 for arg in "$@"; do
     case "$arg" in
         --rotate-token) FORCE_TOKEN_REFRESH=true ;;
+        --reconfigure)  RECONFIGURE=true ;;
     esac
 done
 
@@ -32,7 +35,19 @@ link() {
     echo "  $dst -> $src"
 }
 
+# Write a key=value pair into the user's network.conf
+set_conf() {
+    local key="$1" value="$2"
+    local conf="$HOME/.config/local-models/network.conf"
+    if grep -q "^${key}=" "$conf" 2>/dev/null; then
+        sed -i '' "s|^${key}=.*|${key}=${value}|" "$conf"
+    else
+        echo "${key}=${value}" >> "$conf"
+    fi
+}
+
 echo "Installing Super Puppy..."
+echo ""
 
 # Scripts
 link bin/claude-local              ~/bin/claude-local
@@ -42,13 +57,27 @@ link bin/local-models-mcp-detect   ~/bin/local-models-mcp-detect
 link bin/local-models-mcp-auth     ~/bin/local-models-mcp-auth
 link bin/tailscale-status          ~/bin/tailscale-status
 
-# Configs
+# Configs (symlinked — read-only reference)
 link config/mlx-server/config.yaml         ~/.config/mlx-server/config.yaml
 link config/mlx-server/config-laptop.yaml  ~/.config/mlx-server/config-laptop.yaml
-link config/local-models/network.conf      ~/.config/local-models/network.conf
 
-# MCP preferences: copy defaults if no file exists (not symlinked — profile viewer writes to it)
+# User-writable configs (copied, not symlinked — installer writes values into these)
+NETWORK_CONF="$HOME/.config/local-models/network.conf"
 MCP_PREFS="$HOME/.config/local-models/mcp_preferences.json"
+EASTER_EGGS="$HOME/.config/local-models/easter_eggs.json"
+
+mkdir -p "$(dirname "$NETWORK_CONF")"
+
+if [ ! -e "$NETWORK_CONF" ] || [ -L "$NETWORK_CONF" ]; then
+    # First install, or upgrading from old symlinked config
+    [ -L "$NETWORK_CONF" ] && rm "$NETWORK_CONF"
+    cp "$REPO_DIR/config/local-models/network.conf" "$NETWORK_CONF"
+    echo "  Installed default $NETWORK_CONF"
+    RECONFIGURE=true
+else
+    echo "  $NETWORK_CONF already exists, keeping"
+fi
+
 if [ ! -e "$MCP_PREFS" ]; then
     cp "$REPO_DIR/config/local-models/mcp_preferences.json" "$MCP_PREFS"
     echo "  Installed default $MCP_PREFS"
@@ -56,34 +85,249 @@ else
     echo "  $MCP_PREFS already exists, keeping"
 fi
 
+if [ ! -e "$EASTER_EGGS" ]; then
+    cp "$REPO_DIR/config/local-models/easter_eggs.json" "$EASTER_EGGS"
+    echo "  Installed default $EASTER_EGGS"
+fi
+
 # LaunchAgent: menu bar app (all machines)
 link config/launchd/com.local-models.menubar.plist \
     ~/Library/LaunchAgents/com.local-models.menubar.plist
 
-# Desktop only: Ollama listens on all interfaces
-RAM_GB=$(sysctl -n hw.memsize | awk '{printf "%d", $1 / 1073741824}')
-if [ "$RAM_GB" -ge 256 ]; then
+# ── Interactive setup ────────────────────────────────────────────────
+if $RECONFIGURE; then
+    echo ""
+    echo "Configuring Super Puppy..."
+    RAM_GB=$(sysctl -n hw.memsize | awk '{printf "%d", $1 / 1073741824}')
+    LOCAL_HOSTNAME=$(scutil --get LocalHostName 2>/dev/null || hostname -s)
+
+    # 1. Server or client?
+    if [ "$RAM_GB" -ge 128 ]; then
+        default_server="y"
+        echo "  This machine has ${RAM_GB}GB RAM — likely a good model server."
+    else
+        default_server="n"
+        echo "  This machine has ${RAM_GB}GB RAM."
+    fi
+    printf "  Is this the model server (serves models to other machines)? [%s] " \
+        "$([ "$default_server" = "y" ] && echo "Y/n" || echo "y/N")"
+    read -r is_server_input
+    is_server_input="${is_server_input:-$default_server}"
+    if [[ "$is_server_input" =~ ^[Yy] ]]; then
+        set_conf "IS_SERVER" "true"
+        set_conf "SERVER_RAM_GB" "$RAM_GB"
+        set_conf "MODEL_SERVER_HOST" "\"${LOCAL_HOSTNAME}.local\""
+        echo "  → Server mode: ${LOCAL_HOSTNAME}.local with ${RAM_GB}GB RAM"
+    else
+        set_conf "IS_SERVER" "false"
+
+        # 2. Where is the server?
+        echo ""
+        printf "  Hostname of your model server (e.g. my-mac.local): "
+        read -r server_host
+        if [ -n "$server_host" ]; then
+            set_conf "MODEL_SERVER_HOST" "\"$server_host\""
+            echo "  → Will connect to $server_host"
+
+            # Try to detect server RAM
+            SERVER_IP=$(python3 -c "import socket,sys; print(socket.gethostbyname(sys.argv[1]))" "$server_host" 2>/dev/null || true)
+            if [ -n "$SERVER_IP" ]; then
+                REMOTE_RAM=$(ssh -o ConnectTimeout=3 -o BatchMode=yes "$server_host" \
+                    "sysctl -n hw.memsize 2>/dev/null" 2>/dev/null | awk '{printf "%d", $1 / 1073741824}' || true)
+                if [ -n "$REMOTE_RAM" ] && [ "$REMOTE_RAM" -gt 0 ]; then
+                    set_conf "SERVER_RAM_GB" "$REMOTE_RAM"
+                    echo "  → Detected ${REMOTE_RAM}GB RAM on server"
+                else
+                    printf "  How much RAM does the server have (GB)? "
+                    read -r server_ram
+                    [ -n "$server_ram" ] && set_conf "SERVER_RAM_GB" "$server_ram"
+                fi
+            else
+                printf "  How much RAM does the server have (GB)? "
+                read -r server_ram
+                [ -n "$server_ram" ] && set_conf "SERVER_RAM_GB" "$server_ram"
+            fi
+        else
+            echo "  → No server configured (standalone mode)"
+        fi
+    fi
+
+    # 3. Auth token
+    echo ""
+    echo "  The MCP server requires a bearer token for authentication."
+    if command -v op > /dev/null 2>&1; then
+        printf "  Do you use 1Password to store the MCP token? [y/N] "
+        read -r use_op
+        if [[ "$use_op" =~ ^[Yy] ]]; then
+            printf "  1Password item reference (op://vault/item/field): "
+            read -r op_ref
+            if [ -n "$op_ref" ]; then
+                set_conf "OP_REF" "\"$op_ref\""
+                echo "  → Token will be read from 1Password"
+            fi
+        fi
+    fi
+    TOKEN_CACHE="$HOME/.config/local-models/mcp_auth_token"
+    if [ -z "${op_ref:-}" ] && [ ! -f "$TOKEN_CACHE" ]; then
+        printf "  Paste your MCP auth token (or press Enter to skip): "
+        read -r manual_token
+        if [ -n "$manual_token" ]; then
+            echo "$manual_token" > "$TOKEN_CACHE"
+            chmod 600 "$TOKEN_CACHE"
+            echo "  → Token saved to $TOKEN_CACHE"
+        else
+            echo "  → No token configured. MCP server will require one before starting."
+        fi
+    fi
+
+    # 4. Tailscale (optional — for remote access outside LAN)
+    echo ""
+    printf "  Set up Tailscale for remote access? (needed only if you use this outside your LAN) [y/N] "
+    read -r setup_tailscale
+    if [[ "$setup_tailscale" =~ ^[Yy] ]]; then
+        SETUP_TAILSCALE=true
+
+        # Step 1: Check installation
+        if ! command -v tailscale > /dev/null 2>&1; then
+            echo ""
+            echo "  Tailscale is not installed."
+            echo "  IMPORTANT: Use the standalone build, NOT the App Store or Homebrew cask version."
+            echo "  The sandboxed versions cannot run Tailscale SSH."
+            echo ""
+            echo "  Download from: https://tailscale.com/download/mac"
+            echo ""
+            printf "  Press Enter after installing Tailscale (or 's' to skip): "
+            read -r ts_wait
+            if [[ "$ts_wait" =~ ^[Ss] ]]; then
+                SETUP_TAILSCALE=false
+            fi
+        fi
+
+        if $SETUP_TAILSCALE && command -v tailscale > /dev/null 2>&1; then
+            # Check for sandboxed version
+            TS_PATH=$(which tailscale)
+            if [[ "$TS_PATH" == *"Tailscale.app"* ]] || [[ "$TS_PATH" == *"/Applications/"* ]]; then
+                echo "  WARNING: This looks like the sandboxed Tailscale (App Store or Homebrew cask)."
+                echo "  Tailscale SSH won't work. Consider reinstalling the standalone build."
+                echo "  Download from: https://tailscale.com/download/mac"
+                echo ""
+            fi
+
+            # Step 2: Check if logged in
+            TS_STATUS=$(tailscale status --json 2>/dev/null \
+                | python3 -c "import json,sys; print(json.load(sys.stdin).get('BackendState',''))" 2>/dev/null || true)
+
+            if [ "$TS_STATUS" != "Running" ]; then
+                echo ""
+                echo "  Tailscale is not running. Starting login..."
+                echo "  A browser window will open. Log in with your identity provider."
+                echo ""
+                tailscale up 2>&1 || true
+                sleep 2
+                TS_STATUS=$(tailscale status --json 2>/dev/null \
+                    | python3 -c "import json,sys; print(json.load(sys.stdin).get('BackendState',''))" 2>/dev/null || true)
+            fi
+
+            if [ "$TS_STATUS" = "Running" ]; then
+                echo "  ✓ Tailscale is running"
+
+                # Step 3: Set hostname
+                printf "  Tailscale hostname for this machine [super-puppy]: "
+                read -r ts_host
+                ts_host="${ts_host:-super-puppy}"
+                set_conf "TAILSCALE_HOSTNAME" "\"$ts_host\""
+
+                tailscale set --hostname "$ts_host" 2>/dev/null \
+                    && echo "  ✓ Hostname set to $ts_host" \
+                    || echo "  WARNING: could not set hostname (try: sudo tailscale set --hostname $ts_host)"
+
+                # Step 4: Enable Tailscale SSH
+                echo ""
+                echo "  Enabling Tailscale SSH (allows direct SSH between your machines)..."
+                TS_SSH_OUT=$(sudo tailscale set --ssh 2>&1) \
+                    && echo "  ✓ Tailscale SSH enabled" \
+                    || {
+                        if echo "$TS_SSH_OUT" | grep -qi "sandbox"; then
+                            echo "  ✗ Failed — this is the sandboxed Tailscale build."
+                            echo "    Uninstall and download the standalone build from:"
+                            echo "    https://tailscale.com/download/mac"
+                        else
+                            echo "  WARNING: could not enable Tailscale SSH (needs sudo)"
+                        fi
+                    }
+
+                # Step 5: Get tailnet name for cert generation
+                TS_FQDN=$(tailscale status --json 2>/dev/null \
+                    | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('Self',{}).get('DNSName','').rstrip('.'))" 2>/dev/null || true)
+
+                if [ -n "$TS_FQDN" ]; then
+                    echo ""
+                    echo "  ✓ Your Tailscale FQDN: $TS_FQDN"
+
+                    # Step 6: Generate HTTPS certs (for Playground remote access)
+                    CERT_DIR="$HOME/.config/local-models/certs"
+                    mkdir -p "$CERT_DIR"
+                    echo "  Generating HTTPS certs for remote Playground access..."
+                    if tailscale cert \
+                        --cert-file "$CERT_DIR/${TS_FQDN}.crt" \
+                        --key-file "$CERT_DIR/${TS_FQDN}.key" \
+                        "$TS_FQDN" 2>/dev/null; then
+                        echo "  ✓ Certs saved to $CERT_DIR/"
+                        echo "    (auto-renew every 90 days when Tailscale is running)"
+                    else
+                        echo "  WARNING: cert generation failed. Remote Playground will use HTTP."
+                        echo "  You can retry later: tailscale cert --cert-file $CERT_DIR/${TS_FQDN}.crt --key-file $CERT_DIR/${TS_FQDN}.key $TS_FQDN"
+                    fi
+                fi
+
+                # Step 7: Remind about ACLs
+                echo ""
+                echo "  Tailscale setup complete."
+                echo ""
+                echo "  To share access with others:"
+                echo "    1. Have them install Tailscale and join your tailnet"
+                echo "    2. Approve their devices in the Tailscale admin console:"
+                echo "       https://login.tailscale.com/admin/machines"
+                echo "    3. Optionally restrict access with ACLs — see docs/tailscale-setup.md"
+            else
+                echo "  ✗ Tailscale login did not complete. Skipping Tailscale setup."
+                echo "    Run 'tailscale up' manually, then re-run install.sh --reconfigure"
+            fi
+        fi
+    else
+        echo "  → Skipping Tailscale (local LAN access still works)"
+    fi
+
+    echo ""
+    echo "  Configuration saved to $NETWORK_CONF"
+    echo "  Re-run with --reconfigure to change these settings."
+fi
+
+# Reload config after setup
+# shellcheck source=/dev/null
+source "$HOME/.config/local-models/network.conf"
+
+# Server mode: install Ollama LAN LaunchAgent
+if [ "${IS_SERVER:-false}" = "true" ]; then
     link config/launchd/setenv.OLLAMA_HOST.plist \
         ~/Library/LaunchAgents/setenv.OLLAMA_HOST.plist
-    echo "  (desktop detected — installed Ollama LAN LaunchAgent)"
+    echo "  (server mode — installed Ollama LAN LaunchAgent)"
 fi
 
 # Register local-models MCP in Claude Code config
 CLAUDE_JSON="$HOME/.claude.json"
 if [ -f "$CLAUDE_JSON" ]; then
-    # Read auth token from cache, only hit 1Password if no cache exists
     TOKEN_CACHE="$HOME/.config/local-models/mcp_auth_token"
+    MCP_TOKEN=""
     if $FORCE_TOKEN_REFRESH; then
         rm -f "$TOKEN_CACHE"
         echo "  Cleared cached token, will read from 1Password"
     fi
     if [ -f "$TOKEN_CACHE" ] && [ -s "$TOKEN_CACHE" ]; then
         MCP_TOKEN=$(cat "$TOKEN_CACHE")
-    else
-        OP_REF="op://kasngocpevbljoznv5mz2equga/Super Puppy MCP/credential"
+    elif [ -n "${OP_REF:-}" ]; then
         MCP_TOKEN=$(op read "$OP_REF" 2>/dev/null || true)
         if [ -n "$MCP_TOKEN" ]; then
-            mkdir -p "$(dirname "$TOKEN_CACHE")"
             echo "$MCP_TOKEN" > "$TOKEN_CACHE"
             chmod 600 "$TOKEN_CACHE"
         fi
@@ -127,32 +371,6 @@ if ! command -v op > /dev/null; then
         brew install 1password-cli || true
     else
         echo "  WARNING: 1password-cli not found. Install manually: brew install 1password-cli"
-    fi
-fi
-
-if ! command -v tailscale > /dev/null; then
-    echo "  WARNING: tailscale not found."
-    echo "           Install the standalone (non-sandboxed) build from: https://tailscale.com/download/mac"
-    echo "           Do NOT use 'brew install --cask tailscale' — that installs the sandboxed version"
-    echo "           which cannot run Tailscale SSH."
-fi
-
-# Enable Tailscale SSH (allows ssh between tailnet machines without sshd)
-if command -v tailscale > /dev/null; then
-    TS_STATUS=$(tailscale status --json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('BackendState',''))" 2>/dev/null || true)
-    if [ "$TS_STATUS" = "Running" ]; then
-        TS_SSH_OUT=$(sudo tailscale set --ssh 2>&1) \
-            && echo "  Tailscale SSH enabled" \
-            || {
-                if echo "$TS_SSH_OUT" | grep -qi "sandbox"; then
-                    echo "  ERROR: Tailscale SSH requires the standalone (non-sandboxed) build."
-                    echo "         Uninstall the current version and download from: https://tailscale.com/download/mac"
-                else
-                    echo "  WARNING: could not enable Tailscale SSH (needs sudo)"
-                fi
-            }
-    else
-        echo "  Tailscale installed but not running — run 'tailscale up' first"
     fi
 fi
 
@@ -273,28 +491,48 @@ else
     echo "     Create it and add the '## Local Model Cluster' section from the README."
 fi
 
-# Pull models appropriate for this machine's memory tier.
-# Model lists are derived from the MLX server config and profiles.json.
-# Server (512GB+) manages its own models — only pull for laptop/desktop.
+# Pull models for the best-fitting profile.
+# Derives model lists from the MLX server config and profiles.json.
+RAM_GB=$(sysctl -n hw.memsize | awk '{printf "%d", $1 / 1073741824}')
 echo ""
-if [ "$RAM_GB" -lt 256 ]; then
-    echo "Pulling models for local use..."
 
-    # Derive model lists from configs instead of hardcoding them.
-    # 1. MLX server config YAML → HuggingFace model_path entries (LLMs, whisper)
-    # 2. profiles.json → task values with "/" (no ":") are HuggingFace (TTS etc.),
-    #    values with ":" are Ollama.
+# Pick the profile that best fits this machine's RAM
+if [ "$RAM_GB" -ge 256 ]; then
+    SUGGESTED_PROFILE="everyday"
+    SUGGESTED_LABEL="Everyday (best balance for 256GB+ machines)"
+    MLX_CONFIG="$REPO_DIR/config/mlx-server/config.yaml"
+elif [ "$RAM_GB" -ge 48 ]; then
+    SUGGESTED_PROFILE="desktop"
+    SUGGESTED_LABEL="Desktop (fits in 64GB)"
+    MLX_CONFIG="$REPO_DIR/config/mlx-server/config.yaml"
+else
+    SUGGESTED_PROFILE="laptop"
+    SUGGESTED_LABEL="Laptop (lightweight models)"
+    MLX_CONFIG="$REPO_DIR/config/mlx-server/config-laptop.yaml"
+fi
+
+echo "This machine has ${RAM_GB}GB RAM."
+echo "  Suggested profile: $SUGGESTED_LABEL"
+echo ""
+echo "  Available profiles: everyday, desktop, maximum, laptop, skip"
+printf "  Pull models for which profile? [%s] " "$SUGGESTED_PROFILE"
+read -r chosen_profile
+PROFILE_NAME="${chosen_profile:-$SUGGESTED_PROFILE}"
+
+if [ "$PROFILE_NAME" = "skip" ]; then
+    echo "  Skipping model pull. Pull models later with ollama pull or the menu bar app."
+else
+    echo ""
+    echo "Pulling models for '$PROFILE_NAME' profile..."
+
+    # Override MLX config for high-memory profiles
+    case "$PROFILE_NAME" in
+        everyday|maximum) MLX_CONFIG="$REPO_DIR/config/mlx-server/config.yaml" ;;
+        laptop)           MLX_CONFIG="$REPO_DIR/config/mlx-server/config-laptop.yaml" ;;
+        desktop)          MLX_CONFIG="$REPO_DIR/config/mlx-server/config.yaml" ;;
+    esac
+
     PROFILES_FILE="$HOME/.config/local-models/profiles.json"
-
-    if [ "$RAM_GB" -ge 48 ]; then
-        MLX_CONFIG="$REPO_DIR/config/mlx-server/config.yaml"
-        PROFILE_NAME="desktop"
-        echo "  Detected desktop ($RAM_GB GB) — pulling Desktop profile models"
-    else
-        MLX_CONFIG="$REPO_DIR/config/mlx-server/config-laptop.yaml"
-        PROFILE_NAME="laptop"
-        echo "  Detected laptop ($RAM_GB GB) — pulling Laptop profile models"
-    fi
 
     # MLX models from server config
     HF_MODELS=()
@@ -369,10 +607,6 @@ for model in profile.get('tasks', {}).values():
     else
         echo "  WARNING: hf install failed. HuggingFace models will download on first use."
     fi
-
-else
-    echo "Server detected ($RAM_GB GB) — skipping model pull."
-    echo "Manage models via the menu bar app or ollama pull."
 fi
 
 echo ""

@@ -3,7 +3,16 @@
 # Outputs MCP auth headers as JSON for Claude Code's headersHelper.
 # Reads the bearer token from 1Password.
 
-OP_REF="op://kasngocpevbljoznv5mz2equga/Super Puppy MCP/credential"
+CONF="$HOME/.config/local-models/network.conf"
+if [ -f "$CONF" ]; then
+    # shellcheck source=/dev/null
+    source "$CONF"
+fi
+
+if [ -z "${OP_REF:-}" ]; then
+    echo "local-models-mcp-auth: ERROR: OP_REF not set in $CONF" >&2
+    exit 1
+fi
 
 TOKEN=$(op read "$OP_REF" 2>/dev/null)
 

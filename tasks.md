@@ -21,7 +21,7 @@ Build a UI pane (separate window or panel from the menu bar app) that shows:
 - Columns per task type (code, general, reasoning, long context, vision, image, transcription, translation)
 - Available models listed in each column, ranked by quality
 - Memory cost per model shown visually
-- A "memory pool" bar showing total 512GB, with loaded models filling it
+- A "memory pool" bar showing total system RAM, with loaded models filling it
 - Preset profiles ("everyday" ~220GB, "deep reasoning" ~450GB, "heavy code" ~350GB)
 - Click a preset to switch which models are loaded
 - Drag/select models to build custom profiles

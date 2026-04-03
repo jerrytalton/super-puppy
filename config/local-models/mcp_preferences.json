@@ -53,7 +53,7 @@
     "all-minilm",
     "bge-m3"
   ],
-  "uncensored": [
+  "unfiltered": [
     "wizard-vicuna-uncensored:30b",
     "wizard-vicuna-uncensored"
   ],
@@ -67,6 +67,6 @@
     "image_gen": false,
     "transcription": false,
     "embedding": false,
-    "uncensored": false
+    "unfiltered": false
   }
 }

@@ -4,6 +4,16 @@ __pycache__/
 .DS_Store
 logs/
 
+# Credentials and secrets
+.env
+.env.*
+*.pem
+*.key
+*.crt
+
+# Machine-specific Claude Code settings
+.claude/settings.local.json
+
 # Compiled app bundle artifacts (built by install.sh)
 app/SuperPuppy.app/Contents/MacOS/super-puppy
 app/SuperPuppy.app/Contents/Resources/AppIcon.icns
