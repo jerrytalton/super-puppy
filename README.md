@@ -1,8 +1,8 @@
 # Super Puppy
 
-Claude Code is great at reasoning, but it can't see your screenshots, generate images, transcribe audio, or run a second model for a different perspective. And every token it spends on boilerplate is a token it isn't spending on the hard problem.
+Claude Code is great at reasoning, but it can't generate images, transcribe audio, speak, or run a second model for a different perspective. And every token it spends on boilerplate is a token it isn't spending on the hard problem.
 
-Super Puppy fixes that. It turns a Mac with a decent GPU into a local model server and exposes everything — Ollama, MLX, Flux, Whisper, TTS — as MCP tools that Claude can call mid-conversation. Claude keeps doing what it's best at (architecture, debugging, complex reasoning) and offloads everything else to your hardware: bulk code generation, image analysis, transcription, translation, embeddings, and more. Nothing leaves your network unless you want it to.
+Super Puppy fixes that. It turns a Mac with a decent GPU into a local model server and exposes everything — Ollama, MLX, Flux, Whisper, TTS — as MCP tools that Claude can call mid-conversation. Claude keeps doing what it's best at (architecture, debugging, complex reasoning) and offloads everything else to your hardware: bulk code generation, image generation and editing, transcription, translation, text-to-speech, embeddings, and more. Nothing leaves your network unless you want it to.
 
 But Super Puppy isn't just for Claude. Once it's running, you get standard APIs that any application can use — an OpenAI-compatible endpoint for LLMs and vision, Ollama's native API, image generation, speech synthesis, and transcription. Your scripts, web apps, notebooks, and other tools can all hit the same local models through the same infrastructure. Claude Code is the first client, not the only one.
 
