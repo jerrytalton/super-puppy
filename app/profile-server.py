@@ -1341,4 +1341,4 @@ if __name__ == "__main__":
     # access. HTTPS would break the local webview (cert is for the Tailscale
     # FQDN, not 127.0.0.1).
     print(f"http://{HOST}:{PORT}", flush=True)  # menu bar reads this
-    app.run(host=HOST, port=PORT, debug=False)
+    app.run(host=HOST, port=PORT, debug=False, threaded=True)
