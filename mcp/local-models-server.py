@@ -742,7 +742,7 @@ async def local_image(
 ) -> str:
     """Generate an image using a local model (Flux, Z-Image, etc).
 
-    Creates images locally on the M3 Ultra. The generated image is saved
+    Creates images locally using a diffusion model. The generated image is saved
     to disk and the path is returned.
 
     Args:

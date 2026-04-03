@@ -50,38 +50,33 @@ def mode_conf(tmp_path):
 # ---------------------------------------------------------------------------
 
 class TestGetVersion:
-    def test_simple_date(self):
-        """Single commit on a date produces YYYY.M.D with no zero-padding."""
+    def test_exact_tag(self):
+        """Returns the tag name when HEAD is exactly on a tag."""
         with patch("app.menubar.subprocess") as mock_sub:
-            mock_sub.check_output.side_effect = [
-                "2026-04-01 12:00:00 -0700\n",  # git log --format=%ai
-                "1\n",                            # rev-list --count
-            ]
-            assert menubar.get_version("HEAD") == "2026.4.1"
+            mock_sub.check_output.return_value = "v1.0.0\n"
+            mock_sub.DEVNULL = subprocess.DEVNULL
+            assert menubar.get_version("HEAD") == "v1.0.0"
 
-    def test_build_number_for_multiple_commits(self):
-        """Multiple commits on the same date appends a build number."""
+    def test_commits_past_tag(self):
+        """Returns tag+distance when HEAD is past a tag."""
         with patch("app.menubar.subprocess") as mock_sub:
-            mock_sub.check_output.side_effect = [
-                "2026-01-15 09:00:00 +0000\n",
-                "3\n",
-            ]
-            assert menubar.get_version("HEAD") == "2026.1.15.3"
+            mock_sub.check_output.return_value = "v1.0.0-3-gabcdef0\n"
+            mock_sub.DEVNULL = subprocess.DEVNULL
+            assert menubar.get_version("HEAD") == "v1.0.0+3"
 
     def test_returns_dev_on_failure(self):
         """Any subprocess error yields 'dev'."""
         with patch("app.menubar.subprocess") as mock_sub:
             mock_sub.check_output.side_effect = subprocess.CalledProcessError(1, "git")
+            mock_sub.DEVNULL = subprocess.DEVNULL
             assert menubar.get_version("HEAD") == "dev"
 
-    def test_no_zero_padding(self):
-        """Months and days must not be zero-padded."""
+    def test_no_tags(self):
+        """Returns short hash when no tags exist."""
         with patch("app.menubar.subprocess") as mock_sub:
-            mock_sub.check_output.side_effect = [
-                "2026-09-05 00:00:00 +0000\n",
-                "1\n",
-            ]
-            assert menubar.get_version("HEAD") == "2026.9.5"
+            mock_sub.check_output.return_value = "abcdef0\n"
+            mock_sub.DEVNULL = subprocess.DEVNULL
+            assert menubar.get_version("HEAD") == "abcdef0"
 
 
 # ---------------------------------------------------------------------------

@@ -397,7 +397,7 @@ DEFAULT_PROFILES = {
     "profiles": {
         "everyday": {
             "label": "Everyday",
-            "description": "Best balance for the 512GB Mac Studio",
+            "description": "Best balance for high-memory machines (256GB+)",
             "max_ram_gb": 512,
             "tasks": {
                 "code": "qwen3-coder-next:latest",
@@ -411,8 +411,9 @@ DEFAULT_PROFILES = {
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
                 "embedding": "all-minilm:latest",
-                "uncensored": "dolphin3:8b",
+                "unfiltered": "dolphin3:8b",
                 "computer_use": "avil/ui-tars:latest",
+
             },
         },
         "desktop": {
@@ -430,8 +431,9 @@ DEFAULT_PROFILES = {
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
                 "embedding": "all-minilm:latest",
-                "uncensored": "dolphin3:8b",
+                "unfiltered": "dolphin3:8b",
                 "computer_use": "maternion/fara:7b",
+
             },
         },
         "maximum": {
@@ -450,8 +452,9 @@ DEFAULT_PROFILES = {
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
                 "embedding": "mxbai-embed-large:latest",
-                "uncensored": "dolphin3:8b",
+                "unfiltered": "dolphin3:8b",
                 "computer_use": "avil/ui-tars:latest",
+
             },
         },
         "laptop": {
@@ -469,8 +472,9 @@ DEFAULT_PROFILES = {
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/Kokoro-82M-bf16",
                 "embedding": "all-minilm:latest",
-                "uncensored": "dolphin3:8b",
+                "unfiltered": "dolphin3:8b",
                 "computer_use": "maternion/fara:7b",
+
             },
         },
     },
@@ -886,8 +890,8 @@ def api_test_stream():
                 {"role": "system", "content": "Summarize this content concisely."},
                 {"role": "user", "content": text},
             ]
-        elif tool == "uncensored":
-            model, backend = _pick("uncensored")
+        elif tool == "unfiltered":
+            model, backend = _pick("unfiltered")
             messages = [{"role": "user", "content": body["prompt"]}]
         else:
             return jsonify({"error": "Not a streaming tool"}), 400

@@ -221,7 +221,7 @@ const TOOLS = {
   embed:       { label: 'Embed', task: 'embedding', fields: [
     {id:'text', label:'Text', type:'textarea', placeholder:'Text to embed...'},
   ]},
-  uncensored:  { label: 'Uncensored', task: 'uncensored', fields: [
+  unfiltered:  { label: 'Unfiltered', task: 'unfiltered', fields: [
     {id:'prompt', label:'Prompt', type:'textarea', placeholder:'Ask anything...'},
   ]},
 };
@@ -480,7 +480,7 @@ function getField(id) {
   return el ? el.value.trim() : '';
 }
 
-const STREAM_TOOLS = new Set(['code', 'general', 'review', 'translate', 'summarize', 'uncensored']);
+const STREAM_TOOLS = new Set(['code', 'general', 'review', 'translate', 'summarize', 'unfiltered']);
 const _timers = {};   // per-tool elapsed timers
 const _gpuPollers = {}; // per-tool GPU status pollers
 const _running = {};  // per-tool running flag

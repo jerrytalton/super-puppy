@@ -11,7 +11,7 @@ Local AI model infrastructure for Claude Code. MCP tools + menu bar app + Tailsc
 - `bin/` — Shell scripts symlinked to `~/bin/`
 - `config/` — Config files symlinked to `~/.config/` and `~/Library/LaunchAgents/`
 - `tests/` — pytest unit tests (test_core.py) and end-to-end tests (test_e2e.py, test_error_handling.py)
-- `install.sh` — Creates symlinks, builds the app bundle, checks dependencies, detects desktop vs laptop
+- `install.sh` — Interactive setup: symlinks scripts, copies configs, walks through configuration
 
 ## Key Design Decisions
 
@@ -52,12 +52,14 @@ All remote connectivity uses Tailscale. No services bind to `0.0.0.0`. The "Remo
 
 ### Auto-update
 
-The app checks `origin/main` every 2 minutes. If behind:
+The app fetches tags every 10 minutes. If a newer tagged release exists:
 1. Saves pre-update commit hash and service health snapshot
-2. Runs `git pull --rebase` (no `install.sh` — too slow for auto-update)
+2. Checks out the new tag (detached HEAD)
 3. Exits non-zero so launchd's KeepAlive restarts the app on new code
 
-Crash rollback: if the app dies within 30 seconds of an update, resets to the saved commit hash. Skipped commits aren't retried until a newer commit lands.
+Users only receive tagged releases, not every push to main. To release: `git tag v1.x.x && git push --tags`.
+
+Crash rollback: if the app dies within 30 seconds of an update, checks out the previous tag. Skipped releases aren't retried until a newer tag lands.
 
 ### MCP authentication
 
@@ -82,7 +84,7 @@ The MCP server requires a bearer token (`MCP_AUTH_TOKEN`). The token is stored i
 
 Profiles map these task types to models. Defined in `lib/models.py`:
 - **Standard tasks:** `code`, `general`, `reasoning`, `long_context`, `translation`
-- **Special tasks** (matched by model capability): `vision`, `image_gen`, `image_edit`, `transcription`, `tts`, `embedding`, `uncensored`
+- **Special tasks** (matched by model capability): `vision`, `image_gen`, `image_edit`, `transcription`, `tts`, `embedding`, `unfiltered`
 
 Task filters (`TASK_FILTERS`) and the `model_matches_filter()` function are shared across all three Python consumers via `lib/models.py`.
 
@@ -119,7 +121,7 @@ Run all tests: `uv run --with pytest pytest tests/ -v`
 - **Remote / Local toggle** — switch between desktop and local models. "Local (override)" shown when user forced local but desktop is reachable.
 - **Service status** — green/yellow/red dots for Ollama, MLX, MCP. Shows "restarting…" during auto-restart, "not shared" when MCP is unreachable in client mode.
 - **Copy Diagnostics** — dumps mode, versions, service status, recent log lines to clipboard for remote debugging.
-- **Version display** — CalVer (`YYYY.M.D`) from git commit date, shown in menu.
+- **Version display** — from git tags (e.g. `v1.0.0`), shown in menu.
 - **Notification debounce** — connectivity changes throttled to 60-second minimum interval.
 
 ## When Modifying This Repo

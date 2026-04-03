@@ -65,8 +65,8 @@ SPECIAL_TASKS: dict[str, dict[str, Any]] = {
         "label": "Embedding",
         "prefixes": ["mxbai-embed", "nomic-embed", "snowflake-arctic", "all-minilm"],
     },
-    "uncensored": {
-        "label": "Uncensored",
+    "unfiltered": {
+        "label": "Unfiltered",
         "prefixes": ["wizard-vicuna-uncensored", "dolphin", "nous-hermes"],
     },
     "computer_use": {

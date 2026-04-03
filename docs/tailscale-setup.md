@@ -54,7 +54,8 @@ When Remote Access is toggled off, `tailscale serve reset` removes all proxies.
 ## Accessing from iPhone/iPad
 
 1. Install Tailscale on the iOS device and join the tailnet
-2. On the desktop, click **Copy Playground URL** in the Super Puppy menu
+2. On the server machine, click **Copy Playground URL** in the Super Puppy menu
+2. On the server machine, click **Copy Playground URL** in the Super Puppy menu
 3. On the phone, open the URL in Safari
 4. Tap Share → Add to Home Screen (PWA — works offline for cached pages)
 
