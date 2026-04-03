@@ -625,6 +625,115 @@ async def local_vision(
     return f"{warning}[{model_name} via {backend}]\n\n{result}"
 
 
+_COMPUTER_USE_SYSTEM = """You are a GUI automation assistant. Given a screenshot and an intent, return a JSON array of actions to accomplish the intent.
+
+Each action is one of:
+- {"action": "click", "x": <int>, "y": <int>, "description": "<what you're clicking>"}
+- {"action": "type", "text": "<text to type>", "description": "<where you're typing>"}
+- {"action": "scroll", "direction": "up"|"down"|"left"|"right", "amount": <int>, "description": "<why>"}
+- {"action": "key", "key": "<key combo e.g. cmd+s>", "description": "<why>"}
+- {"action": "wait", "seconds": <float>, "description": "<why>"}
+
+Coordinates are absolute pixel positions from the top-left of the screen.
+Return ONLY the JSON array. No explanation, no markdown."""
+
+
+async def _take_screenshot() -> str:
+    """Take a full-screen screenshot silently. Returns the file path."""
+    path = f"/tmp/sp_screenshot_{int(time.time())}.png"
+    proc = await asyncio.create_subprocess_exec(
+        "screencapture", "-x", path,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE)
+    await proc.wait()
+    if not Path(path).exists():
+        raise RuntimeError("Screenshot failed — check Screen Recording permissions")
+    return path
+
+
+@mcp.tool()
+async def local_computer_use(
+    intent: str,
+    screenshot_path: str | None = None,
+    model: str | None = None,
+) -> str:
+    """Analyze a screenshot and return structured GUI actions for an intent.
+
+    Takes a screenshot (or uses a provided one), sends it to a GUI-aware
+    vision model (UI-TARS, Fara), and returns a JSON array of actions
+    (click, type, scroll, key, wait) to accomplish the intent.
+
+    The tool observes and plans — it does NOT execute the actions.
+    """
+    model_name, backend = pick_model("computer_use", model)
+    warning = _gpu_warning(backend, f"computer_use:{model_name}")
+
+    # Take or read screenshot
+    if screenshot_path:
+        if not Path(screenshot_path).exists():
+            return f"Error: Screenshot not found: {screenshot_path}"
+        img_bytes = Path(screenshot_path).read_bytes()
+    else:
+        try:
+            path = await _take_screenshot()
+            img_bytes = Path(path).read_bytes()
+            screenshot_path = path
+        except RuntimeError as e:
+            return f"Error: {e}"
+
+    img_b64 = base64.b64encode(img_bytes).decode()
+
+    with _gpu_request(backend, f"computer_use:{model_name}"):
+        try:
+            async with httpx.AsyncClient(timeout=300) as client:
+                if backend == "ollama":
+                    messages = [
+                        {"role": "system", "content": _COMPUTER_USE_SYSTEM},
+                        {"role": "user", "content": intent, "images": [img_b64]},
+                    ]
+                    body = {"model": model_name, "messages": messages,
+                            "stream": False, "think": False}
+                    resp = await client.post(
+                        f"{OLLAMA_URL}/api/chat", json=body)
+                    resp.raise_for_status()
+                    result = resp.json()["message"]["content"]
+                else:
+                    content = [
+                        {"type": "text", "text": intent},
+                        {"type": "image_url",
+                         "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
+                    ]
+                    body = {"model": model_name,
+                            "messages": [
+                                {"role": "system", "content": _COMPUTER_USE_SYSTEM},
+                                {"role": "user", "content": content},
+                            ],
+                            "max_tokens": 4096, "stream": False}
+                    resp = await client.post(
+                        f"{MLX_URL}/v1/chat/completions", json=body)
+                    resp.raise_for_status()
+                    result = resp.json()["choices"][0]["message"]["content"]
+        except httpx.HTTPStatusError as e:
+            return f"Error: Computer use ({model_name}): HTTP {e.response.status_code} — {e.response.text[:200]}"
+        except httpx.ConnectError:
+            url = OLLAMA_URL if backend == "ollama" else MLX_URL
+            return f"Error: Computer use ({model_name}): cannot connect to {url}"
+        except httpx.TimeoutException:
+            return f"Error: Computer use ({model_name}): timed out after 300s"
+
+    # Try to validate the response is JSON
+    try:
+        actions = json.loads(result)
+        result = json.dumps(actions, indent=2)
+    except json.JSONDecodeError:
+        pass  # model returned text instead of JSON — return as-is
+
+    meta = f"[{model_name} via {backend}]"
+    if screenshot_path:
+        meta += f" screenshot: {screenshot_path}"
+    return f"{warning}{meta}\n\n{result}"
+
+
 @mcp.tool()
 async def local_image(
     prompt: str,
