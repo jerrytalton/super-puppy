@@ -1033,6 +1033,7 @@ class LocalModelsApp(rumps.App):
         self.profile_port = None
         self.profile_window = None
         self.tools_window = None
+        self.activity_window = None
         self._win_delegate = None
         self._tools_delegate = None
 
@@ -1059,6 +1060,8 @@ class LocalModelsApp(rumps.App):
                                            callback=self.open_profiles)
         self.menu_tools = rumps.MenuItem("Playground",
                                         callback=self.open_tools)
+        self.menu_activity = rumps.MenuItem("Activity",
+                                           callback=self.open_activity)
         self.menu_remote_access = rumps.MenuItem("Remote Access",
                                                 callback=self._toggle_remote_access)
         self.menu_share_url = rumps.MenuItem("Copy Playground URL",
@@ -1085,6 +1088,7 @@ class LocalModelsApp(rumps.App):
             None,
             self.menu_profiles,
             self.menu_tools,
+            self.menu_activity,
             ] + ([self.menu_share_url] if self.desktop else []) + [
             None,
             self.menu_version,
@@ -2063,7 +2067,7 @@ class LocalModelsApp(rumps.App):
         delegate.callback = lambda: (
             setattr(self, 'profile_window', None),
             NSApp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
-            if not self.tools_window else None)
+            if not self.tools_window and not self.activity_window else None)
         self._win_delegate = delegate
         window.setDelegate_(delegate)
         self.profile_window = window
@@ -2082,10 +2086,29 @@ class LocalModelsApp(rumps.App):
         delegate.callback = lambda: (
             setattr(self, 'tools_window', None),
             NSApp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
-            if not self.profile_window else None)
+            if not self.profile_window and not self.activity_window else None)
         self._tools_delegate = delegate
         window.setDelegate_(delegate)
         self.tools_window = window
+
+    def open_activity(self, _):
+        """Open the activity dashboard."""
+        if self.activity_window is not None:
+            self.activity_window.makeKeyAndOrderFront_(None)
+            from AppKit import NSApp
+            NSApp.activateIgnoringOtherApps_(True)
+            return
+
+        from AppKit import NSApp, NSApplicationActivationPolicyAccessory
+        window = self._open_webview("Activity", "/activity", size=(720, 600))
+        delegate = _ProfileWindowDelegate.alloc().init()
+        delegate.callback = lambda: (
+            setattr(self, 'activity_window', None),
+            NSApp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+            if not self.profile_window and not self.tools_window else None)
+        self._activity_delegate = delegate
+        window.setDelegate_(delegate)
+        self.activity_window = window
 
     # -------------------------------------------------------------------
     # App update (git)
