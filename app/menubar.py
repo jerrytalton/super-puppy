@@ -2025,6 +2025,7 @@ class LocalModelsApp(rumps.App):
             url, 1, 30)  # 1 = NSURLRequestReloadIgnoringLocalCacheData
         webview.loadRequest_(req)
         window.contentView().addSubview_(webview)
+        window._webview = webview
 
         # Set dock icon with white background (menu bar icon stays template)
         icon_path = os.path.join(SCRIPT_DIR, "icon.png")
@@ -2057,8 +2058,8 @@ class LocalModelsApp(rumps.App):
         """Open the model profiles pane."""
         if self.profile_window is not None:
             self.profile_window.makeKeyAndOrderFront_(None)
-            wv = self.profile_window.contentView().subviews()[0]
-            wv.reload_(None)
+            if hasattr(self.profile_window, '_webview'):
+                self.profile_window._webview.reload_(None)
             from AppKit import NSApp
             NSApp.activateIgnoringOtherApps_(True)
             return
@@ -2078,8 +2079,8 @@ class LocalModelsApp(rumps.App):
         """Open the tool tester pane."""
         if self.tools_window is not None:
             self.tools_window.makeKeyAndOrderFront_(None)
-            wv = self.tools_window.contentView().subviews()[0]
-            wv.reload_(None)
+            if hasattr(self.tools_window, '_webview'):
+                self.tools_window._webview.reload_(None)
             from AppKit import NSApp
             NSApp.activateIgnoringOtherApps_(True)
             return
@@ -2099,8 +2100,8 @@ class LocalModelsApp(rumps.App):
         """Open the activity dashboard."""
         if self.activity_window is not None:
             self.activity_window.makeKeyAndOrderFront_(None)
-            wv = self.activity_window.contentView().subviews()[0]
-            wv.reload_(None)
+            if hasattr(self.activity_window, '_webview'):
+                self.activity_window._webview.reload_(None)
             from AppKit import NSApp
             NSApp.activateIgnoringOtherApps_(True)
             return
