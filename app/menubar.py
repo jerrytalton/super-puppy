@@ -103,6 +103,7 @@ OLLAMA_LOCAL = "http://localhost:11434"
 MLX_LOCAL = "http://localhost:8000"
 MODE_CONF = os.path.expanduser("~/.config/local-models/mode.conf")
 POLL_INTERVAL = 8           # seconds between status refreshes
+<<<<<<< Updated upstream
 UPDATE_CHECK_INTERVAL = 120  # seconds between git update checks (2 min)
 UPDATE_IDLE_SECONDS = 60     # don't auto-update if MCP active within 60s
 UPDATE_CRASH_WINDOW = 30     # seconds — if app dies within this after update, roll back
@@ -111,6 +112,11 @@ UPDATE_SKIPPED_FILE = os.path.expanduser("~/.config/local-models/update_skipped"
 UPDATE_PRE_HASH_FILE = os.path.expanduser("~/.config/local-models/update_pre_hash")
 PRE_UPDATE_HEALTH_FILE = os.path.expanduser("~/.config/local-models/pre_update_health.json")
 MCP_LOG_FILE = "/tmp/local-models-mcp.log"
+=======
+DESKTOP_FAIL_THRESHOLD = 3  # consecutive probe failures before dropping to Local
+SEARCH_FAIL_THRESHOLD = 5   # longer grace period on first startup (~40 s)
+UPDATE_CHECK_INTERVAL = 3600 # seconds between git update checks (1 hour)
+>>>>>>> Stashed changes
 
 MODEL_PREFS_FILE = os.path.expanduser("~/.config/local-models/model_preferences.json")
 
@@ -995,7 +1001,8 @@ class LocalModelsApp(rumps.App):
 
         # State (protected by _lock for cross-thread access)
         self._lock = threading.Lock()
-        self.mode = "unknown"          # server, client, offline, stopped
+        # server, client, offline, stopped, searching (initial on laptops)
+        self.mode = "searching" if not self.desktop else "unknown"
         self.ollama_ok = False
         self.mlx_ok = False
         self.ollama_loading = False    # process exists but not responding
@@ -1003,6 +1010,7 @@ class LocalModelsApp(rumps.App):
         self.ollama_models = []
         self.mlx_models = []
         self.servers_started = False
+        self._desktop_fail_count = 0   # consecutive failed desktop probes
         self.mcp_configured = is_mcp_configured()
         self.mcp_prefs = load_mcp_prefs()
         self.model_info_cache = ModelInfoCache()
@@ -1141,6 +1149,7 @@ class LocalModelsApp(rumps.App):
         if self.desktop:
             self._start_local_servers()
         else:
+<<<<<<< Updated upstream
             found = (not self.force_local
                      and self.ts_hostname
                      and self._resolve_desktop())
@@ -1167,6 +1176,17 @@ class LocalModelsApp(rumps.App):
         best = pick_profile_for_ram(self.ram_gb, profiles)
         if best:
             self._activate_profile(best)
+=======
+            # On laptops, probe the desktop. If reachable, enter client
+            # mode immediately.  If not, stay in "searching" and let the
+            # poll loop retry — _refresh_client_mode will fall back to
+            # local after DESKTOP_FAIL_THRESHOLD consecutive failures.
+            if self.desktop_host and (
+                probe_service(self.ollama_remote, self.probe_timeout)
+                or probe_service(self.mlx_remote, self.probe_timeout)
+            ):
+                self.mode = "client"
+>>>>>>> Stashed changes
 
     def _start_local_servers(self):
         """Launch Ollama and MLX-OpenAI-Server via start-local-models."""
@@ -1692,6 +1712,7 @@ class LocalModelsApp(rumps.App):
         was_remote = self.remote_reachable
         self.remote_reachable = desktop_up
 
+<<<<<<< Updated upstream
         # Use remote only if available AND user hasn't forced local
         if desktop_up and not self.force_local:
             self.mode = "client"
@@ -1724,6 +1745,43 @@ class LocalModelsApp(rumps.App):
                 "Starting local models for offline use")
             self._start_local_servers()
             time.sleep(3)
+=======
+        if self.desktop_host:
+            # Re-resolve mDNS if we don't have an IP yet (server may have
+            # been down when we booted)
+            if not self.desktop_ip:
+                self.desktop_ip = resolve_mdns(self.desktop_host)
+                if self.desktop_ip:
+                    self.ollama_remote = (
+                        f"http://{self.desktop_ip}:{self.ollama_port}")
+                    self.mlx_remote = (
+                        f"http://{self.desktop_ip}:{self.mlx_port}")
+            desktop_ollama = probe_service(self.ollama_remote, self.probe_timeout)
+            desktop_mlx = probe_service(self.mlx_remote, self.probe_timeout)
+
+        if desktop_ollama or desktop_mlx:
+            self._desktop_fail_count = 0
+            self.mode = "client"
+            self.ollama_ok = desktop_ollama
+            self.mlx_ok = desktop_mlx
+            self.ollama_models = (
+                get_ollama_models(self.ollama_remote) if desktop_ollama else [])
+            self.mlx_models = (
+                get_mlx_models(self.mlx_remote) if desktop_mlx else [])
+        else:
+            self._desktop_fail_count += 1
+
+            # Stay in current mode through transient failures (network
+            # hiccups, mDNS cache flushes, Ollama briefly busy).  Use a
+            # longer grace period on first startup (mDNS can be slow to
+            # warm after sleep/boot).
+            threshold = (SEARCH_FAIL_THRESHOLD if self.mode == "searching"
+                         else DESKTOP_FAIL_THRESHOLD)
+            if (self.mode in ("client", "searching")
+                    and self._desktop_fail_count < threshold):
+                return
+
+>>>>>>> Stashed changes
             self.ollama_ok = probe_service(OLLAMA_LOCAL, 2)
             self.mlx_ok = probe_service(MLX_LOCAL, 2)
             self.mode = "offline"
@@ -1803,6 +1861,7 @@ class LocalModelsApp(rumps.App):
         else:
             profile = "No Profile"
 
+<<<<<<< Updated upstream
         GRN, YEL, RED = "\U0001f7e2", "\U0001f7e1", "\U0001f534"
 
         if self.desktop:
@@ -1832,6 +1891,13 @@ class LocalModelsApp(rumps.App):
                 self.menu_remote_access.title = "\u274c Remote Access"
                 self.menu_share_url.set_callback(None)
 
+=======
+        mode_label = {"server": "Server", "client": "Remote",
+                      "offline": "Local", "stopped": "Stopped",
+                      "searching": "Searching…"
+                      }.get(self.mode, "…")
+        self._styled_menu(self.menu_status, "", mode_label)
+>>>>>>> Stashed changes
         self._styled_menu(self.menu_profiles, "", "Model Profiles", profile)
 
         # ── Per-service status lines ──
@@ -1839,11 +1905,25 @@ class LocalModelsApp(rumps.App):
         mlx_loading = getattr(self, 'mlx_loading', False)
         is_local = self.mode in ("server", "offline")
 
+<<<<<<< Updated upstream
         if self.mode == "client":
             # Remote: hide local service details — they're the desktop's concern
             self.menu_ollama.hide()
             self.menu_mlx.hide()
             self.menu_mcp_restart.set_callback(None)
+=======
+        GRN, YEL, RED = "\U0001f7e2", "\U0001f7e1", "\U0001f534"
+
+        searching = self.mode == "searching"
+
+        if self.ollama_ok:
+            self._styled_menu(self.menu_ollama, GRN, "Ollama",
+                              f"{ollama_n} models")
+        elif searching:
+            self._styled_menu(self.menu_ollama, YEL, "Ollama", "searching…")
+        elif ollama_loading:
+            self._styled_menu(self.menu_ollama, YEL, "Ollama", "starting…")
+>>>>>>> Stashed changes
         else:
             self.menu_ollama.show()
             self.menu_mlx.show()
@@ -1853,6 +1933,7 @@ class LocalModelsApp(rumps.App):
                 and time.time() - getattr(self, '_last_restart_attempt', 0) < 120)
             down_detail = "restarting…" if restart_pending else "down"
 
+<<<<<<< Updated upstream
             if self.ollama_ok:
                 self._styled_menu(self.menu_ollama, GRN, "Ollama",
                                   f"{ollama_n} models")
@@ -1861,6 +1942,21 @@ class LocalModelsApp(rumps.App):
             else:
                 self._styled_menu(self.menu_ollama, RED, "Ollama", down_detail)
             self.menu_ollama_restart.set_callback(self._restart_ollama)
+=======
+        if self.mlx_ok:
+            self._styled_menu(self.menu_mlx, GRN, "MLX",
+                              f"{mlx_n} models")
+        elif searching:
+            self._styled_menu(self.menu_mlx, YEL, "MLX", "searching…")
+        elif mlx_loading:
+            self._styled_menu(self.menu_mlx, YEL, "MLX", "starting…")
+        else:
+            self._styled_menu(self.menu_mlx, RED, "MLX", "down")
+        self.menu_mlx_restart.title = (
+            "Restart MLX" if is_local else "Remote — restart from server")
+        self.menu_mlx_restart.set_callback(
+            self._restart_mlx if is_local else None)
+>>>>>>> Stashed changes
 
             if self.mlx_ok:
                 self._styled_menu(self.menu_mlx, GRN, "MLX",
