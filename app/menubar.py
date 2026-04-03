@@ -2004,8 +2004,6 @@ class LocalModelsApp(rumps.App):
         window.setReleasedWhenClosed_(False)
 
         config = WKWebViewConfiguration.alloc().init()
-        from WebKit import WKWebsiteDataStore
-        config.setWebsiteDataStore_(WKWebsiteDataStore.nonPersistentDataStore())
         prefs = config.preferences()
         try:
             prefs.setValue_forKey_(True, "mediaDevicesEnabled")

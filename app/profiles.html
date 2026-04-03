@@ -200,7 +200,7 @@ async function init() {
     sub.innerHTML = '<span class="spinner"></span>Discovering models…';
     S.models = await _fetch('/api/models', 120000);
   } catch (err) {
-    sub.innerHTML = `Connection failed — <a href="#" onclick="init();return false" style="color:var(--accent)">retry</a>`;
+    sub.innerHTML = `Error: ${err.name}: ${err.message} — <a href="#" onclick="init();return false" style="color:var(--accent)">retry</a>`;
     return;
   }
   S.sel = profiles.active || Object.keys(profiles.profiles)[0] || null;
