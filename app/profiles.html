@@ -186,7 +186,8 @@ const findModel = name => S.models.find(m => m.name === name) || S.models.find(m
 function _fetch(url, timeoutMs = 15000) {
   const ctrl = new AbortController();
   setTimeout(() => ctrl.abort(), timeoutMs);
-  return fetch(url, {signal: ctrl.signal}).then(r => r.json());
+  const sep = url.includes('?') ? '&' : '?';
+  return fetch(url + sep + '_t=' + Date.now(), {signal: ctrl.signal, cache: 'no-store'}).then(r => r.json());
 }
 
 async function init() {
