@@ -87,8 +87,7 @@ else
         MCP_AUTH_TOKEN=$(op read "$OP_REF" 2>/dev/null || true)
     fi
     if [ -n "$MCP_AUTH_TOKEN" ]; then
-        echo "$MCP_AUTH_TOKEN" > "$TOKEN_CACHE"
-        chmod 600 "$TOKEN_CACHE"
+        (umask 077 && echo "$MCP_AUTH_TOKEN" > "$TOKEN_CACHE")
     else
         echo "local-models MCP: WARNING: no auth token available" >&2
     fi

@@ -18,28 +18,28 @@ Local AI model infrastructure for Claude Code. MCP tools + menu bar app + Tailsc
 - The MCP server discovers models live from Ollama and MLX at startup (parallel `/api/show` calls). Any new `ollama pull` is immediately available as a tool.
 - The menu bar app queries model capabilities live from Ollama `/api/show` and MLX `config.json` files in the HuggingFace cache. No hardcoded param tables.
 - MLX models marked `on_demand: true` download on first use and unload after idle timeout.
-- All remote access uses **Tailscale only** — no mDNS, no LAN binding. `tailscale serve` proxies all ports with TLS.
-- The `local-models-mcp-detect` wrapper probes the desktop via Tailscale before launching. Laptops use the desktop if reachable, fall back to localhost.
+- LAN access uses mDNS (Bonjour) for server discovery. Ollama binds `0.0.0.0` on the server for LAN access. Remote access outside the LAN uses Tailscale.
+- The `local-models-mcp-detect` wrapper probes the server via mDNS first, then Tailscale. Clients use the server if reachable, fall back to localhost.
 
 ## Runtime Architecture
 
 The menu bar app (`app/menubar.py`) launches via `app/SuperPuppy.app` and spawns:
 
 - **Profile server** (`app/profile-server.py`) — Flask app on a fixed port (8101 on desktop, random on laptop). Serves the Model Profiles UI (`app/profiles.html`) and the Playground (`app/tools.html`). Auto-starts on desktop when Remote Access is enabled (no idle timeout).
-- **Ollama** — `http://localhost:11434` (always localhost; Tailscale serve proxies for remote access)
+- **Ollama** — `http://localhost:11434` (server binds `0.0.0.0:11434` for LAN access; Tailscale serve also proxies for remote access)
 - **MLX-OpenAI-Server** — `http://localhost:8000`, config at `~/.config/mlx-server/config.yaml`
 
 ### Modes
 
 | Mode | When | What happens |
 |------|------|------|
-| **Server** | Desktop (RAM >= 256GB) | Runs Ollama, MLX, MCP locally. `tailscale serve` exposes ports when Remote Access is on. |
-| **Client** | Laptop, desktop reachable via Tailscale | Points Claude Code at desktop's MCP via `https://{fqdn}:8100/mcp`. No local servers. |
+| **Server** | `IS_SERVER=true` in network.conf | Runs Ollama (LAN-accessible), MLX, MCP locally. Tailscale exposes ports when Remote Access is on. |
+| **Client** | Server reachable via LAN or Tailscale | Routes to server's MCP. Falls back to local if unreachable. |
 | **Offline** | Laptop, desktop unreachable | Runs local Ollama/MLX as fallback. |
 
 ### Remote access (Tailscale)
 
-All remote connectivity uses Tailscale. No services bind to `0.0.0.0`. The "Remote Access" toggle in the desktop menu bar manages `tailscale serve`, which proxies:
+Off-LAN remote connectivity uses Tailscale. Ollama binds `0.0.0.0` on the server for LAN access. The "Remote Access" toggle in the menu bar manages `tailscale serve`, which proxies:
 
 | Port | Service | URL pattern |
 |------|---------|-------------|
@@ -52,7 +52,7 @@ All remote connectivity uses Tailscale. No services bind to `0.0.0.0`. The "Remo
 
 ### Auto-update
 
-The app fetches tags every 10 minutes. If a newer tagged release exists:
+The app fetches tags every 2 minutes. If a newer tagged release exists:
 1. Saves pre-update commit hash and service health snapshot
 2. Checks out the new tag (detached HEAD)
 3. Exits non-zero so launchd's KeepAlive restarts the app on new code
@@ -84,7 +84,7 @@ The MCP server requires a bearer token (`MCP_AUTH_TOKEN`). The token is stored i
 
 Profiles map these task types to models. Defined in `lib/models.py`:
 - **Standard tasks:** `code`, `general`, `reasoning`, `long_context`, `translation`
-- **Special tasks** (matched by model capability): `vision`, `image_gen`, `image_edit`, `transcription`, `tts`, `embedding`, `unfiltered`
+- **Special tasks** (matched by model capability): `vision`, `computer_use`, `image_gen`, `image_edit`, `transcription`, `tts`, `embedding`, `unfiltered`
 
 Task filters (`TASK_FILTERS`) and the `model_matches_filter()` function are shared across all three Python consumers via `lib/models.py`.
 

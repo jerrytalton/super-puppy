@@ -23,7 +23,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import requests
 import yaml
-from flask import Flask, Response, after_this_request, jsonify, request, send_file
+from flask import (Flask, Response, after_this_request, jsonify, request,
+                     send_file, send_from_directory)
 
 from lib.models import (
     ALWAYS_EXCLUDE,
@@ -968,6 +969,8 @@ def api_test():
         elif tool == "vision":
             import base64
             model, backend = _pick("vision")
+            if not _is_safe_test_path(body["image_path"]):
+                return jsonify({"error": "File path not allowed (must be in /tmp/)"}), 403
             image_data = Path(body["image_path"]).read_bytes()
             image_b64 = base64.b64encode(image_data).decode()
             prompt = body.get("prompt", "Describe this image.")
@@ -997,6 +1000,8 @@ def api_test():
         elif tool == "image_edit":
             model, backend = _pick("image_edit")
             image_path = body.get("image_path", "")
+            if not _is_safe_test_path(image_path):
+                return jsonify({"error": "File path not allowed (must be in /tmp/)"}), 403
             prompt = body.get("prompt", "")
             import time as _time
             out_path = f"/tmp/playground_edit_{int(_time.time())}.png"
@@ -1062,6 +1067,8 @@ def api_test():
             model, backend = _pick("transcription")
             if not model:
                 model = "whisper-v3"
+            if not _is_safe_test_path(body["audio_path"]):
+                return jsonify({"error": "File path not allowed (must be in /tmp/)"}), 403
             audio_path = Path(body["audio_path"])
             suffix = audio_path.suffix.lstrip(".")
 
@@ -1126,6 +1133,8 @@ def api_test():
 
         elif tool == "summarize":
             model, backend = _pick("long_context")
+            if not _is_safe_test_path(body["file_path"]):
+                return jsonify({"error": "File path not allowed (must be in /tmp/)"}), 403
             text = Path(body["file_path"]).read_text(errors="replace")[:50000]
             result = _chat(model, backend, [
                 {"role": "system", "content": "Summarize this content concisely."},
@@ -1149,8 +1158,8 @@ def api_test():
                     resp = requests.post(f"{OLLAMA_URL}/api/embed", json={
                         "model": model, "input": [body["text"]],
                     }, timeout=60)
-                resp.raise_for_status()
-                embeddings = resp.json().get("embeddings", [])
+                    resp.raise_for_status()
+                    embeddings = resp.json().get("embeddings", [])
             return jsonify({
                 "embeddings": embeddings,
                 "dimensions": len(embeddings[0]) if embeddings else 0,
@@ -1281,10 +1290,7 @@ def pwa_service_worker():
 @app.route("/pwa/<path:filename>")
 def pwa_assets(filename):
     pwa_dir = os.path.join(SCRIPT_DIR, "pwa")
-    fpath = os.path.join(pwa_dir, filename)
-    if not os.path.exists(fpath):
-        return "Not found", 404
-    return send_file(fpath)
+    return send_from_directory(pwa_dir, filename)
 
 
 # ── Main ─────────────────────────────────────────────────────────────

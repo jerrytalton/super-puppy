@@ -1,6 +1,6 @@
 # Tailscale Setup for Remote Access
 
-Super Puppy uses Tailscale for all remote access. No LAN binding, no firewall exceptions, no manual cert management.
+Super Puppy uses Tailscale for remote access outside the LAN. LAN access works via mDNS without Tailscale. Tailscale adds encrypted access from anywhere plus HTTPS certs.
 
 ## First-time setup
 
@@ -54,7 +54,6 @@ When Remote Access is toggled off, `tailscale serve reset` removes all proxies.
 ## Accessing from iPhone/iPad
 
 1. Install Tailscale on the iOS device and join the tailnet
-2. On the server machine, click **Copy Playground URL** in the Super Puppy menu
 2. On the server machine, click **Copy Playground URL** in the Super Puppy menu
 3. On the phone, open the URL in Safari
 4. Tap Share → Add to Home Screen (PWA — works offline for cached pages)

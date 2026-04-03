@@ -1,5 +1,7 @@
 # Super Puppy
 
+> **Requires Apple Silicon Mac** (M1 or later) with 64GB+ unified memory. macOS only.
+
 Claude Code is great at reasoning, but it can't generate images, transcribe audio, speak, or run a second model for a different perspective. And every token it spends on boilerplate is a token it isn't spending on the hard problem.
 
 Super Puppy fixes that. It turns a Mac with a decent GPU into a local model server and exposes everything — Ollama, MLX, Flux, Whisper, TTS — as MCP tools that Claude can call mid-conversation. Claude keeps doing what it's best at (architecture, debugging, complex reasoning) and offloads everything else to your hardware: bulk code generation, image generation and editing, transcription, translation, text-to-speech, embeddings, and more. Nothing leaves your network unless you want it to.
@@ -119,11 +121,14 @@ curl http://localhost:8000/v1/models
 
 ### From other machines on the LAN
 
-If this machine is the server (`IS_SERVER=true`), other machines on your network can reach the same APIs by replacing `localhost` with the server's hostname:
+If this machine is the server (`IS_SERVER=true`), Ollama is accessible to other machines on your LAN. MLX is localhost-only but reachable via Tailscale when remote access is enabled:
 
 ```bash
+# Ollama (LAN accessible)
 curl http://your-server.local:11434/api/generate -d '{"model":"qwen3.5","prompt":"hello"}'
-curl http://your-server.local:8000/v1/chat/completions -d '...'
+
+# MLX (localhost only — use Tailscale for remote access)
+curl http://your-server.local:8000/v1/chat/completions -d '...'  # only from the server itself
 ```
 
 ### Playground
@@ -147,10 +152,9 @@ Re-run `./install.sh --reconfigure` to change the role or server hostname.
 A puppy icon in the menu bar provides:
 
 - **Status** — Ollama/MLX running or down, MCP configured or not
-- **Model Profiles** — preset configurations (Everyday, Desktop, Heavyweight, Laptop) tuned for different RAM tiers
+- **Model Profiles** — preset configurations (Everyday, Desktop, Maximum, Laptop) tuned for different RAM tiers
 - **Task preferences** — pick which model backs each MCP tool
 - **Playground** — web UI to test any tool interactively
-- **Model Discovery** — checks HuggingFace hourly for trending models that fit your hardware
 - **Remote Access** — toggle Tailscale-based remote access to the Playground
 - **Auto-update** — pulls new tagged releases automatically
 
