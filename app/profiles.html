@@ -211,7 +211,10 @@ async function init() {
   }
   fillThinkDefaults();
   fillDefaults();
-  render();
+  try { render(); } catch (err) {
+    document.getElementById('subtitle').textContent = 'Render error: ' + err.message;
+    console.error('render() failed:', err);
+  }
 }
 
 async function refreshModels() {
