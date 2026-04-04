@@ -2,13 +2,13 @@
 
 > **Requires Apple Silicon Mac** (M1 or later) with 64GB+ unified memory. macOS only.
 
-Your Mac has a GPU that can run serious AI models. Super Puppy turns it into a managed local model server — LLMs, vision, image generation, transcription, translation, text-to-speech, embeddings — controlled from the menu bar, accessible over standard APIs, and available to any tool on your network.
+Your Mac has a GPU that can run serious AI models — probably while it's sitting idle. Super Puppy turns it into a managed local model server: LLMs, vision, image generation, transcription, translation, text-to-speech, embeddings. Controlled from the menu bar, accessible over standard APIs, available to any tool on your network.
 
-Pull a model, and it's immediately available: through an OpenAI-compatible API, Ollama's native API, a web-based Playground, or as MCP tools in Claude Code. No cloud, no per-token billing, no data leaving your network unless you want it to.
+It works as a **server** or a **client** — and every client is also a server. Install it on a beefy desktop and it serves models over Tailscale. Install it on a laptop and it auto-discovers the desktop, routing requests to the bigger machine's GPU. When the desktop is unreachable — you're on a plane, at a coffee shop, whatever — the same tools keep working against local models on the laptop itself. Your code, your scripts, your Claude Code workflows never have to care which machine is doing the work. They hit the same APIs either way; Super Puppy handles the routing.
 
-Super Puppy is **not** a training or fine-tuning platform, a cloud service, or a production deployment tool. It's for people who want to run inference on hardware they own — for development, experimentation, creative work, and daily use.
+That's the core idea: write against local AI APIs once, and get the best available hardware transparently. Your desktop's full memory when it's reachable, your laptop's own GPU when it's not. No cloud, no per-token billing, no data leaving your network.
 
-You need enough unified memory for the models you care about. A 64GB machine handles lightweight models; 128GB+ runs most things comfortably; 256GB+ lets you run 70B+ parameter models with full context.
+Super Puppy is **not** a training or fine-tuning platform, a cloud service, or a production deployment tool. It's for people who want to run inference on hardware they own — for development, experimentation, creative work, and daily use. You need enough unified memory for the models you care about: 64GB handles lightweight models, 128GB+ runs most things comfortably, 256GB+ handles 70B+ parameter models with full context.
 
 ## Quick Start
 
@@ -105,27 +105,17 @@ If you use Claude Code, Super Puppy exposes all of its capabilities as MCP tools
 
 You control which model backs each task from the menu bar app. Pull a new model and it's immediately available.
 
-### LAN Access
-
-If this machine is the server (`IS_SERVER=true`), Ollama is accessible to other machines on your LAN:
-
-```bash
-curl http://your-server.local:11434/api/generate -d '{"model":"qwen3.5","prompt":"hello"}'
-```
-
-MLX is localhost-only but reachable via Tailscale when remote access is enabled.
-
 ## Server and Client
 
-The installer asks whether this machine is the model server or a client. The server runs models and serves them to the LAN. Clients auto-detect the server and route requests to it:
+The installer asks whether this machine is the model server or a client. The server runs models locally and serves them over Tailscale. Clients auto-discover the server and route requests to it:
 
 | Environment | What happens |
 |-------------|-------------|
-| **Server** | All models run locally. Serves APIs to LAN. |
-| **Client at home** | Routes to server over LAN. Falls back to local models if server is down. |
-| **Client away** | Uses local models only. |
+| **Server** | All models run locally. Tailscale exposes APIs to clients. |
+| **Client (server reachable)** | Routes to server via Tailscale. |
+| **Client (server unreachable)** | Falls back to local models. |
 
-Re-run `./install.sh --reconfigure` to change the role or server hostname.
+All remote access uses Tailscale — services bind to localhost and are proxied with automatic TLS. Re-run `./install.sh --reconfigure` to change the role or server hostname.
 
 ## Menu Bar App
 
@@ -180,14 +170,6 @@ All user-writable config lives in `~/.config/local-models/`. The installer sets 
 
 Edit `config/mlx-server/config.yaml` (high-memory) or `config-laptop.yaml` (lightweight). Set `on_demand: true` for models that should only load when requested.
 
-### LAN Serving
-
-On the server, Ollama listens on `0.0.0.0` via a LaunchAgent so other machines can reach it. If the macOS firewall is enabled, allow Ollama through:
-
-```bash
-sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add /usr/local/bin/ollama
-sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp /usr/local/bin/ollama
-```
 
 ## CLAUDE.md Setup
 
@@ -206,7 +188,7 @@ super-puppy/
 │   ├── profiles.html            # Model profiles interface
 │   └── icon.png
 ├── bin/
-│   ├── local-models-mcp-detect  # MCP wrapper with LAN detection
+│   ├── local-models-mcp-detect  # MCP wrapper with Tailscale discovery
 │   ├── start-local-models       # Service manager
 │   └── local-models-menubar     # App launcher
 ├── config/
