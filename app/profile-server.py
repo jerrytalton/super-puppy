@@ -156,6 +156,13 @@ def _query_server_ram_gb():
 def get_system_info():
     try:
         if _is_remote_ollama():
+            try:
+                url = f"{_desktop_profile_server_url()}/api/system"
+                data = requests.get(url, timeout=5).json()
+                data["mode"] = "client"
+                return data
+            except Exception:
+                pass
             gb = _read_server_ram_gb() or _query_server_ram_gb()
             if gb:
                 return {"total_ram_bytes": gb << 30, "total_ram_gb": gb,
@@ -216,31 +223,29 @@ def get_all_models(force_refresh: bool = False):
     return models
 
 
-def _fetch_models_from_remote_profile_server():
-    """When direct Ollama access fails, proxy model discovery through the desktop's profile server."""
-    try:
-        from urllib.parse import urlparse
-        parsed = urlparse(OLLAMA_URL)
-        host = parsed.hostname
-        scheme = parsed.scheme
-        profile_url = f"{scheme}://{host}:{os.environ.get('PROFILE_SERVER_REMOTE_PORT', '8101')}/api/models"
-        resp = requests.get(profile_url, timeout=10)
-        remote_models = resp.json()
-        return {m["name"]: m for m in remote_models}
-    except Exception:
-        return None
+def _desktop_profile_server_url():
+    """Derive the desktop's profile server URL from OLLAMA_URL."""
+    from urllib.parse import urlparse
+    parsed = urlparse(OLLAMA_URL)
+    return f"{parsed.scheme}://{parsed.hostname}:8101"
 
 
 def _fetch_all_models():
     """Uncached model aggregation."""
     models = {}
 
-    # Ollama installed models
+    # Client mode: get models from the desktop's profile server, not raw backends
+    if _is_remote_ollama():
+        try:
+            url = f"{_desktop_profile_server_url()}/api/models"
+            resp = requests.get(url, timeout=10)
+            remote_models = resp.json()
+            return {m["name"]: m for m in remote_models}
+        except Exception as e:
+            logging.warning("Failed to fetch models from desktop profile server: %s", e)
+
+    # Server/offline mode: discover locally
     tags = ollama_get("/api/tags") or {}
-    if not tags.get("models") and _is_remote_ollama():
-        remote = _fetch_models_from_remote_profile_server()
-        if remote:
-            return remote
     for m in tags.get("models", []):
         name = m["name"]
         details = m.get("details", {})
