@@ -1755,9 +1755,16 @@ class LocalModelsApp(rumps.App):
             self.mlx_ok = False
             self.ollama_models = []
             self.mlx_models = []
-            self.mcp_models = get_mcp_models(
-                f"https://{self.desktop_fqdn}:8100" if self.desktop_fqdn
-                else f"http://{self.desktop_ip}:8100")
+            # Get full model list from desktop's profile server
+            desktop_host = self.desktop_fqdn or self.desktop_ip
+            desktop_ps = f"https://{desktop_host}:8101"
+            all_models = http_get_json(f"{desktop_ps}/api/models", timeout=5)
+            if all_models and isinstance(all_models, list):
+                self.mcp_models = [m["name"] for m in all_models]
+            else:
+                self.mcp_models = get_mcp_models(
+                    f"https://{desktop_host}:8100" if self.desktop_fqdn
+                    else f"http://{self.desktop_ip}:8100")
             if not was_remote:
                 self._notify_connection("Connected to desktop",
                                         f"via Tailscale ({self.desktop_ip})")

@@ -384,7 +384,7 @@ class TestAuthMiddleware:
 
     def test_session_added_on_auth(self):
         with server._session_lock:
-            server._authenticated_sessions.add("session-1")
+            server._authenticated_sessions["session-1"] = None
         with server._session_lock:
             assert "session-1" in server._authenticated_sessions
 
@@ -392,24 +392,24 @@ class TestAuthMiddleware:
         """Fill to _MAX_SESSIONS, then add one more — should not crash."""
         with server._session_lock:
             for i in range(server._MAX_SESSIONS):
-                server._authenticated_sessions.add(f"s-{i}")
+                server._authenticated_sessions[f"s-{i}"] = None
             assert len(server._authenticated_sessions) == server._MAX_SESSIONS
-            # Simulate what the middleware does
+            # Simulate what the middleware does (FIFO eviction)
             if len(server._authenticated_sessions) >= server._MAX_SESSIONS and server._authenticated_sessions:
-                server._authenticated_sessions.pop()
-            server._authenticated_sessions.add("new-session")
+                server._authenticated_sessions.popitem(last=False)
+            server._authenticated_sessions["new-session"] = None
         with server._session_lock:
             assert "new-session" in server._authenticated_sessions
             assert len(server._authenticated_sessions) == server._MAX_SESSIONS
 
     def test_eviction_on_empty_set_does_not_crash(self):
-        """Regression: pop() on empty set should not raise KeyError."""
+        """Regression: popitem() on empty dict should not raise KeyError."""
         with server._session_lock:
             assert len(server._authenticated_sessions) == 0
             # Simulate the guard we added
             if len(server._authenticated_sessions) >= server._MAX_SESSIONS and server._authenticated_sessions:
-                server._authenticated_sessions.pop()  # should not execute
-            server._authenticated_sessions.add("first")
+                server._authenticated_sessions.popitem(last=False)  # should not execute
+            server._authenticated_sessions["first"] = None
         with server._session_lock:
             assert "first" in server._authenticated_sessions
 
