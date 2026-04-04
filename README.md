@@ -81,6 +81,8 @@ curl http://localhost:8000/v1/models
 
 The menu bar app serves a web-based Playground where you can test any capability interactively — text generation, vision, image generation, transcription, TTS, translation. Open it from the Super Puppy menu or access it from other devices on your network. With Tailscale configured, the Playground is accessible from anywhere over HTTPS.
 
+The Playground is a PWA — on iOS or iPadOS, open it in Safari and tap "Add to Home Screen" to install it as a standalone app. On Android, Chrome will prompt you to install it. Your phone becomes a frontend to your desktop's GPU.
+
 ### MCP Tools for Claude Code
 
 If you use Claude Code, Super Puppy exposes all of its capabilities as MCP tools that Claude can call mid-conversation. Claude keeps doing what it's best at — architecture, debugging, complex reasoning — and offloads everything else to your hardware.
