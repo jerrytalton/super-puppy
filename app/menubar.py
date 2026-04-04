@@ -172,7 +172,7 @@ def is_desktop():
     return get_ram_gb() >= 256
 
 
-def http_get_json(url, timeout=3):
+def http_get_json(url: str, timeout: int = 3) -> dict | list | None:
     """Fetch JSON from a URL, return None on failure."""
     try:
         req = urllib.request.Request(url)
@@ -188,7 +188,7 @@ _ts_cache = {"ip": "", "ts": 0}
 _TS_CACHE_TTL = 30
 
 
-def resolve_desktop_tailscale(hostname):
+def resolve_desktop_tailscale(hostname: str) -> tuple[str, str]:
     """Resolve the desktop's Tailscale IP and FQDN from the peer list.
 
     Returns (ip, fqdn) tuple. Results are cached for 30 seconds.
@@ -224,7 +224,7 @@ def resolve_desktop_tailscale(hostname):
     return ip, fqdn
 
 
-def probe_service(base_url, timeout=2):
+def probe_service(base_url: str, timeout: int = 2) -> bool:
     """Check if a service is responding."""
     try:
         req = urllib.request.Request(f"{base_url}/api/version"
@@ -236,7 +236,7 @@ def probe_service(base_url, timeout=2):
         return False
 
 
-def probe_port(port, host="127.0.0.1", timeout=1):
+def probe_port(port: int, host: str = "127.0.0.1", timeout: int = 1) -> bool:
     """Check if something is listening on a TCP port."""
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -245,7 +245,7 @@ def probe_port(port, host="127.0.0.1", timeout=1):
         return False
 
 
-def process_is_running(name):
+def process_is_running(name: str) -> bool:
     """Check if a process with the given name fragment is running."""
     try:
         result = subprocess.run(["pgrep", "-f", name],
@@ -255,7 +255,7 @@ def process_is_running(name):
         return False
 
 
-def get_ollama_models(base_url, timeout=3):
+def get_ollama_models(base_url: str, timeout: int = 3) -> list[str]:
     """Get list of model names from Ollama."""
     data = http_get_json(f"{base_url}/api/tags", timeout=timeout)
     if data and "models" in data:
@@ -263,7 +263,7 @@ def get_ollama_models(base_url, timeout=3):
     return []
 
 
-def get_mlx_models(base_url, timeout=3):
+def get_mlx_models(base_url: str, timeout: int = 3) -> list[str]:
     """Get list of model names from MLX-OpenAI-Server."""
     data = http_get_json(f"{base_url}/v1/models", timeout=timeout)
     if data and "data" in data:
@@ -271,7 +271,7 @@ def get_mlx_models(base_url, timeout=3):
     return []
 
 
-def get_mcp_models(mcp_url="http://127.0.0.1:8100", timeout=3):
+def get_mcp_models(mcp_url: str = "http://127.0.0.1:8100", timeout: int = 3) -> list[str]:
     """Get HF-backed model names from the MCP server."""
     data = http_get_json(f"{mcp_url}/api/mcp-models", timeout=timeout)
     if data and "models" in data:
@@ -302,7 +302,7 @@ MCP_DEFAULT_PREFS = {
 }
 
 
-def _model_matches_filter(model_name, raw_info, task_filter):
+def _model_matches_filter(model_name: str, raw_info: dict, task_filter: dict) -> bool:
     return model_matches_filter(
         model_name,
         raw_info.get("active", 0),
@@ -550,7 +550,7 @@ def load_role_filters():
     return {}
 
 
-def model_fits_role(role, provider, total, active, ctx, has_vision, filters):
+def model_fits_role(role: str, provider: str, total: float, active: float, ctx: int, has_vision: bool, filters: dict) -> bool:
     """Check if a model is appropriate for a given role based on filter config."""
     if role not in filters:
         return True  # unknown role — show everything

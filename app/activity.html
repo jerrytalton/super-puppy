@@ -171,6 +171,26 @@ nav a.active { color: #fff; background: var(--accent); }
 <script>
 const POLL_MS = 2000;
 let lastData = null;
+let _authToken = '';
+
+(function() {
+  const params = new URLSearchParams(location.search);
+  if (params.has('token')) {
+    _authToken = params.get('token');
+    sessionStorage.setItem('sp_token', _authToken);
+    params.delete('token');
+    history.replaceState(null, '', location.pathname + (params.toString() ? '?' + params : ''));
+  } else {
+    _authToken = sessionStorage.getItem('sp_token') || '';
+  }
+})();
+
+function _authHeaders(opts = {}) {
+  if (!_authToken) return opts;
+  const h = new Headers(opts.headers || {});
+  h.set('Authorization', 'Bearer ' + _authToken);
+  return {...opts, headers: h};
+}
 
 function fmtDuration(ms) {
   if (ms < 1000) return ms + 'ms';
@@ -271,7 +291,7 @@ function render(data) {
 
 async function poll() {
   try {
-    const resp = await fetch('/api/activity');
+    const resp = await fetch('/api/activity', _authHeaders());
     if (resp.ok) render(await resp.json());
   } catch {}
 }

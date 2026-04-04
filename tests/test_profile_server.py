@@ -418,3 +418,72 @@ class TestLoadDefaultPrefs:
         with patch.object(ps, "MCP_PREFS_FILE", f):
             prefs = ps.load_default_prefs()
         assert prefs["code"] == ["a", "b"]
+
+
+class TestProfileServerAuth:
+    """Bearer token auth for remote access."""
+
+    def test_localhost_skips_auth(self, client):
+        """Requests from 127.0.0.1 should work without a token."""
+        with patch.object(ps, "_PROFILE_AUTH_TOKEN", "secret-token"):
+            resp = client.get("/api/system")
+        assert resp.status_code == 200
+
+    def test_remote_without_token_rejected(self, client):
+        """Remote requests without a token should get 403."""
+        with patch.object(ps, "_PROFILE_AUTH_TOKEN", "secret-token"):
+            # Flask test client defaults to 127.0.0.1, so we need to
+            # simulate a remote request by patching request.remote_addr
+            with client.application.test_request_context(
+                    "/api/system", environ_base={"REMOTE_ADDR": "100.64.0.5"}):
+                from flask import request as flask_req
+                resp = client.application.full_dispatch_request()
+                # The before_request hook checks remote_addr
+        # Direct test: simulate via the app's test machinery
+        with patch.object(ps, "_PROFILE_AUTH_TOKEN", "secret-token"):
+            resp = client.get("/api/system", headers={},
+                              environ_base={"REMOTE_ADDR": "100.64.0.5"})
+        assert resp.status_code == 403
+
+    def test_remote_with_correct_token_allowed(self, client):
+        """Remote requests with correct bearer token should work."""
+        with patch.object(ps, "_PROFILE_AUTH_TOKEN", "secret-token"):
+            resp = client.get("/api/system",
+                              headers={"Authorization": "Bearer secret-token"},
+                              environ_base={"REMOTE_ADDR": "100.64.0.5"})
+        assert resp.status_code == 200
+
+    def test_remote_with_wrong_token_rejected(self, client):
+        """Remote requests with wrong token should get 403."""
+        with patch.object(ps, "_PROFILE_AUTH_TOKEN", "secret-token"):
+            resp = client.get("/api/system",
+                              headers={"Authorization": "Bearer wrong"},
+                              environ_base={"REMOTE_ADDR": "100.64.0.5"})
+        assert resp.status_code == 403
+
+    def test_static_pages_skip_auth(self, client):
+        """HTML pages should load without auth even from remote."""
+        with patch.object(ps, "_PROFILE_AUTH_TOKEN", "secret-token"):
+            for path in ("/", "/profiles", "/tools"):
+                resp = client.get(path, environ_base={"REMOTE_ADDR": "100.64.0.5"})
+                assert resp.status_code == 200, f"{path} should skip auth"
+
+    def test_no_token_configured_allows_all(self, client):
+        """When no token is set, all requests are allowed (dev mode)."""
+        with patch.object(ps, "_PROFILE_AUTH_TOKEN", ""):
+            resp = client.get("/api/system",
+                              environ_base={"REMOTE_ADDR": "100.64.0.5"})
+        assert resp.status_code == 200
+
+    def test_auth_token_endpoint_localhost_only(self, client):
+        """Token bootstrap endpoint only works from localhost."""
+        with patch.object(ps, "_PROFILE_AUTH_TOKEN", "secret-token"):
+            # Localhost: should return token
+            resp = client.get("/api/auth-token")
+            assert resp.status_code == 200
+            assert resp.get_json()["token"] == "secret-token"
+
+            # Remote: should be rejected
+            resp = client.get("/api/auth-token",
+                              environ_base={"REMOTE_ADDR": "100.64.0.5"})
+            assert resp.status_code == 403
