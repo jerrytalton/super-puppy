@@ -3,6 +3,7 @@
 Tests use Flask's test client — no live Ollama/MLX needed.
 """
 
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -315,6 +316,60 @@ class TestRoutes:
         resp = client.post("/api/test", json={"tool": "nonexistent"})
         assert resp.status_code == 400
         assert "Unknown tool" in resp.get_json()["error"]
+
+    def test_api_test_code_dispatches_to_chat(self, client):
+        prefs = {"code": ["qwen3:8b"], "general": ["qwen3:8b"]}
+        with patch.object(ps, "get_all_models", return_value=FAKE_MODELS), \
+             patch.object(ps, "load_default_prefs", return_value=prefs), \
+             patch.object(ps, "_chat", return_value="Hello!") as mock_chat:
+            resp = client.post("/api/test", json={"tool": "code", "prompt": "say hi"})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["result"] == "Hello!"
+        mock_chat.assert_called_once()
+        args = mock_chat.call_args
+        assert args[0][0] == "qwen3:8b"
+        assert args[0][1] == "ollama"
+
+    def test_api_test_review_dispatches_to_chat(self, client):
+        prefs = {"reasoning": ["llama3:70b"]}
+        with patch.object(ps, "get_all_models", return_value=FAKE_MODELS), \
+             patch.object(ps, "load_default_prefs", return_value=prefs), \
+             patch.object(ps, "_chat", return_value="Looks good") as mock_chat:
+            resp = client.post("/api/test", json={"tool": "review", "code": "x = 1"})
+        assert resp.status_code == 200
+        assert resp.get_json()["result"] == "Looks good"
+        mock_chat.assert_called_once()
+
+    def test_api_test_override_warns_on_missing_model(self, client):
+        prefs = {"code": ["qwen3:8b"]}
+        with patch.object(ps, "get_all_models", return_value=FAKE_MODELS), \
+             patch.object(ps, "load_default_prefs", return_value=prefs), \
+             patch.object(ps, "_chat", return_value="result"):
+            resp = client.post("/api/test", json={
+                "tool": "code", "prompt": "hi", "model": "nonexistent"})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "warning" in data
+        assert "not found" in data["warning"]
+
+    def test_api_test_override_uses_specified_model(self, client):
+        prefs = {"code": ["qwen3:8b"]}
+        with patch.object(ps, "get_all_models", return_value=FAKE_MODELS), \
+             patch.object(ps, "load_default_prefs", return_value=prefs), \
+             patch.object(ps, "_chat", return_value="result") as mock_chat:
+            resp = client.post("/api/test", json={
+                "tool": "code", "prompt": "hi", "model": "llama3:70b"})
+        assert resp.status_code == 200
+        args = mock_chat.call_args
+        assert args[0][0] == "llama3:70b"
+
+    def test_api_test_no_model_available_returns_error(self, client):
+        with patch.object(ps, "get_all_models", return_value={}), \
+             patch.object(ps, "load_default_prefs", return_value={"code": []}):
+            resp = client.post("/api/test", json={"tool": "code", "prompt": "hi"})
+        assert resp.status_code == 500
+        assert "error" in resp.get_json()
 
     def test_tools_page(self, client):
         resp = client.get("/tools")
