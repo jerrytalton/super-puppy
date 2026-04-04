@@ -541,6 +541,15 @@ for model in profile.get('tasks', {}).values():
     fi
 fi
 
+# Git tag signature verification (needed for auto-update)
+echo ""
+echo "  Configuring git tag verification..."
+ALLOWED_SIGNERS="$HOME/.config/git/allowed_signers"
+mkdir -p "$(dirname "$ALLOWED_SIGNERS")"
+cp "$REPO_DIR/config/git/allowed_signers" "$ALLOWED_SIGNERS"
+git -C "$REPO_DIR" config gpg.ssh.allowedSignersFile "$ALLOWED_SIGNERS"
+echo "  ✓ Tag signature verification configured"
+
 echo ""
 echo "Done! Next steps:"
 echo "  1. start-local-models           # start servers"
