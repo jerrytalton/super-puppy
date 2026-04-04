@@ -488,13 +488,13 @@ function renderModelPicker(task, defaultModel, profileModel) {
     if (m.name === profileModel) badges += '<span class="badge profile-badge">Profile</span>';
     if (m.name === defaultModel && m.name !== profileModel) badges += '<span class="badge default">Default</span>';
 
-    card.innerHTML =
-      `<div class="dot"></div>` +
-      `<div class="card-body">` +
-        `<div class="card-name">${m.name}</div>` +
-        `<div class="card-meta">${meta.join(' \u00b7 ')}</div>` +
-      `</div>` +
-      badges;
+    const dot = document.createElement('div'); dot.className = 'dot';
+    const cardBody = document.createElement('div'); cardBody.className = 'card-body';
+    const nameDiv = document.createElement('div'); nameDiv.className = 'card-name'; nameDiv.textContent = m.name;
+    const metaDiv = document.createElement('div'); metaDiv.className = 'card-meta'; metaDiv.textContent = meta.join(' \u00b7 ');
+    cardBody.appendChild(nameDiv); cardBody.appendChild(metaDiv);
+    card.appendChild(dot); card.appendChild(cardBody);
+    if (badges) { const span = document.createElement('span'); span.innerHTML = badges; while (span.firstChild) card.appendChild(span.firstChild); }
     body.appendChild(card);
   }
 }
@@ -729,11 +729,16 @@ async function run() {
         output.textContent = data.error;
         output.className = 'output-box error';
       } else if (data.audio_path) {
-        output.innerHTML = data.result +
-          `<audio controls src="/api/test/audio?path=${encodeURIComponent(data.audio_path)}" style="display:block;margin-top:8px;width:100%"></audio>`;
+        output.textContent = data.result;
+        const audio = document.createElement('audio');
+        audio.controls = true; audio.style.cssText = 'display:block;margin-top:8px;width:100%';
+        audio.src = '/api/test/audio?path=' + encodeURIComponent(data.audio_path);
+        output.appendChild(audio);
       } else if (data.image_path) {
-        output.innerHTML = data.result +
-          `<img src="/api/test/image?path=${encodeURIComponent(data.image_path)}">`;
+        output.textContent = data.result;
+        const img = document.createElement('img');
+        img.src = '/api/test/image?path=' + encodeURIComponent(data.image_path);
+        output.appendChild(img);
       } else if (data.embeddings) {
         const dims = data.dimensions || '?';
         const count = data.count || '?';

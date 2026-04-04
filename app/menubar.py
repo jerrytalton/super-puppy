@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["rumps", "pyyaml", "pyobjc-framework-WebKit"]
+# dependencies = ["rumps==0.4.0", "pyyaml==6.0.3", "pyobjc-framework-WebKit==12.1"]
 # ///
 """
 Local Models — macOS menu bar app.
@@ -82,6 +82,18 @@ class _WebViewUIDelegate(NSObject):
     ):
         # WKPermissionDecision.grant = 1
         decisionHandler(1)
+
+    @objc.typedSelector(b"v@:@@@@?")
+    def webView_runOpenPanelWithParameters_initiatedByFrame_completionHandler_(
+        self, webView, parameters, frame, completionHandler
+    ):
+        from AppKit import NSOpenPanel
+        panel = NSOpenPanel.openPanel()
+        panel.setAllowsMultipleSelection_(parameters.allowsMultipleSelection())
+        if panel.runModal() == 1:  # NSModalResponseOK
+            completionHandler(panel.URLs())
+        else:
+            completionHandler(None)
 
 
 
@@ -1454,6 +1466,10 @@ class LocalModelsApp(rumps.App):
             except subprocess.TimeoutExpired:
                 proc.kill()
         self._mcp_proc = None
+        log_fh = getattr(self, '_mcp_log', None)
+        if log_fh and not log_fh.closed:
+            log_fh.close()
+        self._mcp_log = None
 
     def _restart_mcp(self, _):
         """Restart the MCP server (background thread)."""
