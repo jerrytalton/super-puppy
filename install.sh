@@ -20,21 +20,6 @@ done
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-link() {
-    local src="$REPO_DIR/$1"
-    local dst="$2"
-
-    mkdir -p "$(dirname "$dst")"
-
-    if [ -e "$dst" ] && [ ! -L "$dst" ]; then
-        echo "  Backing up $dst -> ${dst}.bak"
-        mv "$dst" "${dst}.bak"
-    fi
-
-    ln -sfn "$src" "$dst"
-    echo "  $dst -> $src"
-}
-
 # Write a key=value pair into the user's network.conf
 set_conf() {
     local key="$1" value="$2"
@@ -49,16 +34,8 @@ set_conf() {
 echo "Installing Super Puppy..."
 echo ""
 
-# Scripts
-link bin/start-local-models        ~/bin/start-local-models
-link bin/local-models-menubar      ~/bin/local-models-menubar
-link bin/local-models-mcp-detect   ~/bin/local-models-mcp-detect
-link bin/local-models-mcp-auth     ~/bin/local-models-mcp-auth
-link bin/tailscale-status          ~/bin/tailscale-status
-
-# Configs (symlinked — read-only reference)
-link config/mlx-server/config.yaml         ~/.config/mlx-server/config.yaml
-link config/mlx-server/config-laptop.yaml  ~/.config/mlx-server/config-laptop.yaml
+# Symlinks and app bundle build (shared with auto-updater)
+"$REPO_DIR/bin/post-update.sh"
 
 # User-writable configs (copied, not symlinked — installer writes values into these)
 NETWORK_CONF="$HOME/.config/local-models/network.conf"
@@ -89,16 +66,11 @@ if [ ! -e "$EASTER_EGGS" ]; then
     echo "  Installed default $EASTER_EGGS"
 fi
 
-# LaunchAgent: menu bar app (all machines)
-link config/launchd/com.local-models.menubar.plist \
-    ~/Library/LaunchAgents/com.local-models.menubar.plist
-
 # ── Interactive setup ────────────────────────────────────────────────
 if $RECONFIGURE; then
     echo ""
     echo "Configuring Super Puppy..."
     RAM_GB=$(sysctl -n hw.memsize | awk '{printf "%d", $1 / 1073741824}')
-    LOCAL_HOSTNAME=$(scutil --get LocalHostName 2>/dev/null || hostname -s)
 
     # 1. Server or client?
     if [ "$RAM_GB" -ge 128 ]; then
@@ -115,43 +87,180 @@ if $RECONFIGURE; then
     if [[ "$is_server_input" =~ ^[Yy] ]]; then
         set_conf "IS_SERVER" "true"
         set_conf "SERVER_RAM_GB" "$RAM_GB"
-        set_conf "MODEL_SERVER_HOST" "\"${LOCAL_HOSTNAME}.local\""
-        echo "  → Server mode: ${LOCAL_HOSTNAME}.local with ${RAM_GB}GB RAM"
+        IS_SERVER_MODE=true
+        echo "  → Server mode (${RAM_GB}GB RAM)"
     else
         set_conf "IS_SERVER" "false"
+        IS_SERVER_MODE=false
+        echo "  → Client mode"
+    fi
 
-        # 2. Where is the server?
+    # 2. Tailscale (required for remote access between machines)
+    echo ""
+    SETUP_TAILSCALE=false
+    TS_RUNNING=false
+
+    if $IS_SERVER_MODE; then
+        printf "  Set up Tailscale? (required for remote clients to connect) [Y/n] "
+        ts_default="y"
+    else
+        printf "  Set up Tailscale? (required to reach the model server) [Y/n] "
+        ts_default="y"
+    fi
+    read -r setup_tailscale_input
+    setup_tailscale_input="${setup_tailscale_input:-$ts_default}"
+    if [[ "$setup_tailscale_input" =~ ^[Yy] ]]; then
+        SETUP_TAILSCALE=true
+
+        if ! command -v tailscale > /dev/null 2>&1; then
+            echo ""
+            echo "  Tailscale is not installed."
+            echo "  IMPORTANT: Use the standalone build, NOT the App Store or Homebrew cask version."
+            echo "  The sandboxed versions cannot run Tailscale SSH."
+            echo ""
+            echo "  Download from: https://tailscale.com/download/mac"
+            echo ""
+            printf "  Press Enter after installing Tailscale (or 's' to skip): "
+            read -r ts_wait
+            if [[ "$ts_wait" =~ ^[Ss] ]]; then
+                SETUP_TAILSCALE=false
+            fi
+        fi
+
+        if $SETUP_TAILSCALE && command -v tailscale > /dev/null 2>&1; then
+            # Check for sandboxed version
+            TS_PATH=$(which tailscale)
+            if [[ "$TS_PATH" == *"Tailscale.app"* ]] || [[ "$TS_PATH" == *"/Applications/"* ]]; then
+                echo "  WARNING: This looks like the sandboxed Tailscale (App Store or Homebrew cask)."
+                echo "  Tailscale SSH won't work. Consider reinstalling the standalone build."
+                echo "  Download from: https://tailscale.com/download/mac"
+                echo ""
+            fi
+
+            TS_STATUS=$(tailscale status --json 2>/dev/null \
+                | python3 -c "import json,sys; print(json.load(sys.stdin).get('BackendState',''))" 2>/dev/null || true)
+
+            if [ "$TS_STATUS" != "Running" ]; then
+                echo ""
+                echo "  Tailscale is not running. Starting login..."
+                echo "  A browser window will open. Log in with your identity provider."
+                echo ""
+                tailscale up 2>&1 || true
+                sleep 2
+                TS_STATUS=$(tailscale status --json 2>/dev/null \
+                    | python3 -c "import json,sys; print(json.load(sys.stdin).get('BackendState',''))" 2>/dev/null || true)
+            fi
+
+            if [ "$TS_STATUS" = "Running" ]; then
+                TS_RUNNING=true
+                echo "  ✓ Tailscale is running"
+
+                if $IS_SERVER_MODE; then
+                    # Server: set this machine's Tailscale hostname
+                    printf "  Tailscale hostname for this machine [super-puppy]: "
+                    read -r ts_host
+                    ts_host="${ts_host:-super-puppy}"
+                    set_conf "TAILSCALE_HOSTNAME" "\"$ts_host\""
+
+                    tailscale set --hostname "$ts_host" 2>/dev/null \
+                        && echo "  ✓ Hostname set to $ts_host" \
+                        || echo "  WARNING: could not set hostname (try: sudo tailscale set --hostname $ts_host)"
+                fi
+
+                # Enable Tailscale SSH
+                echo ""
+                echo "  Enabling Tailscale SSH (allows direct SSH between your machines)..."
+                TS_SSH_OUT=$(sudo tailscale set --ssh 2>&1) \
+                    && echo "  ✓ Tailscale SSH enabled" \
+                    || {
+                        if echo "$TS_SSH_OUT" | grep -qi "sandbox"; then
+                            echo "  ✗ Failed — this is the sandboxed Tailscale build."
+                            echo "    Uninstall and download the standalone build from:"
+                            echo "    https://tailscale.com/download/mac"
+                        else
+                            echo "  WARNING: could not enable Tailscale SSH (needs sudo)"
+                        fi
+                    }
+
+                # Get FQDN and generate certs (server only)
+                TS_FQDN=$(tailscale status --json 2>/dev/null \
+                    | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('Self',{}).get('DNSName','').rstrip('.'))" 2>/dev/null || true)
+
+                if [ -n "$TS_FQDN" ]; then
+                    echo ""
+                    echo "  ✓ Your Tailscale FQDN: $TS_FQDN"
+                fi
+
+                if $IS_SERVER_MODE && [ -n "$TS_FQDN" ]; then
+                    CERT_DIR="$HOME/.config/local-models/certs"
+                    mkdir -p "$CERT_DIR"
+                    echo "  Generating HTTPS certs for remote Playground access..."
+                    if tailscale cert \
+                        --cert-file "$CERT_DIR/${TS_FQDN}.crt" \
+                        --key-file "$CERT_DIR/${TS_FQDN}.key" \
+                        "$TS_FQDN" 2>/dev/null; then
+                        echo "  ✓ Certs saved to $CERT_DIR/"
+                    else
+                        echo "  WARNING: cert generation failed. Remote Playground will use HTTP."
+                    fi
+                fi
+
+                echo ""
+                echo "  Tailscale setup complete."
+                if $IS_SERVER_MODE; then
+                    echo ""
+                    echo "  To share access with others:"
+                    echo "    1. Have them install Tailscale and join your tailnet"
+                    echo "    2. Approve their devices in the Tailscale admin console:"
+                    echo "       https://login.tailscale.com/admin/machines"
+                fi
+            else
+                echo "  ✗ Tailscale login did not complete. Skipping Tailscale setup."
+                echo "    Run 'tailscale up' manually, then re-run install.sh --reconfigure"
+            fi
+        fi
+    else
+        echo "  → Skipping Tailscale"
+    fi
+
+    # 3. Client: which server to connect to?
+    if ! $IS_SERVER_MODE; then
         echo ""
-        printf "  Hostname of your model server (e.g. my-mac.local): "
-        read -r server_host
-        if [ -n "$server_host" ]; then
-            set_conf "MODEL_SERVER_HOST" "\"$server_host\""
-            echo "  → Will connect to $server_host"
+        if $TS_RUNNING; then
+            # List Tailscale peers to help the user pick
+            echo "  Tailscale peers on your tailnet:"
+            tailscale status --json 2>/dev/null | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for peer in d.get('Peer', {}).values():
+    host = peer.get('HostName', '')
+    fqdn = peer.get('DNSName', '').rstrip('.')
+    if host:
+        print(f'    {host}  ({fqdn})')
+" 2>/dev/null || true
+            echo ""
+        fi
+        printf "  Tailscale hostname of the model server (e.g. super-puppy): "
+        read -r ts_server_host
+        if [ -n "$ts_server_host" ]; then
+            set_conf "TAILSCALE_HOSTNAME" "\"$ts_server_host\""
+            echo "  → Will connect to $ts_server_host via Tailscale"
 
-            # Try to detect server RAM
-            SERVER_IP=$(python3 -c "import socket,sys; print(socket.gethostbyname(sys.argv[1]))" "$server_host" 2>/dev/null || true)
-            if [ -n "$SERVER_IP" ]; then
-                REMOTE_RAM=$(ssh -o ConnectTimeout=3 -o BatchMode=yes "$server_host" \
+            # Try to detect server RAM via Tailscale SSH (best-effort, queried at runtime if missing)
+            if $TS_RUNNING; then
+                REMOTE_RAM=$(ssh -o ConnectTimeout=3 -o BatchMode=yes "$ts_server_host" \
                     "sysctl -n hw.memsize 2>/dev/null" 2>/dev/null | awk '{printf "%d", $1 / 1073741824}' || true)
                 if [ -n "$REMOTE_RAM" ] && [ "$REMOTE_RAM" -gt 0 ]; then
                     set_conf "SERVER_RAM_GB" "$REMOTE_RAM"
                     echo "  → Detected ${REMOTE_RAM}GB RAM on server"
-                else
-                    printf "  How much RAM does the server have (GB)? "
-                    read -r server_ram
-                    [ -n "$server_ram" ] && set_conf "SERVER_RAM_GB" "$server_ram"
                 fi
-            else
-                printf "  How much RAM does the server have (GB)? "
-                read -r server_ram
-                [ -n "$server_ram" ] && set_conf "SERVER_RAM_GB" "$server_ram"
             fi
         else
             echo "  → No server configured (standalone mode)"
         fi
     fi
 
-    # 3. Auth token
+    # 4. Auth token
     echo ""
     echo "  The MCP server requires a bearer token for authentication."
     if command -v op > /dev/null 2>&1; then
@@ -180,124 +289,6 @@ if $RECONFIGURE; then
         fi
     fi
 
-    # 4. Tailscale (optional — for remote access outside LAN)
-    echo ""
-    printf "  Set up Tailscale for remote access? (needed only if you use this outside your LAN) [y/N] "
-    read -r setup_tailscale
-    if [[ "$setup_tailscale" =~ ^[Yy] ]]; then
-        SETUP_TAILSCALE=true
-
-        # Step 1: Check installation
-        if ! command -v tailscale > /dev/null 2>&1; then
-            echo ""
-            echo "  Tailscale is not installed."
-            echo "  IMPORTANT: Use the standalone build, NOT the App Store or Homebrew cask version."
-            echo "  The sandboxed versions cannot run Tailscale SSH."
-            echo ""
-            echo "  Download from: https://tailscale.com/download/mac"
-            echo ""
-            printf "  Press Enter after installing Tailscale (or 's' to skip): "
-            read -r ts_wait
-            if [[ "$ts_wait" =~ ^[Ss] ]]; then
-                SETUP_TAILSCALE=false
-            fi
-        fi
-
-        if $SETUP_TAILSCALE && command -v tailscale > /dev/null 2>&1; then
-            # Check for sandboxed version
-            TS_PATH=$(which tailscale)
-            if [[ "$TS_PATH" == *"Tailscale.app"* ]] || [[ "$TS_PATH" == *"/Applications/"* ]]; then
-                echo "  WARNING: This looks like the sandboxed Tailscale (App Store or Homebrew cask)."
-                echo "  Tailscale SSH won't work. Consider reinstalling the standalone build."
-                echo "  Download from: https://tailscale.com/download/mac"
-                echo ""
-            fi
-
-            # Step 2: Check if logged in
-            TS_STATUS=$(tailscale status --json 2>/dev/null \
-                | python3 -c "import json,sys; print(json.load(sys.stdin).get('BackendState',''))" 2>/dev/null || true)
-
-            if [ "$TS_STATUS" != "Running" ]; then
-                echo ""
-                echo "  Tailscale is not running. Starting login..."
-                echo "  A browser window will open. Log in with your identity provider."
-                echo ""
-                tailscale up 2>&1 || true
-                sleep 2
-                TS_STATUS=$(tailscale status --json 2>/dev/null \
-                    | python3 -c "import json,sys; print(json.load(sys.stdin).get('BackendState',''))" 2>/dev/null || true)
-            fi
-
-            if [ "$TS_STATUS" = "Running" ]; then
-                echo "  ✓ Tailscale is running"
-
-                # Step 3: Set hostname
-                printf "  Tailscale hostname for this machine [super-puppy]: "
-                read -r ts_host
-                ts_host="${ts_host:-super-puppy}"
-                set_conf "TAILSCALE_HOSTNAME" "\"$ts_host\""
-
-                tailscale set --hostname "$ts_host" 2>/dev/null \
-                    && echo "  ✓ Hostname set to $ts_host" \
-                    || echo "  WARNING: could not set hostname (try: sudo tailscale set --hostname $ts_host)"
-
-                # Step 4: Enable Tailscale SSH
-                echo ""
-                echo "  Enabling Tailscale SSH (allows direct SSH between your machines)..."
-                TS_SSH_OUT=$(sudo tailscale set --ssh 2>&1) \
-                    && echo "  ✓ Tailscale SSH enabled" \
-                    || {
-                        if echo "$TS_SSH_OUT" | grep -qi "sandbox"; then
-                            echo "  ✗ Failed — this is the sandboxed Tailscale build."
-                            echo "    Uninstall and download the standalone build from:"
-                            echo "    https://tailscale.com/download/mac"
-                        else
-                            echo "  WARNING: could not enable Tailscale SSH (needs sudo)"
-                        fi
-                    }
-
-                # Step 5: Get tailnet name for cert generation
-                TS_FQDN=$(tailscale status --json 2>/dev/null \
-                    | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('Self',{}).get('DNSName','').rstrip('.'))" 2>/dev/null || true)
-
-                if [ -n "$TS_FQDN" ]; then
-                    echo ""
-                    echo "  ✓ Your Tailscale FQDN: $TS_FQDN"
-
-                    # Step 6: Generate HTTPS certs (for Playground remote access)
-                    CERT_DIR="$HOME/.config/local-models/certs"
-                    mkdir -p "$CERT_DIR"
-                    echo "  Generating HTTPS certs for remote Playground access..."
-                    if tailscale cert \
-                        --cert-file "$CERT_DIR/${TS_FQDN}.crt" \
-                        --key-file "$CERT_DIR/${TS_FQDN}.key" \
-                        "$TS_FQDN" 2>/dev/null; then
-                        echo "  ✓ Certs saved to $CERT_DIR/"
-                        echo "    (auto-renew every 90 days when Tailscale is running)"
-                    else
-                        echo "  WARNING: cert generation failed. Remote Playground will use HTTP."
-                        echo "  You can retry later: tailscale cert --cert-file $CERT_DIR/${TS_FQDN}.crt --key-file $CERT_DIR/${TS_FQDN}.key $TS_FQDN"
-                    fi
-                fi
-
-                # Step 7: Remind about ACLs
-                echo ""
-                echo "  Tailscale setup complete."
-                echo ""
-                echo "  To share access with others:"
-                echo "    1. Have them install Tailscale and join your tailnet"
-                echo "    2. Approve their devices in the Tailscale admin console:"
-                echo "       https://login.tailscale.com/admin/machines"
-                echo "    3. Optionally restrict access with ACLs — see docs/tailscale-setup.md"
-            else
-                echo "  ✗ Tailscale login did not complete. Skipping Tailscale setup."
-                echo "    Run 'tailscale up' manually, then re-run install.sh --reconfigure"
-            fi
-        fi
-    else
-        echo "  → Skipping Tailscale (local LAN access still works)"
-    fi
-
     echo ""
     echo "  Configuration saved to $NETWORK_CONF"
     echo "  Re-run with --reconfigure to change these settings."
@@ -306,13 +297,6 @@ fi
 # Reload config after setup
 # shellcheck source=/dev/null
 source "$HOME/.config/local-models/network.conf"
-
-# Server mode: install Ollama LAN LaunchAgent
-if [ "${IS_SERVER:-false}" = "true" ]; then
-    link config/launchd/setenv.OLLAMA_HOST.plist \
-        ~/Library/LaunchAgents/setenv.OLLAMA_HOST.plist
-    echo "  (server mode — installed Ollama LAN LaunchAgent)"
-fi
 
 # Register local-models MCP in Claude Code config
 CLAUDE_JSON="$HOME/.claude.json"
@@ -394,75 +378,6 @@ if [ ${#missing[@]} -eq 0 ]; then
 else
     echo "  ERROR: Failed to install: ${missing[*]}"
     exit 1
-fi
-
-# Build Super Puppy app bundle
-echo ""
-echo "Building Super Puppy.app..."
-APP_MACOS="$REPO_DIR/app/SuperPuppy.app/Contents/MacOS"
-APP_RES="$REPO_DIR/app/SuperPuppy.app/Contents/Resources"
-APP_SRC="$REPO_DIR/app/super-puppy.c"
-if [ ! -f "$APP_SRC" ]; then
-    echo "  ERROR: $APP_SRC not found"
-    exit 1
-fi
-mkdir -p "$APP_MACOS"
-NEEDS_SIGN=false
-APP_BIN="$APP_MACOS/super-puppy"
-if [ ! -f "$APP_BIN" ] || [ "$APP_SRC" -nt "$APP_BIN" ]; then
-    if ! cc -o "$APP_BIN" "$APP_SRC" 2>&1; then
-        echo "  ERROR: Failed to compile $APP_SRC"
-        exit 1
-    fi
-    echo "  Compiled launcher binary"
-    NEEDS_SIGN=true
-else
-    echo "  Launcher binary up to date"
-fi
-
-# Generate .icns from icon.png (1x and @2x retina variants)
-mkdir -p "$APP_RES"
-if [ ! -f "$APP_RES/AppIcon.icns" ] || [ "$REPO_DIR/app/icon.png" -nt "$APP_RES/AppIcon.icns" ]; then
-    ICONSET=$(mktemp -d)/AppIcon.iconset
-    mkdir -p "$ICONSET"
-    for pair in "16 16" "32 16" "32 32" "64 32" "128 128" "256 128" "256 256" "512 256" "512 512" "1024 512"; do
-        px=${pair%% *}; base=${pair##* }
-        if [ "$px" = "$((base * 2))" ]; then
-            out="$ICONSET/icon_${base}x${base}@2x.png"
-        else
-            out="$ICONSET/icon_${base}x${base}.png"
-        fi
-        sips -z $px $px "$REPO_DIR/app/icon.png" --out "$out" > /dev/null 2>&1
-    done
-    iconutil -c icns "$ICONSET" -o "$APP_RES/AppIcon.icns" 2>/dev/null && echo "  Generated app icon" || true
-    NEEDS_SIGN=true
-else
-    echo "  App icon up to date"
-fi
-
-# Generate PWA icons
-PWA_DIR="$REPO_DIR/app/pwa"
-mkdir -p "$PWA_DIR"
-if [ ! -f "$PWA_DIR/icon-512.png" ] || [ "$REPO_DIR/app/icon.png" -nt "$PWA_DIR/icon-512.png" ]; then
-    for size in 152 180 192 512; do
-        sips -z $size $size "$REPO_DIR/app/icon.png" --out "$PWA_DIR/icon-${size}.png" > /dev/null 2>&1
-    done
-    echo "  Generated PWA icons"
-else
-    echo "  PWA icons up to date"
-fi
-
-# Ad-hoc code sign — only when binary or icon changed (re-signing invalidates
-# macOS TCC permissions like Screen Recording, forcing the user to re-authorize)
-if $NEEDS_SIGN; then
-    codesign --sign - --force "$REPO_DIR/app/SuperPuppy.app" > /dev/null 2>&1
-    echo "  Signed app bundle (ad-hoc)"
-    echo "  ⚠  Re-signing may require re-enabling Screen Recording permission"
-elif ! codesign --verify "$REPO_DIR/app/SuperPuppy.app" > /dev/null 2>&1; then
-    codesign --sign - --force "$REPO_DIR/app/SuperPuppy.app" > /dev/null 2>&1
-    echo "  Signed app bundle (signature was invalid)"
-else
-    echo "  App signature valid, skipping re-sign"
 fi
 
 # Start the menu bar app

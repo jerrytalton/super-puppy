@@ -10,7 +10,7 @@ Local AI model infrastructure for Claude Code. MCP tools + menu bar app + Tailsc
 - `lib/` — Shared Python library (model discovery, task filters, config paths)
 - `bin/` — Shell scripts symlinked to `~/bin/`
 - `config/` — Config files symlinked to `~/.config/` and `~/Library/LaunchAgents/`
-- `tests/` — pytest unit tests (test_core.py) and end-to-end tests (test_e2e.py, test_error_handling.py)
+- `tests/` — pytest unit tests (test_core.py, test_deployment.py) and end-to-end tests (test_e2e.py, test_error_handling.py)
 - `install.sh` — Interactive setup: symlinks scripts, copies configs, walks through configuration
 
 ## Key Design Decisions
@@ -18,8 +18,8 @@ Local AI model infrastructure for Claude Code. MCP tools + menu bar app + Tailsc
 - The MCP server discovers models live from Ollama and MLX at startup (parallel `/api/show` calls). Any new `ollama pull` is immediately available as a tool.
 - The menu bar app queries model capabilities live from Ollama `/api/show` and MLX `config.json` files in the HuggingFace cache. No hardcoded param tables.
 - MLX models marked `on_demand: true` download on first use and unload after idle timeout.
-- LAN access uses mDNS (Bonjour) for server discovery. Ollama binds `0.0.0.0` on the server for LAN access. Remote access outside the LAN uses Tailscale.
-- The `local-models-mcp-detect` wrapper probes the server via mDNS first, then Tailscale. Clients use the server if reachable, fall back to localhost.
+- All remote access uses **Tailscale only** — no mDNS, no LAN binding. `tailscale serve` proxies all ports with TLS.
+- The `local-models-mcp-detect` wrapper probes the desktop via Tailscale before launching. Clients use the server if reachable, fall back to localhost.
 
 ## Runtime Architecture
 
@@ -111,7 +111,8 @@ Dependencies are pinned to exact versions in PEP 723 inline metadata.
 
 Run all tests: `uv run --with pytest pytest tests/ -v`
 
-- `tests/test_core.py` — 25 unit tests (mocked subprocesses, real sockets)
+- `tests/test_core.py` — 28 unit tests (mocked subprocesses, real sockets)
+- `tests/test_deployment.py` — 37 tests for auto-update, rollback, and post-update pipeline
 - `tests/test_e2e.py` — 43 end-to-end tests against live services
 - `tests/test_error_handling.py` — 28 tests for error handling and model validation
 - `tests/test_remote_access.sh` — bash script testing Tailscale HTTPS endpoints

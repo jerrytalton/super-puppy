@@ -344,8 +344,8 @@ function renderMemory() {
   const overflows = totalUsed > targetRam;
   const barMax = overflows ? totalUsed : targetRam;
 
-  usage.textContent = fmt(totalUsed) + ' / ' + targetRamGb + 'GB' +
-    (overflows ? ` (${fmt(totalUsed - targetRam)} over!)` : '');
+  usage.textContent = fmt(totalUsed) + ' / ' + targetRamGb + 'GB';
+  usage.style.color = overflows ? 'var(--red)' : '';
 
   segs.forEach(seg => {
     const pct = (seg.bytes / barMax) * 100;
