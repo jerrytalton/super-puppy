@@ -2453,17 +2453,40 @@ _lock_fd = None
 
 
 def acquire_lock():
-    """Ensure only one instance runs using flock. Exits if another holds the lock."""
+    """Ensure only one instance runs. Uses flock + PID validation as fallback."""
     import fcntl
+    import signal
     global _lock_fd
     os.makedirs(os.path.dirname(LOCK_FILE), exist_ok=True)
-    _lock_fd = open(LOCK_FILE, "w")
+    _lock_fd = open(LOCK_FILE, "a+")
     fcntl.fcntl(_lock_fd, fcntl.F_SETFD, fcntl.FD_CLOEXEC)
     try:
         fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        print("Already running. Exiting.", file=sys.stderr)
-        sys.exit(0)
+        # flock failed — check if the PID in the file is actually alive
+        _lock_fd.seek(0)
+        old_pid = _lock_fd.read().strip()
+        if old_pid and old_pid.isdigit():
+            try:
+                os.kill(int(old_pid), 0)
+                print("Already running (pid %s). Exiting." % old_pid, file=sys.stderr)
+                sys.exit(0)
+            except OSError:
+                pass  # stale PID — process is dead, take over
+        else:
+            # No PID in file but flock held — genuinely locked
+            print("Already running. Exiting.", file=sys.stderr)
+            sys.exit(0)
+        # Stale lock: close, recreate, and acquire
+        _lock_fd.close()
+        _lock_fd = open(LOCK_FILE, "w")
+        fcntl.fcntl(_lock_fd, fcntl.F_SETFD, fcntl.FD_CLOEXEC)
+        fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    # Write our PID so future instances can validate
+    _lock_fd.seek(0)
+    _lock_fd.truncate()
+    _lock_fd.write(str(os.getpid()))
+    _lock_fd.flush()
 
 
 if __name__ == "__main__":
