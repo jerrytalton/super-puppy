@@ -117,7 +117,7 @@ The installer asks whether this machine is the model server or a client. The ser
 | **Client (server reachable)** | Routes to server via Tailscale. |
 | **Client (server unreachable)** | Falls back to local models. |
 
-All remote access uses Tailscale — services bind to localhost and are proxied with automatic TLS. Re-run `./install.sh --reconfigure` to change the role or server hostname.
+All remote access uses Tailscale — services bind to localhost and are proxied with automatic TLS. Both the MCP server and the Playground require bearer token authentication for remote requests. Re-run `./install.sh --reconfigure` to change the role or server hostname.
 
 ## Menu Bar App
 
@@ -137,6 +137,8 @@ start-local-models            # start Ollama + MLX servers
 start-local-models --status   # show what's running
 start-local-models --stop     # stop servers
 start-local-models --local    # force local servers even if server is reachable
+claude-local                  # run Claude Code fully offline (local Ollama, no cloud)
+tailscale-status              # check Tailscale connectivity and FQDN
 
 ./install.sh --reconfigure    # re-run interactive setup
 ./install.sh --rotate-token   # refresh the MCP auth token

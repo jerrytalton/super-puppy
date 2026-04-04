@@ -10,6 +10,7 @@ and which back each MCP tool task. Launched from the menu bar app.
 """
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -38,6 +39,13 @@ from lib.models import (
     TASK_FILTERS,
     active_params_b,
     model_matches_filter as _model_matches_filter,
+)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    datefmt="%H:%M:%S",
+    stream=sys.stderr,
 )
 
 # ── Config ───────────────────────────────────────────────────────────
@@ -76,7 +84,7 @@ def _idle_watcher():
     while True:
         time.sleep(30)
         if time.time() - _last_request > IDLE_TIMEOUT:
-            print("Idle timeout — shutting down.", file=sys.stderr)
+            logging.info("Idle timeout — shutting down.")
             sys.exit(0)
 
 
@@ -545,11 +553,41 @@ def save_mcp_prefs(prefs):
 
 app = Flask(__name__)
 
+# ── Bearer token auth for remote access ─────────────────────────────
+# Local requests (from menu bar webview) skip auth. Remote requests
+# (via Tailscale) must provide the same MCP_AUTH_TOKEN bearer token.
+
+_PROFILE_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "")
+
 
 @app.before_request
-def _touch_idle():
+def _check_auth():
     global _last_request
     _last_request = time.time()
+
+    if not _PROFILE_AUTH_TOKEN:
+        return  # no token configured — allow all (dev/local-only mode)
+
+    # Localhost requests skip auth (menu bar webview, local browser)
+    remote_addr = request.remote_addr or ""
+    if remote_addr in ("127.0.0.1", "::1"):
+        return
+
+    # Static HTML pages don't require auth (they bootstrap the token)
+    if request.path in ("/", "/profiles", "/tools", "/activity", "/manifest.json", "/sw.js") \
+            or request.path.startswith("/pwa/"):
+        return
+
+    # API and file-serving routes require bearer token
+    auth = request.headers.get("Authorization", "")
+    if auth == f"Bearer {_PROFILE_AUTH_TOKEN}":
+        return
+
+    # Also accept token as query param (for EventSource/SSE which can't set headers)
+    if request.args.get("token") == _PROFILE_AUTH_TOKEN:
+        return
+
+    return jsonify({"error": "unauthorized"}), 403
 
 
 @app.route("/")
@@ -560,6 +598,15 @@ def index():
 @app.route("/profiles")
 def profiles_page():
     return send_file(str(HTML_FILE))
+
+
+@app.route("/api/auth-token")
+def api_auth_token():
+    """Return the auth token — only from localhost (for HTML bootstrapping)."""
+    remote_addr = request.remote_addr or ""
+    if remote_addr not in ("127.0.0.1", "::1"):
+        return jsonify({"error": "localhost only"}), 403
+    return jsonify({"token": _PROFILE_AUTH_TOKEN})
 
 
 @app.route("/api/system")

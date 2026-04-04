@@ -183,13 +183,41 @@ const fmtP = (t,a) => t===a||!a ? t+'B' : t+'B/'+a+'B';
 const fmtC = c => c>=1e6?Math.round(c/1e6)+'M':c>=1024?Math.floor(c/1024)+'K':c>0?''+c:'';
 const findModel = name => S.models.find(m => m.name === name) || S.models.find(m => m.name.startsWith(name + ':'));
 
+let _authToken = '';
+
+async function _initAuth() {
+  const params = new URLSearchParams(location.search);
+  if (params.has('token')) {
+    _authToken = params.get('token');
+    sessionStorage.setItem('sp_token', _authToken);
+    params.delete('token');
+    const clean = params.toString();
+    history.replaceState(null, '', location.pathname + (clean ? '?' + clean : ''));
+    return;
+  }
+  const stored = sessionStorage.getItem('sp_token');
+  if (stored) { _authToken = stored; return; }
+  try {
+    const r = await fetch('/api/auth-token');
+    if (r.ok) { _authToken = (await r.json()).token || ''; }
+  } catch {}
+}
+
+function _authHeaders(opts = {}) {
+  if (!_authToken) return opts;
+  const h = opts.headers instanceof Headers ? opts.headers : new Headers(opts.headers || {});
+  h.set('Authorization', 'Bearer ' + _authToken);
+  return {...opts, headers: h};
+}
+
 function _fetch(url) {
   const ctrl = new AbortController();
   setTimeout(() => ctrl.abort(), 15000);
-  return fetch(url, {signal: ctrl.signal}).then(r => r.json());
+  return fetch(url, _authHeaders({signal: ctrl.signal})).then(r => r.json());
 }
 
 async function init() {
+  await _initAuth();
   let sys, tasks, profiles;
   const sub = document.getElementById('subtitle');
   try {
@@ -217,8 +245,8 @@ async function init() {
 
 async function refreshModels() {
   const [sys, models] = await Promise.all([
-    fetch('/api/system').then(r=>r.json()),
-    fetch('/api/models?refresh=1').then(r=>r.json()),
+    fetch('/api/system', _authHeaders()).then(r=>r.json()),
+    fetch('/api/models?refresh=1', _authHeaders()).then(r=>r.json()),
   ]);
   S.sys = sys;
   S.models = models;
@@ -486,11 +514,11 @@ async function activate(name) {
   try {
     const p = S.profiles.profiles[name];
     if (p) { p.tasks = {...S.picks}; p.thinking = {...S.thinkPicks}; }
-    await fetch('/api/profiles', {
+    await fetch('/api/profiles', _authHeaders({
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({name, ...p}),
-    });
-    const actResp = await fetch(`/api/profiles/${name}/activate`, {method:'POST'});
+    }));
+    const actResp = await fetch(`/api/profiles/${name}/activate`, _authHeaders({method:'POST'}));
     const actData = await actResp.json();
     S.profiles.active = name;
     render();

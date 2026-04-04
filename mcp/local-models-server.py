@@ -30,6 +30,12 @@ from lib.models import MCP_PREFS_FILE, MLX_SERVER_CONFIG, active_params_b
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    datefmt="%H:%M:%S",
+    stream=sys.stderr,
+)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
@@ -272,7 +278,7 @@ async def discover_models():
                 if base not in models or info["total_params_b"] > models[base]["total_params_b"]:
                     models[base] = info
         except Exception as e:
-            print(f"Ollama discovery failed: {e}", file=sys.stderr, flush=True)
+            logging.warning("Ollama discovery failed: %s", e)
 
         # MLX
         # Load MLX server config to map served names → HuggingFace paths
@@ -318,7 +324,7 @@ async def discover_models():
                     "vision": has_vision,
                 }
         except Exception as e:
-            print(f"MLX discovery failed: {e}", file=sys.stderr, flush=True)
+            logging.warning("MLX discovery failed: %s", e)
 
         # HuggingFace cache: TTS, transcription, image_edit, image_gen
         _TASK_BACKENDS = {
@@ -646,8 +652,7 @@ async def local_vision(
         except Exception as e:
             return f"Error reading {ip}: {e}"
 
-    print(f"  → vision {model_name} ({backend}): {prompt[:50]}",
-          file=sys.stderr, flush=True)
+    logging.info("vision %s (%s): %s", model_name, backend, prompt[:50])
 
     try:
         with _gpu_request(backend, f"vision:{model_name}"):
@@ -830,7 +835,7 @@ async def local_image(
     if err:
         return f"Error: {err}"
 
-    print(f"  → generate image {selected} ({backend}): {prompt[:50]}", file=sys.stderr, flush=True)
+    logging.info("generate image %s (%s): %s", selected, backend, prompt[:50])
 
     if backend == "mflux":
         with _gpu_request("mlx", f"image:{selected}"):
@@ -925,7 +930,7 @@ async def local_image_edit(
     if err:
         return f"Error: {err}"
 
-    print(f"  → edit image [{selected}]: {prompt[:60]}", file=sys.stderr, flush=True)
+    logging.info("edit image %s: %s", selected, prompt[:60])
 
     with _gpu_request(backend, f"image_edit:{selected}"):
         warning = _gpu_contention_warning(backend)
@@ -1065,7 +1070,7 @@ async def local_speak(
     prefix = Path(output_path).stem
     fmt = Path(output_path).suffix.lstrip(".") or "wav"
 
-    print(f"  → TTS {model.split('/')[-1]}: {text[:60]}", file=sys.stderr, flush=True)
+    logging.info("TTS %s: %s", model.split("/")[-1], text[:60])
 
     def _generate():
         from mlx_audio.tts.generate import generate_audio
@@ -1555,8 +1560,7 @@ async def _startup():
     _models = await discover_models()
     ollama_count = sum(1 for v in _models.values() if v["backend"] == "ollama")
     mlx_count = sum(1 for v in _models.values() if v["backend"] == "mlx")
-    print(f"local-models MCP: {ollama_count} Ollama + {mlx_count} MLX models",
-          file=sys.stderr, flush=True)
+    logging.info("local-models MCP: %d Ollama + %d MLX models", ollama_count, mlx_count)
 
 
 async def _gpu_status(request):

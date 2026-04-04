@@ -264,13 +264,44 @@ const toolState = {};  // per-tool saved state: {fields, model, think, output, o
 const fmtP = (t,a) => t===a||!a ? t+'B' : t+'B/'+a+'B';
 const fmtC = c => c>=1e6?Math.round(c/1e6)+'M':c>=1024?Math.floor(c/1024)+'K':c>0?''+c:'';
 
+let _authToken = '';
+
+async function _initAuth() {
+  // Check URL for token param (remote access links)
+  const params = new URLSearchParams(location.search);
+  if (params.has('token')) {
+    _authToken = params.get('token');
+    sessionStorage.setItem('sp_token', _authToken);
+    params.delete('token');
+    const clean = params.toString();
+    history.replaceState(null, '', location.pathname + (clean ? '?' + clean : ''));
+    return;
+  }
+  // Check sessionStorage (returning remote user)
+  const stored = sessionStorage.getItem('sp_token');
+  if (stored) { _authToken = stored; return; }
+  // Try localhost-only token endpoint (menu bar webview)
+  try {
+    const r = await fetch('/api/auth-token');
+    if (r.ok) { _authToken = (await r.json()).token || ''; }
+  } catch {}
+}
+
+function _authHeaders(opts = {}) {
+  if (!_authToken) return opts;
+  const h = opts.headers instanceof Headers ? opts.headers : new Headers(opts.headers || {});
+  h.set('Authorization', 'Bearer ' + _authToken);
+  return {...opts, headers: h};
+}
+
 function _fetch(url) {
   const ctrl = new AbortController();
   setTimeout(() => ctrl.abort(), 15000);
-  return fetch(url, {signal: ctrl.signal}).then(r => r.json());
+  return fetch(url, _authHeaders({signal: ctrl.signal})).then(r => r.json());
 }
 
 async function init() {
+  await _initAuth();
   let models, tasks, profiles;
   const status = document.getElementById('model-picker-selected');
   try {
@@ -530,7 +561,7 @@ function startGpuPoller(tool) {
   _lastGpuInfo = '';
   _gpuPollers[tool] = setInterval(async () => {
     try {
-      const resp = await fetch('/api/gpu');
+      const resp = await fetch('/api/gpu', _authHeaders());
       const data = await resp.json();
       const parts = [];
       if (data.playground) {
@@ -570,7 +601,7 @@ async function buildBody() {
       if (input.files.length) {
         const fd = new FormData();
         fd.append('file', input.files[0]);
-        const upResp = await fetch('/api/test/upload', {method:'POST', body:fd});
+        const upResp = await fetch('/api/test/upload', _authHeaders({method:'POST', body:fd}));
         const upData = await upResp.json();
         if (upData.error) throw new Error(upData.error);
         body[f.id] = upData.path;
@@ -585,7 +616,7 @@ async function buildBody() {
       if (_recBlob && companion && !body[companion.id]) {
         const fd = new FormData();
         fd.append('file', _recBlob, 'recording.webm');
-        const upResp = await fetch('/api/test/upload', {method:'POST', body:fd});
+        const upResp = await fetch('/api/test/upload', _authHeaders({method:'POST', body:fd}));
         const upData = await upResp.json();
         if (upData.error) throw new Error(upData.error);
         body[companion.id] = upData.path;
@@ -631,12 +662,12 @@ async function run() {
 
     if (STREAM_TOOLS.has(runTool)) {
       log(`POST /api/test/stream`);
-      const resp = await fetch('/api/test/stream', {
+      const resp = await fetch('/api/test/stream', _authHeaders({
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(body),
         signal,
-      });
+      }));
       if (!resp.ok) {
         const err = await resp.json();
         throw new Error(err.error || `HTTP ${resp.status}`);
@@ -684,12 +715,12 @@ async function run() {
 
     } else {
       log(`POST /api/test`);
-      const resp = await fetch('/api/test', {
+      const resp = await fetch('/api/test', _authHeaders({
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(body),
         signal,
-      });
+      }));
       let data;
       try { data = await resp.json(); } catch {
         throw new Error(`${runTool} failed: HTTP ${resp.status} (${resp.statusText}) — response was not JSON`);
@@ -779,7 +810,7 @@ async function captureScreenshot(id) {
   info.textContent = '';
   _screenshotPath = null;
   try {
-    const resp = await fetch('/api/test/screenshot', {method: 'POST'});
+    const resp = await fetch('/api/test/screenshot', _authHeaders({method: 'POST'}));
     const data = await resp.json();
     if (data.error) {
       info.textContent = data.error;
