@@ -113,6 +113,8 @@ Run all tests: `uv run --with pytest pytest tests/ -v`
 
 - `tests/test_core.py` — 28 unit tests (mocked subprocesses, real sockets)
 - `tests/test_deployment.py` — 37 tests for auto-update, rollback, and post-update pipeline
+- `tests/test_mcp_server.py` — 37 tests for model selection, GPU tracking, auth, job store
+- `tests/test_playground_coverage.py` — 4 tests ensuring MCP tools have playground UI and API routes
 - `tests/test_e2e.py` — 43 end-to-end tests against live services
 - `tests/test_error_handling.py` — 28 tests for error handling and model validation
 - `tests/test_remote_access.sh` — bash script testing Tailscale HTTPS endpoints
