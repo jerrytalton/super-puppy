@@ -26,20 +26,20 @@ Local AI model infrastructure for Apple Silicon. Menu bar app + standard APIs + 
 The menu bar app (`app/menubar.py`) launches via `app/SuperPuppy.app` and spawns:
 
 - **Profile server** (`app/profile-server.py`) — Flask app on a fixed port (8101 on desktop, random on laptop). Serves the Model Profiles UI (`app/profiles.html`) and the Playground (`app/tools.html`). Auto-starts on desktop when Remote Access is enabled (no idle timeout).
-- **Ollama** — `http://localhost:11434` (server binds `0.0.0.0:11434` for LAN access; Tailscale serve also proxies for remote access)
+- **Ollama** — `http://localhost:11434` (localhost-only; Tailscale serve proxies for remote access)
 - **MLX-OpenAI-Server** — `http://localhost:8000`, config at `~/.config/mlx-server/config.yaml`
 
 ### Modes
 
 | Mode | When | What happens |
 |------|------|------|
-| **Server** | `IS_SERVER=true` in network.conf | Runs Ollama (LAN-accessible), MLX, MCP locally. Tailscale exposes ports when Remote Access is on. |
-| **Client** | Server reachable via LAN or Tailscale | Routes to server's MCP. Falls back to local if unreachable. |
+| **Server** | `IS_SERVER=true` in network.conf | Runs Ollama, MLX, MCP locally. Tailscale exposes ports when Remote Access is on. |
+| **Client** | Server reachable via Tailscale | Routes to server's MCP. Falls back to local if unreachable. |
 | **Offline** | Laptop, desktop unreachable | Runs local Ollama/MLX as fallback. |
 
 ### Remote access (Tailscale)
 
-Off-LAN remote connectivity uses Tailscale. Ollama binds `0.0.0.0` on the server for LAN access. The "Remote Access" toggle in the menu bar manages `tailscale serve`, which proxies:
+All services bind to localhost. The "Remote Access" toggle in the menu bar manages `tailscale serve`, which proxies them with automatic TLS:
 
 | Port | Service | URL pattern |
 |------|---------|-------------|
