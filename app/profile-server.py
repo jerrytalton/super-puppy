@@ -117,9 +117,11 @@ def _read_server_ram_gb():
             line = line.strip()
             if line.startswith("SERVER_RAM_GB="):
                 val = line.partition("=")[2].strip().strip('"').strip("'")
-                v = int(val)
-                if v > 0:
-                    return v
+                digits = "".join(c for c in val if c.isdigit())
+                if digits:
+                    v = int(digits)
+                    if v > 0:
+                        return v
     return None
 
 

@@ -433,6 +433,12 @@ class TestReadServerRamGb:
         with patch.object(ps, "NETWORK_CONF", conf):
             assert ps._read_server_ram_gb() == 256
 
+    def test_strips_unit_suffix(self, tmp_path):
+        conf = tmp_path / "network.conf"
+        conf.write_text("SERVER_RAM_GB=512GB\n")
+        with patch.object(ps, "NETWORK_CONF", conf):
+            assert ps._read_server_ram_gb() == 512
+
 
 class TestLoadDefaultPrefs:
     def test_missing_file(self, tmp_path):
