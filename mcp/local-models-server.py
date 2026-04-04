@@ -86,7 +86,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             # Track session ID from authenticated /mcp init requests
             if path == "/mcp" and session_id:
                 with _session_lock:
-                    if len(_authenticated_sessions) >= _MAX_SESSIONS:
+                    if len(_authenticated_sessions) >= _MAX_SESSIONS and _authenticated_sessions:
                         _authenticated_sessions.pop()
                     _authenticated_sessions.add(session_id)
             response = await call_next(request)
@@ -667,7 +667,11 @@ async def _take_screenshot() -> str:
         "screencapture", "-x", path,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE)
-    await proc.wait()
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=10)
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise RuntimeError("Screenshot timed out after 10s")
     if not Path(path).exists():
         raise RuntimeError("Screenshot failed — check Screen Recording permissions")
     return path
@@ -749,6 +753,7 @@ async def local_computer_use(
     except json.JSONDecodeError:
         pass  # model returned text instead of JSON — return as-is
 
+    warning = _gpu_contention_warning(backend)
     meta = f"[{model_name} via {backend}]"
     if screenshot_path:
         meta += f" screenshot: {screenshot_path}"
@@ -826,7 +831,10 @@ async def local_image(
     if not image_b64:
         return f"Error: {selected} did not return an image."
 
-    image_data = base64.b64decode(image_b64)
+    try:
+        image_data = base64.b64decode(image_b64)
+    except Exception as e:
+        return f"Error: Invalid image data from {selected}: {e}"
     Path(output_path).write_bytes(image_data)
 
     return f"{warning}[{selected} via ollama]\n\nImage saved to {output_path} ({len(image_data)} bytes)"

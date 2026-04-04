@@ -316,12 +316,12 @@ class TestProfileServerAPI:
         assert "active" in data, "Profiles response missing 'active' key"
         assert isinstance(data["profiles"], dict), "'profiles' should be a dict"
 
-    def test_api_gpu_returns_backends(self, profile_base):
+    def test_api_gpu_returns_status(self, profile_base):
         status, body, _ = http_get(f"{profile_base}/api/gpu")
         assert status == 200, f"/api/gpu returned {status}"
         data = json.loads(body)
-        assert "ollama" in data or "mlx" in data, (
-            "GPU endpoint should have backend keys"
+        assert "playground" in data and "other_active" in data, (
+            "GPU endpoint should have 'playground' and 'other_active' keys"
         )
 
 

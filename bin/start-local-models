@@ -181,6 +181,7 @@ else
     echo $! > "$OLLAMA_PID_FILE"
     if ! wait_for_service "http://localhost:${OLLAMA_PORT}/api/version" "Ollama" 10; then
         echo "  ERROR: Ollama failed to start." >&2
+        exit 1
     fi
 fi
 
