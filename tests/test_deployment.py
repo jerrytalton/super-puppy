@@ -86,6 +86,7 @@ def app_instance(update_dir):
     inst.mcp_models = ["test-model"]
     inst.app_version = "v1.0.0"
     inst.update_available = 0
+    inst.conf = {"AUTO_UPDATE": "true"}
     inst.profile_server = None
     inst._health_checked = False
     return inst
@@ -388,6 +389,36 @@ class TestCheckForUpdates:
             app_instance._check_for_updates()
 
         mock_update.assert_not_called()
+
+
+class TestAutoUpdateDisable:
+    def test_auto_update_false_skips_check(self, app_instance):
+        app_instance.conf["AUTO_UPDATE"] = "false"
+        app_instance.last_update_check = 0
+        with patch("app.menubar.check_repo_update_available") as mock_check:
+            app_instance._schedule_update_check()
+        mock_check.assert_not_called()
+        assert app_instance.last_update_check == 0
+
+    def test_auto_update_true_runs_check(self, app_instance):
+        app_instance.conf["AUTO_UPDATE"] = "true"
+        app_instance.last_update_check = 0
+        with patch("app.menubar.check_repo_update_available",
+                    return_value=(0, None, None)), \
+             patch("app.menubar.get_latest_remote_tag",
+                    return_value=(None, None)):
+            app_instance._schedule_update_check()
+        assert app_instance.last_update_check > 0
+
+    def test_auto_update_missing_defaults_to_enabled(self, app_instance):
+        app_instance.conf.pop("AUTO_UPDATE", None)
+        app_instance.last_update_check = 0
+        with patch("app.menubar.check_repo_update_available",
+                    return_value=(0, None, None)), \
+             patch("app.menubar.get_latest_remote_tag",
+                    return_value=(None, None)):
+            app_instance._schedule_update_check()
+        assert app_instance.last_update_check > 0
 
 
 # ---------------------------------------------------------------------------

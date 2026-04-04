@@ -656,7 +656,8 @@ Comprehensive audit of Super Puppy from the perspective of 15 diverse user perso
 
 ## Summary
 
-### Bugs Found
+
+### Must Fix
 
 1. **`claude-local` model selection bug:** The script reads `mcp_preferences.json`'s `general` key with `json.load(open(...)).get('general','')`. After the profile system change, this key is a list (e.g., `["qwen3.5", "glm-4.7-flash"]`), not a string. The script would pass a list representation as the model name, causing Ollama to fail. (`/Users/jerry/super-puppy/bin/claude-local`, line 17)
 
@@ -666,33 +667,14 @@ Comprehensive audit of Super Puppy from the perspective of 15 diverse user perso
 
 4. **Playground summarize path restriction inconsistency:** The Playground's `_is_safe_test_path` only allows `/tmp/` files, while the MCP server's `_validate_path` allows anything under `$HOME`. This means "Summarize" in the Playground can only summarize files in `/tmp/`, while the same tool via MCP can summarize any file under home. A user trying to summarize a project file via the Playground gets "File path must be in /tmp/" with no explanation of why.
 
-### Missing Features
-
-1. **Multi-turn conversation / chat interface:** The Playground is single-turn only. No chat history, no conversation threading. Users expecting a ChatGPT-like experience will be disappointed.
 
 2. **mflux not installed by installer:** Image generation and image editing require `mflux` and `mflux-generate-kontext`, which are not installed by `install.sh`. Users discover this only when they try the tools and get subprocess errors.
 
-3. **Batch processing:** No batch operations for any tool. Cannot process multiple images, translate multiple files to separate outputs, or embed thousands of documents efficiently.
-
-4. **Per-user authentication:** Single shared bearer token for all users. No per-user accounts, quotas, audit trail, or access revocation.
-
-5. **Parental controls / tool visibility:** No way to hide or disable specific Playground tools (especially "Unfiltered"). No content filtering on model responses.
-
-6. **Headless / daemonized mode:** No way to run Super Puppy services without the menu bar app GUI. Important for servers, Mac Minis, and CI environments.
-
-7. **Silent / non-interactive install:** `install.sh` always requires interactive input. No flags for automated deployment.
-
 8. **Voice cloning in Playground:** The MCP tool supports `ref_audio` for Chatterbox voice cloning, but the Playground TTS tab only exposes Voxtral presets. No way to do voice cloning from the web UI.
-
-9. **Mandarin/Japanese TTS:** Default Voxtral voices cover only Western + Arabic + Hindi languages. No CJK TTS presets in the Playground.
 
 10. **Disable auto-update:** No way to turn off the 2-minute git tag polling. Important for air-gapped environments and manual update workflows.
 
 11. **Configurable path restrictions:** MCP path validation is hardcoded to `$HOME` + `/tmp`. No way to restrict to a specific project directory.
-
-12. **Mid-session server fallback:** Client-to-server connection is established at MCP startup. If the connection drops mid-session, there is no automatic fallback to local models without restarting the MCP server.
-
-### Documentation Gaps
 
 1. **Prerequisites not documented:** `git`, Xcode Command Line Tools, Homebrew are required but not mentioned in the Quick Start. A fresh Mac will fail at `git clone`.
 
@@ -700,41 +682,67 @@ Comprehensive audit of Super Puppy from the perspective of 15 diverse user perso
 
 3. **ffmpeg requirement:** Audio transcription of certain formats (especially WebM from browser recording) requires ffmpeg. Not mentioned in README or installer.
 
-4. **Memory-per-model guidance:** No documentation on how much RAM each model needs. Users cannot make informed choices about which profile to use.
-
-5. **Air-gapped deployment:** No guide for running fully offline (disable auto-update, pre-cache all models, pre-install all dependencies).
-
-6. **Team onboarding workflow:** No step-by-step guide for setting up a shared server for a team, distributing tokens, or managing multi-user access.
-
-7. **Playground is single-turn:** README says "test any capability interactively" which implies conversation, but the Playground is strictly single-prompt single-response.
-
 8. **sentence-transformers network calls:** README claims "no data leaving your network" but first-use of HuggingFace embedding models downloads from the internet. Auto-update polls GitHub.
 
 9. **Generation time expectations:** No benchmarks or rough time estimates for any operation. Users do not know if image generation takes 10 seconds or 10 minutes.
 
 10. **Minimum RAM tiers:** README says "64GB+" but the Desktop profile fits in 64GB, the Laptop profile targets 32GB, and below 48GB MLX is disabled. The actual minimum for a useful experience is unclear.
 
-### UX Issues
-
-1. **Playground terminology:** "Tool", "Model", "Backend" are developer terms. Non-technical users see 13 tool buttons and do not know which one to pick.
-
 2. **No progress indicators:** Long operations (transcription, image generation, model download on first use) show no progress. The request appears to hang.
 
-3. **Output files in /tmp/:** Generated images, audio, and other outputs are saved to `/tmp/` with cryptic names. Users must navigate a hidden directory to find their files. Files disappear on reboot. No "Download" button in the Playground for generated assets (audio has a player, images display inline, but explicit download/save is not prominent).
-
-4. **Error messages expose internals:** When a backend tool (mflux, ffmpeg) is missing, the error is a raw subprocess error with stderr output. Non-technical users see `FileNotFoundError: [Errno 2] No such file or directory: 'mflux-generate'` and have no idea what to do.
+3. **Output files in /tmp/:** Generated images, audio, and other outputs are saved to `/tmp/` with cryptic names. Users must navigate a hidden directory to find their files. Files disappear on reboot. Add "Download" button in the Playground for generated assets (audio has a player, images display inline, but explicit download/save is not prominent).
 
 5. **Playground path restriction vs MCP:** Summarize in the Playground only accepts `/tmp/` paths, while the MCP tool accepts `$HOME`. The Playground Summarize tool asks for a "File path" input but does not explain the `/tmp/` restriction. Users typing their actual file paths get a generic error.
 
-6. **Model picker shows all models for all tools:** The Playground model picker does not filter models by tool capability. A user can select an embedding model for Code generation and get an error.
 
-7. **"Local (override)" label:** When a user forces local mode but the desktop is reachable, the menu shows "Local (override)" which sounds like they are doing something wrong. Better: "Local (desktop available)" or just "Local".
+6. **Model picker shows all models for all tools:** The Playground model picker does not filter models by tool capability. A user can select an embedding model for Code generation and get an error.
 
 8. **First-run model downloads:** The default profiles reference specific models that may not be downloaded. The installer asks about pulling models, but if the user skips this, the Playground tools fail with model-not-found errors rather than offering to download.
 
+1. **No tests for `claude-local` script:** The offline Claude experience should have been totally removed from main.
+
+### Out Of Scope for Project
+
+5. **Parental controls / tool visibility:** No way to hide or disable specific Playground tools (especially "Unfiltered"). No content filtering on model responses.
+
+7. **Silent / non-interactive install:** `install.sh` always requires interactive input. No flags for automated deployment.
+
+1. **Playground terminology:** "Tool", "Model", "Backend" are developer terms. Non-technical users see 13 tool buttons and do not know which one to pick.
+
+6. **Team onboarding workflow:** No step-by-step guide for setting up a shared server for a team, distributing tokens, or managing multi-user access.
+
+5. **Air-gapped deployment:** No guide for running fully offline (disable auto-update, pre-cache all models, pre-install all dependencies).
+
+4. **Memory-per-model guidance:** No documentation on how much RAM each model needs. Users cannot make informed choices about which profile to use.
+
+7. **"Local (override)" label:** When a user forces local mode but the desktop is reachable, the menu shows "Local (override)" which sounds like they are doing something wrong. Better: "Local (desktop available)" or just "Local".
+
+### Out Of Scope for Project, But Worth Documenting
+
+4. **Per-user authentication:** Single shared bearer token for all users. No per-user accounts, quotas, audit trail, or access revocation.
+
+### Add to TODO for later
+
+1. **Multi-turn conversation / chat interface:** The Playground is single-turn only. No chat history, no conversation threading. Users expecting a ChatGPT-like experience will be disappointed.
+
+7. **Playground is single-turn:** README says "test any capability interactively" which implies conversation, but the Playground is strictly single-prompt single-response.
+
+
+
+3. **Batch processing:** No batch operations for any tool. Cannot process multiple images, translate multiple files to separate outputs, or embed thousands of documents efficiently.
+
+6. **Headless / daemonized mode:** No way to run Super Puppy services without the menu bar app GUI. Important for servers, Mac Minis, and CI environments.
+
+
+9. **Mandarin/Japanese TTS:** Default Voxtral voices cover only Western + Arabic + Hindi languages. No CJK TTS presets in the Playground.
+
+12. **Mid-session server fallback:** Client-to-server connection is established at MCP startup. If the connection drops mid-session, there is no automatic fallback to local models without restarting the MCP server.
+
+
+4. **Error messages expose internals:** When a backend tool (mflux, ffmpeg) is missing, the error is a raw subprocess error with stderr output. Non-technical users see `FileNotFoundError: [Errno 2] No such file or directory: 'mflux-generate'` and have no idea what to do.
+
 ### Test Gaps
 
-1. **No tests for `claude-local` script:** The offline Claude experience is untested.
 2. **No tests for `install.sh`:** The installer (which every user must run) has no automated tests.
 3. **No test for voice cloning flow:** `local_speak` with `ref_audio` is untested.
 4. **No test for multi-image vision:** `local_vision` with multiple `image_paths` is untested.

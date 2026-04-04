@@ -390,6 +390,23 @@ if ! command -v mlx-openai-server > /dev/null; then
     uv tool install --python 3.12 mlx-openai-server
 fi
 
+# mflux for image generation/editing (optional, needs 32GB+ RAM)
+RAM_CHECK=$(sysctl -n hw.memsize | awk '{printf "%d", $1 / 1073741824}')
+if [ "$RAM_CHECK" -ge 32 ] && ! command -v mflux-generate > /dev/null; then
+    echo "  Installing mflux (image generation)..."
+    uv tool install --python 3.12 mflux || echo "  Warning: mflux install failed (image gen/edit will be unavailable)"
+fi
+
+# ffmpeg for audio transcription (WebM conversion, format support)
+if ! command -v ffmpeg > /dev/null; then
+    if command -v brew > /dev/null; then
+        echo "  Installing ffmpeg (audio transcription support)..."
+        brew install ffmpeg || echo "  Warning: ffmpeg install failed (some audio formats may not work)"
+    else
+        echo "  Note: ffmpeg not found. Install with 'brew install ffmpeg' for full audio transcription support."
+    fi
+fi
+
 missing=()
 command -v uv > /dev/null || missing+=("uv")
 command -v ollama > /dev/null || missing+=("ollama")

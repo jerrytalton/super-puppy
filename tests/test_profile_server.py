@@ -93,6 +93,14 @@ FAKE_MODELS = {
         "total_params_b": 1.5, "quant": "",
         "is_loaded": True, "expires_at": None,
     },
+    "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16": {
+        "name": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16", "backend": "mlx-audio",
+        "active_params_b": 4, "context": 0,
+        "has_vision": False, "family": "tts",
+        "disk_bytes": 4_000_000_000, "vram_bytes": 4_000_000_000,
+        "total_params_b": 4, "quant": "bf16",
+        "is_loaded": False, "expires_at": None,
+    },
 }
 
 
@@ -370,6 +378,32 @@ class TestRoutes:
             resp = client.post("/api/test", json={"tool": "code", "prompt": "hi"})
         assert resp.status_code == 500
         assert "error" in resp.get_json()
+
+    def test_api_test_speak_ref_audio_rejects_bad_path(self, client):
+        prefs = {"tts": ["mlx-community/Voxtral-4B-TTS-2603-mlx-bf16"]}
+        with patch.object(ps, "get_all_models", return_value=FAKE_MODELS), \
+             patch.object(ps, "load_default_prefs", return_value=prefs):
+            resp = client.post("/api/test", json={
+                "tool": "speak", "text": "hello",
+                "ref_audio": "/Users/jerry/.ssh/id_rsa",
+            })
+        assert resp.status_code == 403
+        assert "restricted" in resp.get_json()["error"].lower()
+
+    def test_api_test_speak_ref_audio_selects_chatterbox(self, client):
+        prefs = {"tts": ["mlx-community/Voxtral-4B-TTS-2603-mlx-bf16"]}
+        with patch.object(ps, "get_all_models", return_value=FAKE_MODELS), \
+             patch.object(ps, "load_default_prefs", return_value=prefs), \
+             patch.object(ps, "_is_safe_test_path", return_value=True), \
+             patch("mlx_audio.tts.generate.generate_audio", create=True) as mock_gen:
+            resp = client.post("/api/test", json={
+                "tool": "speak", "text": "hello",
+                "ref_audio": "/tmp/ref.wav",
+            })
+        if mock_gen.called:
+            kwargs = mock_gen.call_args[1]
+            assert "chatterbox" in kwargs.get("model", "")
+            assert kwargs.get("ref_audio") == "/tmp/ref.wav"
 
     def test_tools_page(self, client):
         resp = client.get("/tools")

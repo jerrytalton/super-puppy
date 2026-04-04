@@ -346,7 +346,7 @@ class TestAuthMiddlewareDispatch:
 
     def test_messages_with_valid_session_passes(self):
         with server._session_lock:
-            server._authenticated_sessions.add("sess-ok")
+            server._authenticated_sessions["sess-ok"] = None
         result, call_next, req = self._call(
             "/messages", headers={}, query_params={"session_id": "sess-ok"})
         call_next.assert_called_once_with(req)
@@ -363,6 +363,32 @@ class TestAuthMiddlewareDispatch:
             resp_headers={"mcp-session-id": "from-resp"})
         with server._session_lock:
             assert "from-resp" in server._authenticated_sessions
+
+
+    def test_session_eviction_is_fifo(self):
+        old_max = server._MAX_SESSIONS
+        server._MAX_SESSIONS = 3
+        try:
+            for sid in ["first", "second", "third"]:
+                self._call(
+                    "/mcp",
+                    headers={"authorization": f"Bearer {server.MCP_AUTH_TOKEN}"},
+                    query_params={"session_id": sid})
+            with server._session_lock:
+                assert "first" in server._authenticated_sessions
+                assert "second" in server._authenticated_sessions
+                assert "third" in server._authenticated_sessions
+
+            self._call(
+                "/mcp",
+                headers={"authorization": f"Bearer {server.MCP_AUTH_TOKEN}"},
+                query_params={"session_id": "fourth"})
+            with server._session_lock:
+                assert "first" not in server._authenticated_sessions
+                assert "second" in server._authenticated_sessions
+                assert "fourth" in server._authenticated_sessions
+        finally:
+            server._MAX_SESSIONS = old_max
 
 
 class TestPathValidation:
@@ -431,3 +457,52 @@ class TestPathValidation:
             assert "not allowed" in result
         finally:
             Path(good_path).unlink()
+
+
+class TestConfigurablePathRestrictions:
+    """MCP_ALLOWED_PATHS in network.conf restricts file access."""
+
+    def test_custom_allowed_roots(self, tmp_path):
+        project_dir = tmp_path / "projects"
+        project_dir.mkdir()
+        test_file = project_dir / "test.txt"
+        test_file.write_text("hello")
+
+        old_roots = server._ALLOWED_ROOTS
+        server._ALLOWED_ROOTS = (project_dir, Path("/tmp"), Path("/private/tmp"))
+        try:
+            assert server._validate_path(str(test_file)) is None
+            result = server._validate_path(str(Path.home() / ".ssh" / "id_rsa"))
+            assert result is not None
+            assert "not allowed" in result
+        finally:
+            server._ALLOWED_ROOTS = old_roots
+
+    def test_tmp_always_included(self, tmp_path):
+        project_dir = tmp_path / "projects"
+        project_dir.mkdir()
+
+        old_roots = server._ALLOWED_ROOTS
+        server._ALLOWED_ROOTS = (project_dir, Path("/tmp"), Path("/private/tmp"))
+        try:
+            result = server._validate_path("/tmp/some_file.txt", must_exist=False)
+            assert result is None
+        finally:
+            server._ALLOWED_ROOTS = old_roots
+
+    def test_load_allowed_roots_from_config(self, tmp_path):
+        conf_file = tmp_path / "network.conf"
+        conf_file.write_text('MCP_ALLOWED_PATHS="/Users/test/projects:/Users/test/data"\n')
+        with patch.object(server, "NETWORK_CONF", conf_file):
+            roots = server._load_allowed_roots()
+        root_strs = [str(r) for r in roots]
+        assert "/Users/test/projects" in root_strs
+        assert "/Users/test/data" in root_strs
+        assert str(Path("/tmp")) in root_strs
+
+    def test_load_allowed_roots_defaults_without_config(self, tmp_path):
+        conf_file = tmp_path / "nonexistent.conf"
+        with patch.object(server, "NETWORK_CONF", conf_file):
+            roots = server._load_allowed_roots()
+        assert Path.home() in roots
+        assert Path("/tmp") in roots
