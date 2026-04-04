@@ -1,6 +1,6 @@
 # Super Puppy
 
-Local AI model infrastructure for Claude Code. MCP tools + menu bar app + Tailscale serving.
+Local AI model infrastructure for Apple Silicon. Menu bar app + standard APIs + MCP tools + Tailscale serving.
 
 ## Structure
 
