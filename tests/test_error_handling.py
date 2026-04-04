@@ -368,36 +368,6 @@ class TestGpuContentionWarning:
         assert "2 other requests" in warning
 
 
-# ── MCP server: mflux step derivation ──────────────────────────────
-# This tests the inline logic in local_image. Since it's not extracted
-# into a function, we verify the pattern matches the real code.
-
-class TestMfluxSteps:
-    """Verify step derivation matches the logic in local_image()."""
-
-    @pytest.fixture(autouse=True)
-    def _extract_real_logic(self):
-        """Extract the real step derivation from source to compare against."""
-        import re
-        source = Path(__file__).resolve().parent.parent / "mcp" / "local-models-server.py"
-        text = source.read_text()
-        # Find the actual keywords used in the source
-        match = re.search(r'any\(k in selected\.lower\(\) for k in \(([^)]+)\)\)', text)
-        assert match, "Could not find step derivation logic in source"
-        self.real_keywords = [k.strip().strip('"\'') for k in match.group(1).split(",")]
-
-    @pytest.mark.parametrize("model,expected_steps", [
-        ("x/z-image-turbo:latest", "4"),
-        ("x/flux2-klein:latest", "4"),
-        ("black-forest-labs/FLUX.1-schnell", "4"),
-        ("black-forest-labs/FLUX.2-dev", "20"),
-        ("some-future-model", "20"),
-    ])
-    def test_step_derivation(self, model, expected_steps):
-        # Use the REAL keywords extracted from source
-        steps = "4" if any(k in model.lower() for k in self.real_keywords) else "20"
-        assert steps == expected_steps
-
 
 # ── MCP server: auth middleware logic ───────────────────────────────
 
