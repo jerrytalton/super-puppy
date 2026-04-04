@@ -21,13 +21,26 @@ done
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Write a key=value pair into the user's network.conf
+# Uses grep + temp file instead of sed to avoid delimiter injection.
 set_conf() {
     local key="$1" value="$2"
     local conf="$HOME/.config/local-models/network.conf"
     if grep -q "^${key}=" "$conf" 2>/dev/null; then
-        sed -i '' "s|^${key}=.*|${key}=${value}|" "$conf"
+        local tmp="${conf}.tmp"
+        grep -v "^${key}=" "$conf" > "$tmp"
+        echo "${key}=${value}" >> "$tmp"
+        mv "$tmp" "$conf"
     else
         echo "${key}=${value}" >> "$conf"
+    fi
+}
+
+# Validate a hostname: only alphanumeric, hyphens, and dots.
+validate_hostname() {
+    local host="$1"
+    if [[ ! "$host" =~ ^[a-zA-Z0-9][a-zA-Z0-9.\-]*$ ]]; then
+        echo "  ERROR: Invalid hostname '$host' — only letters, numbers, hyphens, and dots allowed." >&2
+        return 1
     fi
 }
 
@@ -160,6 +173,10 @@ if $RECONFIGURE; then
                     printf "  Tailscale hostname for this machine [super-puppy]: "
                     read -r ts_host
                     ts_host="${ts_host:-super-puppy}"
+                    if ! validate_hostname "$ts_host"; then
+                        ts_host="super-puppy"
+                        echo "  → Using default hostname: $ts_host"
+                    fi
                     set_conf "TAILSCALE_HOSTNAME" "\"$ts_host\""
 
                     tailscale set --hostname "$ts_host" 2>/dev/null \
@@ -242,7 +259,7 @@ for peer in d.get('Peer', {}).values():
         fi
         printf "  Tailscale hostname of the model server (e.g. super-puppy): "
         read -r ts_server_host
-        if [ -n "$ts_server_host" ]; then
+        if [ -n "$ts_server_host" ] && validate_hostname "$ts_server_host"; then
             set_conf "TAILSCALE_HOSTNAME" "\"$ts_server_host\""
             echo "  → Will connect to $ts_server_host via Tailscale"
 
@@ -270,8 +287,13 @@ for peer in d.get('Peer', {}).values():
             printf "  1Password item reference (op://vault/item/field): "
             read -r op_ref
             if [ -n "$op_ref" ]; then
-                set_conf "OP_REF" "\"$op_ref\""
-                echo "  → Token will be read from 1Password"
+                if [[ "$op_ref" =~ ^op://[a-zA-Z0-9._\ -]+/[a-zA-Z0-9._\ -]+/[a-zA-Z0-9._\ -]+$ ]]; then
+                    set_conf "OP_REF" "\"$op_ref\""
+                    echo "  → Token will be read from 1Password"
+                else
+                    echo "  ERROR: Invalid 1Password reference. Expected format: op://vault/item/field" >&2
+                    op_ref=""
+                fi
             fi
         fi
     fi
