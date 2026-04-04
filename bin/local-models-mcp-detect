@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Wrapper that detects the desktop model server, resolves mDNS to IP,
+# Wrapper that detects the desktop model server via Tailscale,
 # sets OLLAMA_URL and MLX_URL, then launches the local-models MCP server.
 
 set -euo pipefail
@@ -27,50 +27,49 @@ elif [ -f "$CONF" ]; then
 
     DESKTOP_FOUND=false
 
-    # Try 1: mDNS (LAN)
-    if [ -n "${MODEL_SERVER_HOST:-}" ]; then
-        HOST_IP=$(python3 -c "import socket,sys; print(socket.gethostbyname(sys.argv[1]))" "$MODEL_SERVER_HOST" 2>/dev/null || echo "")
+    # Resolve desktop peer via Tailscale
+    if [ -n "${TAILSCALE_HOSTNAME:-}" ] && command -v tailscale > /dev/null 2>&1; then
+        DESKTOP_IP=$(tailscale status --json 2>/dev/null | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+if d.get('BackendState') != 'Running':
+    sys.exit(0)
+for peer in d.get('Peer', {}).values():
+    if peer.get('HostName', '') == '${TAILSCALE_HOSTNAME}':
+        ips = peer.get('TailscaleIPs', [])
+        if ips:
+            print(ips[0])
+            break
+" 2>/dev/null || true)
 
-        if [ -n "$HOST_IP" ]; then
+        DESKTOP_FQDN=$(tailscale status --json 2>/dev/null | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for peer in d.get('Peer', {}).values():
+    if peer.get('HostName', '') == '${TAILSCALE_HOSTNAME}':
+        print(peer.get('DNSName', '').rstrip('.'))
+        break
+" 2>/dev/null || true)
+
+        if [ -n "$DESKTOP_IP" ]; then
             if curl -sf --connect-timeout "${PROBE_TIMEOUT:-2}" \
-                 "http://${HOST_IP}:${OLLAMA_PORT:-11434}/api/version" > /dev/null 2>&1; then
-                OLLAMA_URL="http://${HOST_IP}:${OLLAMA_PORT:-11434}"
-                echo "local-models MCP: using desktop Ollama at ${MODEL_SERVER_HOST} (${HOST_IP})" >&2
+                 "http://${DESKTOP_IP}:${OLLAMA_PORT:-11434}/api/version" > /dev/null 2>&1; then
+                OLLAMA_URL="http://${DESKTOP_IP}:${OLLAMA_PORT:-11434}"
+                echo "local-models MCP: using desktop Ollama via Tailscale (${DESKTOP_FQDN:-$DESKTOP_IP})" >&2
                 DESKTOP_FOUND=true
             fi
 
             if curl -sf --connect-timeout "${PROBE_TIMEOUT:-2}" \
-                 "http://${HOST_IP}:${MLX_PORT:-8000}/v1/models" > /dev/null 2>&1; then
-                MLX_URL="http://${HOST_IP}:${MLX_PORT:-8000}"
-                echo "local-models MCP: using desktop MLX at ${MODEL_SERVER_HOST} (${HOST_IP})" >&2
+                 "http://${DESKTOP_IP}:${MLX_PORT:-8000}/v1/models" > /dev/null 2>&1; then
+                MLX_URL="http://${DESKTOP_IP}:${MLX_PORT:-8000}"
+                echo "local-models MCP: using desktop MLX via Tailscale (${DESKTOP_FQDN:-$DESKTOP_IP})" >&2
                 DESKTOP_FOUND=true
             fi
         fi
     fi
 
-    # Try 2: Tailscale (off-LAN)
     if [ "$DESKTOP_FOUND" = "false" ]; then
-        # shellcheck source=/dev/null
-        source "$REPO_DIR/bin/tailscale-status"
-        if [ "$TS_AVAILABLE" = "true" ] && [ -n "$TS_IP" ]; then
-            if curl -sf --connect-timeout "${PROBE_TIMEOUT:-2}" \
-                 "http://${TS_IP}:${OLLAMA_PORT:-11434}/api/version" > /dev/null 2>&1; then
-                OLLAMA_URL="http://${TS_IP}:${OLLAMA_PORT:-11434}"
-                echo "local-models MCP: using desktop Ollama via Tailscale (${TS_FQDN})" >&2
-                DESKTOP_FOUND=true
-            fi
-
-            if curl -sf --connect-timeout "${PROBE_TIMEOUT:-2}" \
-                 "http://${TS_IP}:${MLX_PORT:-8000}/v1/models" > /dev/null 2>&1; then
-                MLX_URL="http://${TS_IP}:${MLX_PORT:-8000}"
-                echo "local-models MCP: using desktop MLX via Tailscale (${TS_FQDN})" >&2
-                DESKTOP_FOUND=true
-            fi
-        fi
-    fi
-
-    if [ "$DESKTOP_FOUND" = "false" ]; then
-        echo "local-models MCP: desktop unreachable (LAN + Tailscale), using localhost" >&2
+        echo "local-models MCP: desktop unreachable via Tailscale, using localhost" >&2
     fi
 fi
 

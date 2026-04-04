@@ -208,6 +208,11 @@ const TOOLS = {
     {id:'screenshot', label:'Or screenshot', type:'screenshot'},
     {id:'prompt', label:'Prompt', type:'text', placeholder:'Describe what you see', value:'Describe what you see in this image.'},
   ]},
+  computer_use:{ label: 'Computer Use', task: 'computer_use', fields: [
+    {id:'image_path', label:'Screenshot', type:'file', accept:'image/*'},
+    {id:'screenshot', label:'Or screenshot', type:'screenshot'},
+    {id:'intent', label:'Intent', type:'textarea', placeholder:'Click the Submit button...'},
+  ]},
   image_gen:   { label: 'Image Gen', task: 'image_gen', fields: [
     {id:'prompt', label:'Prompt', type:'textarea', placeholder:'A cat wearing a space helmet...'},
   ]},

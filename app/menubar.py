@@ -1066,7 +1066,7 @@ class LocalModelsApp(rumps.App):
                                                 callback=self._toggle_remote_access)
         self.menu_share_url = rumps.MenuItem("Copy Playground URL",
                                              callback=self._copy_playground_url)
-        self.menu_version = rumps.MenuItem(f"v{self.app_version}")
+        self.menu_version = rumps.MenuItem(self.app_version)
         self.menu_restart = rumps.MenuItem("Restart", callback=self.restart_app)
         self.menu_diagnostics = rumps.MenuItem("Copy Diagnostics",
                                                callback=self._copy_diagnostics)
@@ -1392,7 +1392,7 @@ class LocalModelsApp(rumps.App):
         mcp_proc = getattr(self, '_mcp_proc', None)
         mcp_alive = mcp_proc is not None and mcp_proc.poll() is None
         lines = [
-            f"Super Puppy v{self.app_version}",
+            f"Super Puppy {self.app_version}",
             f"Mode: {self.mode}",
             f"Desktop: {self.desktop}",
             f"Force local: {self.force_local}",
@@ -1909,7 +1909,7 @@ class LocalModelsApp(rumps.App):
                 self._start_mcp_server()
 
         # ── Version ──
-        self.menu_version.title = f"v{self.app_version}"
+        self.menu_version.title = self.app_version
         self.menu_version.set_callback(None)
 
         # ── Restart (always available) ──
@@ -2210,6 +2210,20 @@ class LocalModelsApp(rumps.App):
                 pass
             self._cleanup_update_files()
             return
+
+        # Run post-update hook (rebuild binary, update symlinks)
+        post_update = os.path.join(REPO_DIR, "bin", "post-update.sh")
+        if os.path.isfile(post_update):
+            try:
+                result = subprocess.run(
+                    [post_update], capture_output=True, text=True, timeout=120)
+                if result.returncode != 0:
+                    logging.error("post-update.sh failed: %s", result.stderr)
+                else:
+                    logging.info("post-update.sh: %s",
+                                 result.stdout.strip().split("\n")[-1])
+            except Exception as e:
+                logging.warning("post-update.sh error: %s", e)
 
         # Write update_started marker for crash rollback detection
         try:

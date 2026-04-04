@@ -109,14 +109,44 @@ def _read_server_ram_gb():
             line = line.strip()
             if line.startswith("SERVER_RAM_GB="):
                 val = line.partition("=")[2].strip().strip('"').strip("'")
-                return int(val)
+                v = int(val)
+                if v > 0:
+                    return v
+    return None
+
+
+def _query_server_ram_gb():
+    """Query the remote server's RAM via Tailscale SSH (best-effort, cached)."""
+    if not hasattr(_query_server_ram_gb, "_cache"):
+        _query_server_ram_gb._cache = None
+    if _query_server_ram_gb._cache is not None:
+        return _query_server_ram_gb._cache
+    ts_hostname = ""
+    if NETWORK_CONF.exists():
+        for line in NETWORK_CONF.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("TAILSCALE_HOSTNAME="):
+                ts_hostname = line.partition("=")[2].strip().strip('"').strip("'")
+    if not ts_hostname:
+        return None
+    try:
+        raw = subprocess.check_output(
+            ["ssh", "-o", "ConnectTimeout=3", "-o", "BatchMode=yes",
+             ts_hostname, "sysctl -n hw.memsize"],
+            text=True, timeout=5).strip()
+        gb = int(raw) >> 30
+        if gb > 0:
+            _query_server_ram_gb._cache = gb
+            return gb
+    except Exception:
+        pass
     return None
 
 
 def get_system_info():
     try:
         if _is_remote_ollama():
-            gb = _read_server_ram_gb()
+            gb = _read_server_ram_gb() or _query_server_ram_gb()
             if gb:
                 return {"total_ram_bytes": gb << 30, "total_ram_gb": gb,
                         "mode": "client"}
@@ -998,6 +1028,56 @@ def api_test():
                                       "content": prompt,
                                       "images": [image_b64]}],
                     }, timeout=120)
+                    resp.raise_for_status()
+                    result = resp.json()["message"]["content"]
+            return jsonify({"result": result, "model": model})
+
+        elif tool == "computer_use":
+            import base64
+            model, backend = _pick("computer_use")
+            if body.get("image_path"):
+                if not _is_safe_test_path(body["image_path"]):
+                    return jsonify({"error": "File path not allowed (must be in /tmp/)"}), 403
+                image_data = Path(body["image_path"]).read_bytes()
+            else:
+                return jsonify({"error": "Screenshot required"}), 400
+            image_b64 = base64.b64encode(image_data).decode()
+            intent = body.get("intent", "Describe what actions to take")
+            system_prompt = (
+                "You are a GUI automation assistant. Given a screenshot and an intent, "
+                "return a JSON array of actions to accomplish the intent.\n\n"
+                "Each action is one of:\n"
+                '- {"action": "click", "x": <int>, "y": <int>, "description": "<what>"}\n'
+                '- {"action": "type", "text": "<text>", "description": "<where>"}\n'
+                '- {"action": "scroll", "direction": "up"|"down", "amount": <int>, "description": "<why>"}\n'
+                '- {"action": "key", "key": "<key combo>", "description": "<why>"}\n'
+                '- {"action": "wait", "seconds": <float>, "description": "<why>"}\n\n'
+                "Return ONLY the JSON array."
+            )
+            with _track_playground("computer_use", model, backend):
+                if backend == "mlx":
+                    resp = requests.post(f"{MLX_URL}/v1/chat/completions", json={
+                        "model": model, "stream": False,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": [
+                                {"type": "text", "text": intent},
+                                {"type": "image_url", "image_url": {
+                                    "url": f"data:image/png;base64,{image_b64}"}},
+                            ]},
+                        ],
+                    }, timeout=300)
+                    resp.raise_for_status()
+                    result = resp.json()["choices"][0]["message"]["content"]
+                else:
+                    resp = requests.post(f"{OLLAMA_URL}/api/chat", json={
+                        "model": model, "stream": False,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": intent,
+                             "images": [image_b64]},
+                        ],
+                    }, timeout=300)
                     resp.raise_for_status()
                     result = resp.json()["message"]["content"]
             return jsonify({"result": result, "model": model})

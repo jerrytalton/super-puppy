@@ -25,10 +25,10 @@ NETWORK_CONF="$HOME/.config/local-models/network.conf"
 OLLAMA_PID_FILE="/tmp/ollama-serve.pid"
 
 # Load network config
-MODEL_SERVER_HOST=""
 OLLAMA_PORT=11434
 MLX_PORT=8000
 PROBE_TIMEOUT=2
+TAILSCALE_HOSTNAME=""
 
 if [ -f "$NETWORK_CONF" ]; then
     # shellcheck source=/dev/null
@@ -44,9 +44,22 @@ is_server() {
 }
 
 server_is_reachable() {
-    [ -n "$MODEL_SERVER_HOST" ] && \
+    # Resolve the desktop peer via Tailscale
+    [ -n "${TAILSCALE_HOSTNAME:-}" ] || return 1
+    command -v tailscale > /dev/null 2>&1 || return 1
+    local desktop_ip
+    desktop_ip=$(tailscale status --json 2>/dev/null | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+if d.get('BackendState') != 'Running': sys.exit(1)
+for peer in d.get('Peer', {}).values():
+    if peer.get('HostName', '') == '${TAILSCALE_HOSTNAME}':
+        ips = peer.get('TailscaleIPs', [])
+        if ips: print(ips[0]); sys.exit(0)
+sys.exit(1)
+" 2>/dev/null) || return 1
     curl -sf --connect-timeout "$PROBE_TIMEOUT" \
-        "http://${MODEL_SERVER_HOST}:${OLLAMA_PORT}/api/version" > /dev/null 2>&1
+        "http://${desktop_ip}:${OLLAMA_PORT}/api/version" > /dev/null 2>&1
 }
 
 pick_mlx_config() {
@@ -106,14 +119,12 @@ show_status() {
     echo ""
 
     # Check server reachability (for clients)
-    if ! is_server && [ -n "$MODEL_SERVER_HOST" ]; then
+    if ! is_server && [ -n "${TAILSCALE_HOSTNAME:-}" ]; then
         if server_is_reachable; then
-            echo "Server ($MODEL_SERVER_HOST): reachable"
-            echo "  Ollama:       http://${MODEL_SERVER_HOST}:${OLLAMA_PORT}"
-            echo "  MLX-OpenAI:   http://${MODEL_SERVER_HOST}:${MLX_PORT}"
+            echo "Server ($TAILSCALE_HOSTNAME): reachable via Tailscale"
             echo ""
         else
-            echo "Server ($MODEL_SERVER_HOST): not reachable"
+            echo "Server ($TAILSCALE_HOSTNAME): not reachable"
             echo ""
         fi
     fi
@@ -150,36 +161,20 @@ echo ""
 
 # --- Server detection (clients only) ---
 if ! is_server && [ "$FORCE_LOCAL" = false ] && server_is_reachable; then
-    echo "Model server detected at $MODEL_SERVER_HOST"
-    echo "  Ollama:     http://${MODEL_SERVER_HOST}:${OLLAMA_PORT}"
-    echo "  MLX-OpenAI: http://${MODEL_SERVER_HOST}:${MLX_PORT}"
-    echo ""
-    echo "Skipping local server startup — Claude will use the server via MCP."
-    echo "Use 'start-local-models --local' to force local servers anyway."
+    echo "Model server detected via Tailscale ($TAILSCALE_HOSTNAME)"
+    echo "  Skipping local server startup — Claude will use the server via MCP."
+    echo "  Use 'start-local-models --local' to force local servers anyway."
     exit 0
 fi
 
 # --- Ollama ---
 if is_server; then
-    # Server: bind to all interfaces so clients on the LAN can reach us
-    export OLLAMA_HOST="0.0.0.0:11434"
     # Keep core models loaded to avoid swap delays on MCP tool calls
     export OLLAMA_MAX_LOADED_MODELS=6
 fi
 
 if pgrep -x ollama > /dev/null; then
-    if is_server && ! curl -sf "http://0.0.0.0:${OLLAMA_PORT}/api/version" > /dev/null 2>&1; then
-        echo "Ollama running but not bound to 0.0.0.0 — restarting for LAN access..."
-        # Kill Ollama.app first — it auto-respawns ollama serve with localhost binding
-        pkill -f Ollama.app 2>/dev/null || true
-        pkill -x ollama
-        sleep 1
-        ollama serve > /dev/null 2>&1 &
-        echo $! > "$OLLAMA_PID_FILE"
-        wait_for_service "http://localhost:${OLLAMA_PORT}/api/version" "Ollama" 10 || true
-    else
-        echo "Ollama already running."
-    fi
+    echo "Ollama already running."
 else
     echo "Starting Ollama..."
     ollama serve > /dev/null 2>&1 &
@@ -215,18 +210,12 @@ fi
 # --- Summary ---
 echo ""
 if is_server; then
-    echo "Model server running (LAN-accessible):"
-    echo "  Ollama:       http://0.0.0.0:${OLLAMA_PORT}"
-    echo "  MLX-OpenAI:   http://0.0.0.0:${MLX_PORT}"
-    echo ""
-    echo "Other machines on the LAN can reach this at:"
-    echo "  http://$(scutil --get LocalHostName 2>/dev/null || hostname -s).local:${OLLAMA_PORT}"
-    echo "  http://$(scutil --get LocalHostName 2>/dev/null || hostname -s).local:${MLX_PORT}"
+    echo "Model server running (localhost — Tailscale serve handles remote access):"
 else
     echo "Local models ready (fallback mode):"
-    echo "  Ollama:       http://localhost:${OLLAMA_PORT}"
-    echo "  MLX-OpenAI:   http://localhost:${MLX_PORT}"
 fi
+echo "  Ollama:       http://localhost:${OLLAMA_PORT}"
+echo "  MLX-OpenAI:   http://localhost:${MLX_PORT}"
 echo ""
 echo "Commands:"
 echo "  start-local-models --status   Show running models"
