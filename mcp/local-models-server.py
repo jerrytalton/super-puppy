@@ -114,7 +114,7 @@ def _validate_paths(paths: list[str], must_exist: bool = True) -> str | None:
     return None
 
 
-_AUTH_EXEMPT_PATHS = {"/gpu", "/api/mcp-models"}
+_AUTH_EXEMPT_PATHS = {"/gpu", "/activity", "/api/mcp-models"}
 _MAX_SESSIONS = 1000
 _authenticated_sessions: OrderedDict[str, None] = OrderedDict()
 _session_lock = threading.Lock()
