@@ -273,76 +273,97 @@ class TestGpuTracking:
 
 # ── Auth middleware logic ──────────────────────────────────────────
 
-class TestAuthSessionTracking:
-    def test_session_add_and_check(self):
-        with server._session_lock:
-            server._authenticated_sessions.add("sess-123")
-        assert "sess-123" in server._authenticated_sessions
+class TestAuthMiddlewareDispatch:
+    """Test the REAL BearerAuthMiddleware.dispatch method."""
 
-    def test_session_eviction_at_max(self):
+    @pytest.fixture(autouse=True)
+    def _reset_sessions(self):
         with server._session_lock:
             server._authenticated_sessions.clear()
-            for i in range(server._MAX_SESSIONS):
-                server._authenticated_sessions.add(f"sess-{i}")
-            assert len(server._authenticated_sessions) == server._MAX_SESSIONS
-            # Adding one more should trigger pop()
-            if len(server._authenticated_sessions) >= server._MAX_SESSIONS:
-                server._authenticated_sessions.pop()
-            server._authenticated_sessions.add("sess-new")
-            assert "sess-new" in server._authenticated_sessions
-            assert len(server._authenticated_sessions) == server._MAX_SESSIONS
+        yield
+        with server._session_lock:
+            server._authenticated_sessions.clear()
 
-    def test_exempt_paths(self):
-        assert "/gpu" in server._AUTH_EXEMPT_PATHS
-        assert "/api/mcp-models" in server._AUTH_EXEMPT_PATHS
+    def _make_request(self, path="/mcp", headers=None, query_params=None):
+        req = MagicMock()
+        req.url.path = path
+        req.headers = headers or {}
+        req.query_params = query_params or {}
+        return req
 
+    def _make_response(self, headers=None):
+        resp = MagicMock()
+        resp.headers = headers or {}
+        return resp
 
-# ── Job dispatch/collect ───────────────────────────────────────────
+    async def _call(self, path, headers=None, query_params=None, resp_headers=None):
+        middleware = server.BearerAuthMiddleware.__new__(server.BearerAuthMiddleware)
+        req = self._make_request(path, headers, query_params)
+        resp = self._make_response(resp_headers)
 
-class TestJobStore:
-    def _make_job(self, status="running", result=None):
-        return {
-            "status": status,
-            "model": "test-model",
-            "backend": "ollama",
-            "result": result,
-            "created": time.time(),
-        }
+        async def call_next(r):
+            return resp
+        call_next_mock = MagicMock(side_effect=call_next)
 
-    def test_job_store_starts_empty(self):
-        assert len(server._jobs) == 0
+        result = await middleware.dispatch(req, call_next_mock)
+        return result, call_next_mock, req
 
-    def test_running_job_not_collected(self):
-        server._jobs["abc"] = self._make_job("running")
-        assert server._jobs["abc"]["status"] == "running"
-        assert server._jobs["abc"]["result"] is None
+    @pytest.mark.asyncio
+    async def test_rejects_missing_token(self):
+        result, call_next, _ = await self._call("/mcp", headers={})
+        call_next.assert_not_called()
 
-    def test_done_job_has_result(self):
-        server._jobs["done1"] = self._make_job("done", "The answer")
-        job = server._jobs["done1"]
-        assert job["status"] == "done"
-        assert job["result"] == "The answer"
+    @pytest.mark.asyncio
+    async def test_rejects_wrong_token(self):
+        result, call_next, _ = await self._call("/mcp", headers={"authorization": "Bearer wrong-token"})
+        call_next.assert_not_called()
 
-    def test_failed_job_has_error(self):
-        server._jobs["fail1"] = self._make_job("failed", "Error: timeout")
-        assert server._jobs["fail1"]["status"] == "failed"
-        assert "Error" in server._jobs["fail1"]["result"]
+    @pytest.mark.asyncio
+    async def test_allows_correct_token(self):
+        result, call_next, req = await self._call(
+            "/mcp", headers={"authorization": f"Bearer {server.MCP_AUTH_TOKEN}"})
+        call_next.assert_called_once_with(req)
 
-    def test_stale_job_eviction_logic(self):
-        old_time = time.time() - server._JOB_TTL - 10
-        server._jobs["stale"] = {
-            "status": "done", "model": "m", "backend": "ollama",
-            "result": "old", "created": old_time,
-        }
-        server._jobs["fresh"] = self._make_job("done", "new")
-        # Evict stale jobs (same logic as local_dispatch)
-        now = time.time()
-        stale = [jid for jid, j in server._jobs.items()
-                 if j["status"] != "running" and now - j["created"] > server._JOB_TTL]
-        for jid in stale:
-            del server._jobs[jid]
-        assert "stale" not in server._jobs
-        assert "fresh" in server._jobs
+    @pytest.mark.asyncio
+    async def test_exempt_paths_skip_auth(self):
+        for path in ("/gpu", "/api/mcp-models"):
+            result, call_next, req = await self._call(path, headers={})
+            call_next.assert_called_once_with(req)
 
-    def test_job_ttl_constant(self):
-        assert server._JOB_TTL == 3600
+    @pytest.mark.asyncio
+    async def test_well_known_skips_auth(self):
+        result, call_next, req = await self._call(
+            "/.well-known/oauth-authorization-server", headers={})
+        call_next.assert_called_once_with(req)
+
+    @pytest.mark.asyncio
+    async def test_mcp_init_tracks_session(self):
+        await self._call(
+            "/mcp",
+            headers={"authorization": f"Bearer {server.MCP_AUTH_TOKEN}"},
+            query_params={"session_id": "sess-abc"})
+        with server._session_lock:
+            assert "sess-abc" in server._authenticated_sessions
+
+    @pytest.mark.asyncio
+    async def test_messages_with_valid_session_passes(self):
+        with server._session_lock:
+            server._authenticated_sessions.add("sess-ok")
+        result, call_next, req = await self._call(
+            "/messages", headers={}, query_params={"session_id": "sess-ok"})
+        call_next.assert_called_once_with(req)
+
+    @pytest.mark.asyncio
+    async def test_messages_with_unknown_session_rejects(self):
+        result, call_next, _ = await self._call(
+            "/messages", headers={}, query_params={"session_id": "sess-unknown"})
+        call_next.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_response_header_session_tracked(self):
+        await self._call(
+            "/mcp",
+            headers={"authorization": f"Bearer {server.MCP_AUTH_TOKEN}"},
+            resp_headers={"mcp-session-id": "from-resp"})
+        with server._session_lock:
+            assert "from-resp" in server._authenticated_sessions
