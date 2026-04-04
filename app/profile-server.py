@@ -967,7 +967,7 @@ def api_test_stream():
             model, backend = _pick("long_context")
             fp = body["file_path"]
             if not _is_safe_test_path(fp):
-                return jsonify({"error": "File path must be in /tmp/"}), 400
+                return jsonify({"error": _PLAYGROUND_PATH_ERROR}), 403
             text = Path(fp).read_text(errors="replace")[:50000]
             messages = [
                 {"role": "system", "content": "Summarize this content concisely."},
@@ -1052,7 +1052,7 @@ def api_test():
             import base64
             model, backend = _pick("vision")
             if not _is_safe_test_path(body["image_path"]):
-                return jsonify({"error": "File path not allowed (must be in /tmp/)"}), 403
+                return jsonify({"error": _PLAYGROUND_PATH_ERROR}), 403
             image_data = Path(body["image_path"]).read_bytes()
             image_b64 = base64.b64encode(image_data).decode()
             prompt = body.get("prompt", "Describe this image.")
@@ -1084,7 +1084,7 @@ def api_test():
             model, backend = _pick("computer_use")
             if body.get("image_path"):
                 if not _is_safe_test_path(body["image_path"]):
-                    return jsonify({"error": "File path not allowed (must be in /tmp/)"}), 403
+                    return jsonify({"error": _PLAYGROUND_PATH_ERROR}), 403
                 image_data = Path(body["image_path"]).read_bytes()
             else:
                 return jsonify({"error": "Screenshot required"}), 400
@@ -1133,7 +1133,7 @@ def api_test():
             model, backend = _pick("image_edit")
             image_path = body.get("image_path", "")
             if not _is_safe_test_path(image_path):
-                return jsonify({"error": "File path not allowed (must be in /tmp/)"}), 403
+                return jsonify({"error": _PLAYGROUND_PATH_ERROR}), 403
             prompt = body.get("prompt", "")
             import time as _time
             out_path = f"/tmp/playground_edit_{int(_time.time())}.png"
@@ -1200,7 +1200,7 @@ def api_test():
             if not model:
                 model = "whisper-v3"
             if not _is_safe_test_path(body["audio_path"]):
-                return jsonify({"error": "File path not allowed (must be in /tmp/)"}), 403
+                return jsonify({"error": _PLAYGROUND_PATH_ERROR}), 403
             audio_path = Path(body["audio_path"])
             suffix = audio_path.suffix.lstrip(".")
 
@@ -1231,6 +1231,11 @@ def api_test():
             voice = body.get("voice", "casual_male")
             lang = body.get("language", "en")
             text = body.get("text", "")
+            ref_audio = body.get("ref_audio")
+            if ref_audio and not _is_safe_test_path(ref_audio):
+                return jsonify({"error": _PLAYGROUND_PATH_ERROR}), 403
+            if ref_audio:
+                model = body.get("model") or "mlx-community/chatterbox-fp16"
             import time as _time
             out_path = f"/tmp/playground_tts_{int(_time.time())}.wav"
             out_dir = os.path.dirname(out_path)
@@ -1238,12 +1243,15 @@ def api_test():
             with _track_playground("speak", model, backend):
                 try:
                     from mlx_audio.tts.generate import generate_audio
-                    generate_audio(
+                    kwargs = dict(
                         text=text, model=model, voice=voice,
                         lang_code=lang, output_path=out_dir,
                         file_prefix=prefix, audio_format="wav",
                         verbose=False, play=False,
                     )
+                    if ref_audio:
+                        kwargs["ref_audio"] = ref_audio
+                    generate_audio(**kwargs)
                     actual = os.path.join(out_dir, f"{prefix}_000.wav")
                     if os.path.exists(actual):
                         os.rename(actual, out_path)
@@ -1266,7 +1274,7 @@ def api_test():
         elif tool == "summarize":
             model, backend = _pick("long_context")
             if not _is_safe_test_path(body["file_path"]):
-                return jsonify({"error": "File path not allowed (must be in /tmp/)"}), 403
+                return jsonify({"error": _PLAYGROUND_PATH_ERROR}), 403
             text = Path(body["file_path"]).read_text(errors="replace")[:50000]
             result = _chat(model, backend, [
                 {"role": "system", "content": "Summarize this content concisely."},
@@ -1344,6 +1352,13 @@ def api_test_upload():
     dest = f"/tmp/test_upload_{int(_time.time())}{ext}"
     f.save(dest)
     return jsonify({"path": dest})
+
+
+_PLAYGROUND_PATH_ERROR = (
+    "Playground file access is restricted to uploaded files in /tmp/. "
+    "Use the file picker to upload your file, or use the equivalent MCP tool "
+    "via Claude Code to access files in your home directory."
+)
 
 
 def _is_safe_test_path(path: str) -> bool:

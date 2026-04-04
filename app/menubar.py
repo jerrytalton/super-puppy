@@ -2160,6 +2160,8 @@ class LocalModelsApp(rumps.App):
     # -------------------------------------------------------------------
 
     def _schedule_update_check(self):
+        if self.conf.get("AUTO_UPDATE", "true").lower() == "false":
+            return
         self.last_update_check = time.time()
         thread = threading.Thread(target=self._check_for_updates, daemon=True)
         thread.start()

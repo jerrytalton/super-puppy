@@ -87,6 +87,11 @@ h2 { font-size: 13px; font-weight: 600; color: var(--text2); text-transform: upp
 }
 .output-box.error { border-color: var(--red); color: var(--red); }
 .output-box img { max-width: 100%; border-radius: 8px; margin-top: 8px; }
+.download-btn {
+  display: inline-block; margin-top: 8px; padding: 6px 14px; border-radius: 8px;
+  background: var(--accent); color: #fff; text-decoration: none; font-size: 13px;
+}
+.download-btn:hover { opacity: 0.85; }
 
 .mic-row { display: flex; align-items: center; gap: 10px; }
 .mic-btn {
@@ -229,6 +234,7 @@ const TOOLS = {
       'ar_male', 'hi_male', 'hi_female',
     ]},
     {id:'language', label:'Language', type:'text', placeholder:'en', value:'en'},
+    {id:'ref_audio', label:'Voice clone (optional)', type:'file', accept:'audio/*'},
   ]},
   transcribe:  { label: 'Transcribe', task: 'transcription', fields: [
     {id:'audio_path', label:'Audio file', type:'file', accept:'audio/*'},
@@ -714,7 +720,8 @@ async function run() {
       }
 
     } else {
-      log(`POST /api/test`);
+      const SLOW_TOOLS = {image_gen: 'Generating image', image_edit: 'Editing image', speak: 'Generating speech', transcribe: 'Transcribing audio'};
+      log(SLOW_TOOLS[runTool] || `Processing ${runTool}`);
       const resp = await fetch('/api/test', _authHeaders({
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -734,11 +741,15 @@ async function run() {
         if (data.error) {
           html = data.error; cls = 'output-box error';
         } else if (data.audio_path) {
+          const audioUrl = `/api/test/audio?path=${encodeURIComponent(data.audio_path)}`;
           html = data.result +
-            `<audio controls src="/api/test/audio?path=${encodeURIComponent(data.audio_path)}" style="display:block;margin-top:8px;width:100%"></audio>`;
+            `<audio controls src="${audioUrl}" style="display:block;margin-top:8px;width:100%"></audio>` +
+            `<a href="${audioUrl}" download class="download-btn">Download audio</a>`;
         } else if (data.image_path) {
+          const imgUrl = `/api/test/image?path=${encodeURIComponent(data.image_path)}`;
           html = data.result +
-            `<img src="/api/test/image?path=${encodeURIComponent(data.image_path)}">`;
+            `<img src="${imgUrl}">` +
+            `<a href="${imgUrl}" download class="download-btn">Download image</a>`;
         } else if (data.embeddings) {
           const dims = data.dimensions || '?', count = data.count || '?';
           html = `${count} embedding(s), ${dims} dimensions\n\n` +
@@ -761,15 +772,23 @@ async function run() {
         output.className = 'output-box error';
       } else if (data.audio_path) {
         output.textContent = data.result;
+        const audioUrl = '/api/test/audio?path=' + encodeURIComponent(data.audio_path);
         const audio = document.createElement('audio');
         audio.controls = true; audio.style.cssText = 'display:block;margin-top:8px;width:100%';
-        audio.src = '/api/test/audio?path=' + encodeURIComponent(data.audio_path);
+        audio.src = audioUrl;
         output.appendChild(audio);
+        const dl = document.createElement('a');
+        dl.href = audioUrl; dl.download = ''; dl.className = 'download-btn'; dl.textContent = 'Download audio';
+        output.appendChild(dl);
       } else if (data.image_path) {
         output.textContent = data.result;
+        const imgUrl = '/api/test/image?path=' + encodeURIComponent(data.image_path);
         const img = document.createElement('img');
-        img.src = '/api/test/image?path=' + encodeURIComponent(data.image_path);
+        img.src = imgUrl;
         output.appendChild(img);
+        const dl = document.createElement('a');
+        dl.href = imgUrl; dl.download = ''; dl.className = 'download-btn'; dl.textContent = 'Download image';
+        output.appendChild(dl);
       } else if (data.embeddings) {
         const dims = data.dimensions || '?';
         const count = data.count || '?';

@@ -6,13 +6,28 @@ Your Mac has a GPU that can run serious AI models — probably while it's sittin
 
 It works as a **server** or a **client** — and every client is also a server. Install it on a beefy desktop and it serves models over Tailscale. Install it on a laptop and it auto-discovers the desktop, routing requests to the bigger machine's GPU. When the desktop is unreachable — you're on a plane, at a coffee shop, whatever — the same tools keep working against local models on the laptop itself. Your code, your scripts, your Claude Code workflows never have to care which machine is doing the work. They hit the same APIs either way; Super Puppy handles the routing.
 
-That's the core idea: write against local AI APIs once, and get the best available hardware transparently. Your desktop's full memory when it's reachable, your laptop's own GPU when it's not. No cloud, no per-token billing, no data leaving your network.
+That's the core idea: write against local AI APIs once, and get the best available hardware transparently. Your desktop's full memory when it's reachable, your laptop's own GPU when it's not. No cloud, no per-token billing — inference is fully local. (Initial model downloads and auto-update checks do require network access; see [Network Transparency](#network-transparency) below.)
 
-Super Puppy is **not** a training or fine-tuning platform, a cloud service, or a production deployment tool. It's for people who want to run inference on hardware they own — for development, experimentation, creative work, and daily use. You need enough unified memory for the models you care about: 64GB handles lightweight models, 128GB+ runs most things comfortably, 256GB+ handles 70B+ parameter models with full context.
+Super Puppy is **not** a training or fine-tuning platform, a cloud service, or a production deployment tool. It's for people who want to run inference on hardware they own — for development, experimentation, creative work, and daily use.
+
+### Memory Tiers
+
+| RAM | What works | Profile |
+|-----|-----------|---------|
+| 32–47GB | Ollama only (MLX disabled below 48GB). Small models (8–14B). | — |
+| 48–63GB | Ollama + MLX. Desktop-class models (up to 32B). | Laptop |
+| 64–127GB | Full model coverage. 32B coders, vision, TTS, image gen. | Desktop |
+| 128–255GB | Large MoE models (70B+). All capabilities comfortable. | Server |
+| 256GB+ | Everything including 400B+ MoE with full context. | Maximum |
 
 ## Quick Start
 
+**Prerequisites:** Xcode Command Line Tools (provides `git`), Homebrew.
+
 ```bash
+xcode-select --install      # if git is not installed
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"  # if brew is not installed
+
 git clone https://github.com/jerrytalton/super-puppy.git ~/super-puppy
 cd ~/super-puppy
 ./install.sh
@@ -137,11 +152,11 @@ start-local-models            # start Ollama + MLX servers
 start-local-models --status   # show what's running
 start-local-models --stop     # stop servers
 start-local-models --local    # force local servers even if server is reachable
-claude-local                  # run Claude Code fully offline (local Ollama, no cloud)
 tailscale-status              # check Tailscale connectivity and FQDN
 
 ./install.sh --reconfigure    # re-run interactive setup
 ./install.sh --rotate-token   # refresh the MCP auth token
+./uninstall.sh                # remove Super Puppy (keeps dependencies, see script for details)
 ```
 
 ## Adding a New Model
@@ -157,6 +172,39 @@ pkill -f mlx-openai-server
 start-local-models
 ```
 
+
+## Optional Dependencies
+
+The installer handles core dependencies (uv, Ollama, MLX). These optional tools enable additional capabilities:
+
+| Dependency | For | Install |
+|-----------|-----|---------|
+| **mflux** | Image generation (`local_image`) and editing (`local_image_edit`) | `uv tool install --python 3.12 mflux` |
+| **ffmpeg** | Audio transcription of WebM, MP3, and other formats | `brew install ffmpeg` |
+
+The installer installs both automatically on machines with 32GB+ RAM and Homebrew available. If you skipped them or installed Super Puppy before this was added, install manually with the commands above.
+
+## Network Transparency
+
+All inference runs locally — model input and output never leave your machine. However, Super Puppy does make network calls in these cases:
+
+- **Auto-update**: Polls GitHub for new git tags every 2 minutes. Disable with `AUTO_UPDATE=false` in `~/.config/local-models/network.conf`.
+- **Model downloads**: First use of HuggingFace embedding models (bge-m3, e5-small-v2) downloads from huggingface.co. Subsequent uses are cached locally.
+- **Tailscale**: Remote access uses Tailscale's relay network when direct connections aren't possible.
+
+For air-gapped environments: pre-download all models, set `AUTO_UPDATE=false`, and ensure all Python dependencies are cached.
+
+## Rough Benchmarks
+
+Approximate times on Apple Silicon (varies by model size and quantization):
+
+| Operation | M4 Max 128GB | M4 Ultra 512GB |
+|-----------|-------------|----------------|
+| Image generation (Flux2) | 2–5 min | 1–3 min |
+| Audio transcription (Whisper v3) | ~0.3x realtime | ~0.15x realtime |
+| TTS first run (Voxtral bf16 download) | ~4GB download | ~4GB download |
+| TTS generation (short text) | 5–15 sec | 3–8 sec |
+| 32B code generation | 20–40 tok/s | 40–80 tok/s |
 
 ## Configuration
 
@@ -199,7 +247,6 @@ super-puppy/
 │   ├── local-models-menubar     # App launcher
 │   ├── local-models-mcp-detect  # MCP wrapper with Tailscale discovery
 │   ├── local-models-mcp-auth    # MCP auth token management
-│   ├── claude-local             # Claude with local model tools
 │   ├── tailscale-status         # Tailscale connectivity check
 │   └── post-update.sh           # Post-update hook for auto-update
 ├── config/
@@ -213,6 +260,7 @@ super-puppy/
 ├── web/                         # Marketing site
 ├── docs/                        # Setup documentation
 ├── install.sh                   # Interactive installer
+├── uninstall.sh                 # Clean removal (keeps deps and models)
 └── LICENSE                      # GPLv3
 ```
 

@@ -20,13 +20,14 @@ import sys
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 
 import httpx
 from mcp.server.fastmcp import FastMCP
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from lib.models import MCP_PREFS_FILE, MLX_SERVER_CONFIG, active_params_b
+from lib.models import MCP_PREFS_FILE, MLX_SERVER_CONFIG, NETWORK_CONF, active_params_b
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
@@ -69,7 +70,23 @@ mcp = FastMCP("local-models", host=MCP_HOST, port=MCP_PORT,
 # All tools that accept file paths must validate them to prevent
 # path traversal attacks (reading /etc/passwd, ~/.ssh/id_rsa, etc.).
 
-_ALLOWED_ROOTS: tuple[Path, ...] = (Path.home(), Path("/tmp"), Path("/private/tmp"))
+def _load_allowed_roots() -> tuple[Path, ...]:
+    """Load allowed path roots from MCP_ALLOWED_PATHS in network.conf, or use defaults."""
+    defaults = (Path.home(), Path("/tmp"), Path("/private/tmp"))
+    if not NETWORK_CONF.exists():
+        return defaults
+    for line in NETWORK_CONF.read_text().splitlines():
+        line = line.strip()
+        if line.startswith("MCP_ALLOWED_PATHS="):
+            val = line.partition("=")[2].strip().strip('"').strip("'")
+            if val:
+                roots = [Path(p).resolve() for p in val.split(":") if p]
+                roots.extend([Path("/tmp"), Path("/private/tmp")])
+                return tuple(roots)
+    return defaults
+
+
+_ALLOWED_ROOTS: tuple[Path, ...] = _load_allowed_roots()
 
 
 def _validate_path(path: str, must_exist: bool = True) -> str | None:
@@ -99,7 +116,7 @@ def _validate_paths(paths: list[str], must_exist: bool = True) -> str | None:
 
 _AUTH_EXEMPT_PATHS = {"/gpu", "/api/mcp-models"}
 _MAX_SESSIONS = 1000
-_authenticated_sessions: set[str] = set()
+_authenticated_sessions: OrderedDict[str, None] = OrderedDict()
 _session_lock = threading.Lock()
 
 
@@ -125,14 +142,14 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             if path == "/mcp" and session_id:
                 with _session_lock:
                     if len(_authenticated_sessions) >= _MAX_SESSIONS and _authenticated_sessions:
-                        _authenticated_sessions.pop()
-                    _authenticated_sessions.add(session_id)
+                        _authenticated_sessions.popitem(last=False)
+                    _authenticated_sessions[session_id] = None
             response = await call_next(request)
             # Also capture session IDs from response headers (MCP protocol)
             new_sid = response.headers.get("mcp-session-id")
             if new_sid:
                 with _session_lock:
-                    _authenticated_sessions.add(new_sid)
+                    _authenticated_sessions[new_sid] = None
             return response
         return JSONResponse({"error": "unauthorized"}, status_code=403)
 

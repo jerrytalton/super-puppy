@@ -73,9 +73,15 @@ Crash rollback: if the app dies within 30 seconds of an update, it checks out th
 
 - **Auth**: MCP server and profile server both require bearer token for remote requests (sourced from 1Password, fail-closed). Profile server allows localhost without auth.
 - **Network**: All services localhost-only. Tailscale provides encrypted, peer-authenticated remote access.
-- **Path validation**: All MCP tools that accept file paths validate them against `$HOME` and `/tmp` — no traversal outside these roots.
+- **Path validation**: All MCP tools that accept file paths validate them against `$HOME` and `/tmp` — no traversal outside these roots. Configurable via `MCP_ALLOWED_PATHS` in `network.conf` (colon-separated list of directories; `/tmp` is always included).
+- **Playground path restriction**: The Playground web UI restricts file access to `/tmp/` only (uploaded files). This is intentionally more restrictive than the MCP server because the Playground is unauthenticated on localhost.
 - **Update verification**: Auto-update refuses unsigned git tags.
 - **Install script**: Hostname inputs validated against DNS-safe characters. Config writes use grep+append (no sed injection).
+
+### Known Limitations
+
+- **Single shared bearer token**: All clients share one auth token. No per-user accounts, quotas, or audit trail. Revoking one user's access requires rotating the token for everyone. Tailscale ACLs provide per-device access control as a partial mitigation.
+- **Auto-update polling**: Fetches git tags from GitHub every 2 minutes. Disable with `AUTO_UPDATE=false` in `network.conf`.
 
 ## Task System
 
