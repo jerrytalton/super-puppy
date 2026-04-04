@@ -353,13 +353,41 @@ class TestCheckForUpdates:
         mock_update.assert_called_once_with("v2.0.0")
 
     def test_no_update_available(self, app_instance, update_dir):
+        app_instance.app_version = "v2.0.0"
         with patch("app.menubar.check_repo_update_available",
                     return_value=(0, "", "")), \
+             patch("app.menubar.get_latest_remote_tag",
+                    return_value=("v2.0.0", "abc")), \
              patch.object(app_instance, "_auto_update") as mock_update:
             app_instance._check_for_updates()
 
         mock_update.assert_not_called()
         assert app_instance.update_available == 0
+
+    def test_repo_current_but_app_stale_triggers_restart(self, app_instance, update_dir):
+        """Pushed from this machine: repo is current but running old version."""
+        app_instance.app_version = "v1.0.0"
+        with patch("app.menubar.check_repo_update_available",
+                    return_value=(0, "", "")), \
+             patch("app.menubar.get_latest_remote_tag",
+                    return_value=("v2.0.0", "new123")), \
+             patch.object(app_instance, "_mcp_recently_active", return_value=False), \
+             patch.object(app_instance, "_auto_update") as mock_update:
+            app_instance._check_for_updates()
+
+        mock_update.assert_called_once_with("v2.0.0")
+
+    def test_repo_current_and_app_current_no_restart(self, app_instance, update_dir):
+        """Repo and app both at latest tag — no action."""
+        app_instance.app_version = "v2.0.0"
+        with patch("app.menubar.check_repo_update_available",
+                    return_value=(0, "", "")), \
+             patch("app.menubar.get_latest_remote_tag",
+                    return_value=("v2.0.0", "abc")), \
+             patch.object(app_instance, "_auto_update") as mock_update:
+            app_instance._check_for_updates()
+
+        mock_update.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
