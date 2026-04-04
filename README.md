@@ -2,13 +2,13 @@
 
 > **Requires Apple Silicon Mac** (M1 or later) with 64GB+ unified memory. macOS only.
 
-Claude Code is great at reasoning, but it can't generate images, transcribe audio, speak, or run a second model for a different perspective. And every token it spends on boilerplate is a token it isn't spending on the hard problem.
+Your Mac has a GPU that can run serious AI models. Super Puppy turns it into a managed local model server — LLMs, vision, image generation, transcription, translation, text-to-speech, embeddings — controlled from the menu bar, accessible over standard APIs, and available to any tool on your network.
 
-Super Puppy fixes that. It turns a Mac with a decent GPU into a local model server and exposes everything — Ollama, MLX, Flux, Whisper, TTS — as MCP tools that Claude can call mid-conversation. Claude keeps doing what it's best at (architecture, debugging, complex reasoning) and offloads everything else to your hardware: bulk code generation, image generation and editing, transcription, translation, text-to-speech, embeddings, and more. Nothing leaves your network unless you want it to.
+Pull a model, and it's immediately available: through an OpenAI-compatible API, Ollama's native API, a web-based Playground, or as MCP tools in Claude Code. No cloud, no per-token billing, no data leaving your network unless you want it to.
 
-But Super Puppy isn't just for Claude. Once it's running, you get standard APIs that any application can use — an OpenAI-compatible endpoint for LLMs and vision, Ollama's native API, image generation, speech synthesis, and transcription. Your scripts, web apps, notebooks, and other tools can all hit the same local models through the same infrastructure. Claude Code is the first client, not the only one.
+Super Puppy is **not** a training or fine-tuning platform, a cloud service, or a production deployment tool. It's for people who want to run inference on hardware they own — for development, experimentation, creative work, and daily use.
 
-You need an Apple Silicon Mac with enough unified memory to run the models you care about. A 64GB laptop can handle lightweight models; a 128GB+ machine can run most things comfortably; 256GB+ lets you run everything including 70B+ parameter models with full context. This is not a cloud service — the whole point is using hardware you already own.
+You need enough unified memory for the models you care about. A 64GB machine handles lightweight models; 128GB+ runs most things comfortably; 256GB+ lets you run 70B+ parameter models with full context.
 
 ## Quick Start
 
@@ -22,80 +22,40 @@ The installer walks you through everything: server vs. client role, network conf
 
 ```bash
 start-local-models
-claude    # local-models MCP auto-connects
 ```
 
-## How It Works
+## What You Get
 
-Claude does the reasoning. Local models are available as MCP tools for bulk work, image generation, transcription, translation, and more.
+### Standard APIs
 
-```
-claude ──> Anthropic (reasoning) + MCP tools ──> Ollama / MLX (local heavy lifting)
-```
+Once Super Puppy is running, any application that speaks OpenAI or Ollama can use your local models.
 
-### MCP Tools
-
-When using `claude` with Max, these tools let Claude delegate to local models:
-
-| Tool | What | Default Model |
-|------|-------|---------------|
-| `local_generate` | Code & text generation | qwen3-coder (code), qwen3.5 (text) |
-| `local_review` | Second opinion on code | qwen3.5-large (397B) |
-| `local_vision` | Analyze images on disk | qwen3-vl |
-| `local_computer_use` | Plan GUI actions from screenshots | UI-TARS, Fara |
-| `local_image` | Generate images | Flux2, Z-Image |
-| `local_image_edit` | Edit existing images | Flux Kontext |
-| `local_transcribe` | Audio to text | Whisper v3 |
-| `local_speak` | Text to speech | Voxtral (20 voices, 9 languages) |
-| `local_translate` | Translate text/files | Cogito 2.1 (30+ languages) |
-| `local_candidates` | Same prompt to N models | Diverse set in parallel |
-| `local_summarize` | Condense large files | qwen3.5 (128K context) |
-| `local_embed` | Generate embeddings | mxbai-embed-large, bge-m3 |
-| `local_similarity_search` | Semantic file search | Best available embedding model |
-| `local_dispatch` | Start background job | Returns immediately, model works async |
-| `local_collect` | Get background result | Collect when ready |
-| `local_models_status` | What's available | — |
-
-You control which model backs each task from the menu bar app. Pull a new model and it's immediately available.
-
-## APIs for Your Own Tools
-
-Once Super Puppy is running, you get two standard APIs on your local network:
-
-### Ollama API (port 11434)
-
-The [Ollama API](https://github.com/ollama/ollama/blob/main/docs/api.md) for chat, generation, and embeddings:
+**Ollama API** (port 11434) — chat, generation, embeddings:
 
 ```bash
-# Generate text
 curl http://localhost:11434/api/generate -d '{"model":"qwen3.5","prompt":"hello"}'
 
-# Chat
 curl http://localhost:11434/api/chat -d '{
   "model": "qwen3.5",
   "messages": [{"role":"user","content":"explain quicksort"}]
 }'
 
-# Embeddings
 curl http://localhost:11434/api/embed -d '{"model":"all-minilm","input":"search query"}'
 ```
 
-### OpenAI-compatible API (port 8000)
-
-MLX models are served via an [OpenAI-compatible endpoint](https://platform.openai.com/docs/api-reference), so any library that speaks OpenAI works out of the box:
+**OpenAI-compatible API** (port 8000) — MLX models via the standard OpenAI client:
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(base_url="http://localhost:8000/v1", api_key="unused")
 
-# Chat completion
 response = client.chat.completions.create(
     model="qwen3.5-fast",
     messages=[{"role": "user", "content": "hello"}],
 )
 
-# Vision (with MLX vision models)
+# Vision
 response = client.chat.completions.create(
     model="qwen3.5-fast",
     messages=[{
@@ -109,31 +69,51 @@ response = client.chat.completions.create(
 ```
 
 ```bash
-# Works with curl too
 curl http://localhost:8000/v1/chat/completions -H "Content-Type: application/json" -d '{
   "model": "qwen3.5-fast",
   "messages": [{"role":"user","content":"hello"}]
 }'
 
-# List available models
 curl http://localhost:8000/v1/models
-```
-
-### From other machines on the LAN
-
-If this machine is the server (`IS_SERVER=true`), Ollama is accessible to other machines on your LAN. MLX is localhost-only but reachable via Tailscale when remote access is enabled:
-
-```bash
-# Ollama (LAN accessible)
-curl http://your-server.local:11434/api/generate -d '{"model":"qwen3.5","prompt":"hello"}'
-
-# MLX (localhost only — use Tailscale for remote access)
-curl http://your-server.local:8000/v1/chat/completions -d '...'  # only from the server itself
 ```
 
 ### Playground
 
-The menu bar app serves a web-based Playground UI where you can test any tool interactively — text generation, vision, image generation, transcription, TTS, translation. Open it from the Super Puppy menu or access it from other devices on your network. With Tailscale configured, the Playground is accessible from anywhere over HTTPS.
+The menu bar app serves a web-based Playground where you can test any capability interactively — text generation, vision, image generation, transcription, TTS, translation. Open it from the Super Puppy menu or access it from other devices on your network. With Tailscale configured, the Playground is accessible from anywhere over HTTPS.
+
+### MCP Tools for Claude Code
+
+If you use Claude Code, Super Puppy exposes all of its capabilities as MCP tools that Claude can call mid-conversation. Claude keeps doing what it's best at — architecture, debugging, complex reasoning — and offloads everything else to your hardware.
+
+| Tool | What it does |
+|------|-------------|
+| `local_generate` | Code and text generation — auto-selects a coder or generalist |
+| `local_review` | Second opinion on code from a different model architecture |
+| `local_vision` | Analyze images on disk with a local vision model |
+| `local_computer_use` | Plan GUI actions from a screenshot (observe only, no execution) |
+| `local_image` | Generate images locally with a diffusion model |
+| `local_image_edit` | Edit an existing image with a text prompt |
+| `local_transcribe` | Audio to text |
+| `local_speak` | Text to speech with voice presets or voice cloning |
+| `local_translate` | Translate text or files |
+| `local_candidates` | Run the same prompt against multiple models in parallel |
+| `local_summarize` | Condense large files before reading them in full |
+| `local_embed` | Generate embeddings for semantic search or clustering |
+| `local_similarity_search` | Find files most related to a concept |
+| `local_dispatch` / `local_collect` | Run a model in the background, collect results later |
+| `local_models_status` | List available models and their capabilities |
+
+You control which model backs each task from the menu bar app. Pull a new model and it's immediately available.
+
+### LAN Access
+
+If this machine is the server (`IS_SERVER=true`), Ollama is accessible to other machines on your LAN:
+
+```bash
+curl http://your-server.local:11434/api/generate -d '{"model":"qwen3.5","prompt":"hello"}'
+```
+
+MLX is localhost-only but reachable via Tailscale when remote access is enabled.
 
 ## Server and Client
 
@@ -161,7 +141,6 @@ A puppy icon in the menu bar provides:
 ## Commands
 
 ```bash
-claude                        # Claude Max + local model MCP tools
 start-local-models            # start Ollama + MLX servers
 start-local-models --status   # show what's running
 start-local-models --stop     # stop servers
@@ -173,7 +152,7 @@ start-local-models --local    # force local servers even if server is reachable
 
 ## Adding a New Model
 
-**Ollama**: Just pull it. It's immediately available as an MCP tool and API endpoint.
+**Ollama**: Just pull it. It's immediately available as an API endpoint and MCP tool.
 ```bash
 ollama pull some-new-model
 ```
@@ -195,7 +174,6 @@ All user-writable config lives in `~/.config/local-models/`. The installer sets 
 | `network.conf` | Server role, hostname, ports, auth, Tailscale |
 | `mcp_preferences.json` | Which model backs each MCP task type |
 | `profiles.json` | Model profiles (managed by the menu bar app) |
-| `easter_eggs.json` | Optional fun notifications (off by default) |
 | `mcp_auth_token` | Cached MCP bearer token (600 permissions) |
 
 ### MLX Models
@@ -210,6 +188,10 @@ On the server, Ollama listens on `0.0.0.0` via a LaunchAgent so other machines c
 sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add /usr/local/bin/ollama
 sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp /usr/local/bin/ollama
 ```
+
+## CLAUDE.md Setup
+
+The MCP tools work automatically once installed, but Claude Code performs better when it knows what's available. The installer checks for a `## Local Model Cluster` section in `~/.claude/CLAUDE.md` and offers to add one. This tells Claude when and how to use each tool. See the installer output for the recommended snippet, or check `~/.claude/CLAUDE.md` if it's already configured.
 
 ## Structure
 
@@ -236,30 +218,6 @@ super-puppy/
 │   └── hf_scanner.py            # HuggingFace model discovery
 ├── install.sh                   # Interactive installer
 └── LICENSE                      # GPLv3
-```
-
-## CLAUDE.md Setup
-
-The installer checks for a `## Local Model Cluster` section in `~/.claude/CLAUDE.md`. Without it, Claude won't know when to use local model tools. Add this to your global CLAUDE.md:
-
-```markdown
-## Local Model Cluster
-
-There is a local model cluster available as MCP tools via the `local-models` server.
-
-When the `local-models` tools are available, look for opportunities to take advantage of them:
-* **Vision**: Use `local_vision` to examine screenshots, UI states, diagrams, or any image on disk.
-* **Image generation**: Use `local_image` to create images locally with Flux2 or Z-Image.
-* **Translation**: Use `local_translate` for translating text or files between languages.
-* **Audio**: Use `local_transcribe` to turn audio files into text with Whisper v3.
-* **Bulk work**: Use `local_generate` for boilerplate, scaffolding, repetitive transforms, or large amounts of code.
-* **Second opinions**: Use `local_review` or `local_candidates` for a different model's perspective.
-* **Parallel reasoning**: Use `local_dispatch` to start a local model thinking while you continue working. Call `local_collect` when ready for its answer.
-* **Large files**: Use `local_summarize` before reading huge files.
-* **Semantic search**: Use `local_similarity_search` to find files related to a concept without reading every file. Use `local_embed` for raw embeddings.
-* **Discovery**: Call `local_models_status` if you're unsure what's available.
-
-Don't delegate complex reasoning, architecture decisions, or subtle debugging — do that yourself.
 ```
 
 ## License
