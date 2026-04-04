@@ -401,14 +401,35 @@ def check_repo_update_available():
     return 0, "", ""
 
 
+def verify_tag_signature(tag):
+    """Verify a git tag has a valid GPG/SSH signature. Returns (ok, detail)."""
+    result = subprocess.run(
+        ["git", "-C", REPO_DIR, "tag", "-v", tag],
+        capture_output=True, text=True, timeout=10)
+    if result.returncode == 0:
+        return True, "signature verified"
+    # Check if gpg/ssh-keygen is missing vs. bad signature
+    stderr = result.stderr.lower()
+    if "no public key" in stderr or "could not verify" in stderr:
+        return False, f"no trusted public key for {tag}"
+    if "not signed" in stderr or "no signature" in stderr:
+        return False, f"tag {tag} is not signed"
+    return False, result.stderr.strip()[:200]
+
+
 def apply_repo_update(target_tag):
     """Check out a tagged release. Returns (success, output).
 
-    Stashes local changes, checks out the tag (detached HEAD), and pops the
-    stash. Symlinks point into the repo, so checking out new code is enough;
-    the restart picks up changes.
+    Verifies the tag signature, stashes local changes, checks out the tag
+    (detached HEAD), and pops the stash. Symlinks point into the repo, so
+    checking out new code is enough; the restart picks up changes.
     """
     try:
+        sig_ok, sig_detail = verify_tag_signature(target_tag)
+        if not sig_ok:
+            logging.warning("Refusing unsigned update %s: %s", target_tag, sig_detail)
+            return False, f"Tag signature verification failed: {sig_detail}"
+
         status = subprocess.run(
             ["git", "-C", REPO_DIR, "status", "--porcelain"],
             capture_output=True, text=True, timeout=5)

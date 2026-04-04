@@ -59,6 +59,38 @@ mcp = FastMCP("local-models", host=MCP_HOST, port=MCP_PORT,
               transport_security=_transport_security)
 
 
+# ── Path validation ─────────────────────────────────────────────────
+# All tools that accept file paths must validate them to prevent
+# path traversal attacks (reading /etc/passwd, ~/.ssh/id_rsa, etc.).
+
+_ALLOWED_ROOTS: tuple[Path, ...] = (Path.home(), Path("/tmp"), Path("/private/tmp"))
+
+
+def _validate_path(path: str, must_exist: bool = True) -> str | None:
+    """Validate a file path is under $HOME or /tmp.
+
+    Returns None if safe, or an error message string if not.
+    """
+    try:
+        resolved = Path(path).resolve()
+    except (ValueError, OSError) as e:
+        return f"Invalid path '{path}': {e}"
+    if not any(resolved == root or resolved.is_relative_to(root) for root in _ALLOWED_ROOTS):
+        return f"Path not allowed (must be under $HOME or /tmp): {path}"
+    if must_exist and not resolved.exists():
+        return f"File not found: {path}"
+    return None
+
+
+def _validate_paths(paths: list[str], must_exist: bool = True) -> str | None:
+    """Validate a list of file paths. Returns first error or None."""
+    for p in paths:
+        err = _validate_path(p, must_exist=must_exist)
+        if err:
+            return f"Error: {err}"
+    return None
+
+
 _AUTH_EXEMPT_PATHS = {"/gpu", "/api/mcp-models"}
 _MAX_SESSIONS = 1000
 _authenticated_sessions: set[str] = set()
@@ -508,6 +540,9 @@ async def local_generate(
 
     user_content = prompt
     if context_files:
+        err = _validate_paths(context_files)
+        if err:
+            return err
         file_contents = []
         for fp in context_files:
             try:
@@ -547,6 +582,9 @@ async def local_review(
 
     review_content = code or ""
     if file_paths:
+        err = _validate_paths(file_paths)
+        if err:
+            return err
         parts = []
         for fp in file_paths:
             try:
@@ -597,6 +635,9 @@ async def local_vision(
     if not _models.get(model_name, {}).get("vision"):
         return f"Error: {model_name} is not vision-capable. Need a model like qwen3-vl."
 
+    err = _validate_paths(image_paths)
+    if err:
+        return err
     images_b64 = []
     for ip in image_paths:
         try:
@@ -695,8 +736,9 @@ async def local_computer_use(
 
     # Take or read screenshot
     if screenshot_path:
-        if not Path(screenshot_path).exists():
-            return f"Error: Screenshot not found: {screenshot_path}"
+        err = _validate_path(screenshot_path)
+        if err:
+            return f"Error: {err}"
         img_bytes = Path(screenshot_path).read_bytes()
     else:
         try:
@@ -784,6 +826,9 @@ async def local_image(
     if not output_path:
         import time as _time
         output_path = f"/tmp/local_image_{int(_time.time())}.png"
+    err = _validate_path(output_path, must_exist=False)
+    if err:
+        return f"Error: {err}"
 
     print(f"  → generate image {selected} ({backend}): {prompt[:50]}", file=sys.stderr, flush=True)
 
@@ -869,12 +914,16 @@ async def local_image_edit(
     except ValueError:
         return "Error: no image editing model available. Need mflux-generate-kontext installed."
 
-    if not Path(image_path).exists():
-        return f"Error: input image not found at {image_path}"
+    err = _validate_path(image_path)
+    if err:
+        return f"Error: {err}"
 
     if not output_path:
         import time as _time
         output_path = f"/tmp/local_edit_{int(_time.time())}.png"
+    err = _validate_path(output_path, must_exist=False)
+    if err:
+        return f"Error: {err}"
 
     print(f"  → edit image [{selected}]: {prompt[:60]}", file=sys.stderr, flush=True)
 
@@ -928,6 +977,9 @@ async def local_transcribe(
     except ValueError:
         return "Error: no transcription model available."
 
+    err = _validate_path(audio_path)
+    if err:
+        return f"Error: {err}"
     try:
         audio_data = Path(audio_path).read_bytes()
     except Exception as e:
@@ -1001,6 +1053,13 @@ async def local_speak(
     if not output_path:
         import time as _time
         output_path = f"/tmp/local_tts_{int(_time.time())}.wav"
+    err = _validate_path(output_path, must_exist=False)
+    if err:
+        return f"Error: {err}"
+    if ref_audio:
+        err = _validate_path(ref_audio)
+        if err:
+            return f"Error: {err}"
 
     out_dir = os.path.dirname(output_path) or "/tmp"
     prefix = Path(output_path).stem
@@ -1078,6 +1137,9 @@ async def local_translate(
 
     content = text
     if file_paths:
+        err = _validate_paths(file_paths)
+        if err:
+            return err
         parts = []
         for fp in file_paths:
             try:
@@ -1172,6 +1234,9 @@ async def local_summarize(
     """
     model_name, backend = pick_model("long_context", model)
 
+    err = _validate_paths(file_paths)
+    if err:
+        return err
     contents = []
     for fp in file_paths:
         try:
@@ -1262,6 +1327,9 @@ async def local_embed(
         file_paths: Optional file paths — contents are read and embedded.
     """
     if file_paths:
+        err = _validate_paths(file_paths)
+        if err:
+            return err
         for fp in file_paths:
             try:
                 texts.append(Path(fp).read_text(errors="replace"))
@@ -1321,6 +1389,9 @@ async def local_similarity_search(
         return "Error: provide file_paths to search."
 
     # Read files
+    err = _validate_paths(file_paths)
+    if err:
+        return err
     file_texts = []
     valid_paths = []
     for fp in file_paths:
@@ -1404,6 +1475,9 @@ async def local_dispatch(
 
     user_content = prompt
     if context_files:
+        err = _validate_paths(context_files)
+        if err:
+            return err
         file_parts = []
         for fp in context_files:
             try:

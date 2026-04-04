@@ -174,6 +174,11 @@ class TestCheckRepoUpdateAvailable:
 # ---------------------------------------------------------------------------
 
 class TestApplyRepoUpdate:
+    """Tests for apply_repo_update. All patch verify_tag_signature to isolate checkout logic."""
+
+    def _verified(self):
+        return patch("app.menubar.verify_tag_signature", return_value=(True, "ok"))
+
     def test_clean_checkout(self):
         calls = []
         def mock_run(cmd, **kw):
@@ -183,7 +188,8 @@ class TestApplyRepoUpdate:
             if "checkout" in cmd:
                 return _mock_run()
             return _mock_run()
-        with patch("app.menubar.subprocess.run", side_effect=mock_run):
+        with self._verified(), \
+             patch("app.menubar.subprocess.run", side_effect=mock_run):
             ok, msg = menubar.apply_repo_update("v2.0.0")
         assert ok is True
         assert "v2.0.0" in msg
@@ -196,7 +202,8 @@ class TestApplyRepoUpdate:
             if "status" in cmd:
                 return _mock_run(stdout=" M file.py\n")  # dirty worktree
             return _mock_run()
-        with patch("app.menubar.subprocess.run", side_effect=mock_run):
+        with self._verified(), \
+             patch("app.menubar.subprocess.run", side_effect=mock_run):
             ok, _ = menubar.apply_repo_update("v2.0.0")
         assert ok is True
         stash_cmds = [c for c in calls if "stash" in c]
@@ -209,7 +216,8 @@ class TestApplyRepoUpdate:
             if "checkout" in cmd:
                 return _mock_run(returncode=1, stderr="error: pathspec")
             return _mock_run()
-        with patch("app.menubar.subprocess.run", side_effect=mock_run):
+        with self._verified(), \
+             patch("app.menubar.subprocess.run", side_effect=mock_run):
             ok, msg = menubar.apply_repo_update("v99.0.0")
         assert ok is False
         assert "pathspec" in msg
@@ -221,16 +229,32 @@ class TestApplyRepoUpdate:
             if "stash" in cmd and "pop" in cmd:
                 return _mock_run(returncode=1, stderr="CONFLICT")
             return _mock_run()
-        with patch("app.menubar.subprocess.run", side_effect=mock_run):
+        with self._verified(), \
+             patch("app.menubar.subprocess.run", side_effect=mock_run):
             ok, msg = menubar.apply_repo_update("v2.0.0")
         assert ok is False
         assert "CONFLICT" in msg
 
     def test_exception_returns_false(self):
-        with patch("app.menubar.subprocess.run", side_effect=OSError("disk full")):
+        with self._verified(), \
+             patch("app.menubar.subprocess.run", side_effect=OSError("disk full")):
             ok, msg = menubar.apply_repo_update("v2.0.0")
         assert ok is False
         assert "disk full" in msg
+
+    def test_unsigned_tag_rejected(self):
+        with patch("app.menubar.verify_tag_signature",
+                   return_value=(False, "tag v99.0.0 is not signed")):
+            ok, msg = menubar.apply_repo_update("v99.0.0")
+        assert ok is False
+        assert "signature" in msg.lower()
+
+    def test_untrusted_key_rejected(self):
+        with patch("app.menubar.verify_tag_signature",
+                   return_value=(False, "no trusted public key for v2.0.0")):
+            ok, msg = menubar.apply_repo_update("v2.0.0")
+        assert ok is False
+        assert "public key" in msg.lower()
 
 
 # ---------------------------------------------------------------------------

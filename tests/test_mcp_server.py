@@ -296,7 +296,9 @@ class TestAuthMiddlewareDispatch:
         resp.headers = headers or {}
         return resp
 
-    async def _call(self, path, headers=None, query_params=None, resp_headers=None):
+    def _call(self, path, headers=None, query_params=None, resp_headers=None):
+        import asyncio
+
         middleware = server.BearerAuthMiddleware.__new__(server.BearerAuthMiddleware)
         req = self._make_request(path, headers, query_params)
         resp = self._make_response(resp_headers)
@@ -305,65 +307,127 @@ class TestAuthMiddlewareDispatch:
             return resp
         call_next_mock = MagicMock(side_effect=call_next)
 
-        result = await middleware.dispatch(req, call_next_mock)
+        async def run():
+            return await middleware.dispatch(req, call_next_mock)
+
+        result = asyncio.run(run())
         return result, call_next_mock, req
 
-    @pytest.mark.asyncio
-    async def test_rejects_missing_token(self):
-        result, call_next, _ = await self._call("/mcp", headers={})
+    def test_rejects_missing_token(self):
+        result, call_next, _ = self._call("/mcp", headers={})
         call_next.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_rejects_wrong_token(self):
-        result, call_next, _ = await self._call("/mcp", headers={"authorization": "Bearer wrong-token"})
+    def test_rejects_wrong_token(self):
+        result, call_next, _ = self._call("/mcp", headers={"authorization": "Bearer wrong-token"})
         call_next.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_allows_correct_token(self):
-        result, call_next, req = await self._call(
+    def test_allows_correct_token(self):
+        result, call_next, req = self._call(
             "/mcp", headers={"authorization": f"Bearer {server.MCP_AUTH_TOKEN}"})
         call_next.assert_called_once_with(req)
 
-    @pytest.mark.asyncio
-    async def test_exempt_paths_skip_auth(self):
+    def test_exempt_paths_skip_auth(self):
         for path in ("/gpu", "/api/mcp-models"):
-            result, call_next, req = await self._call(path, headers={})
+            result, call_next, req = self._call(path, headers={})
             call_next.assert_called_once_with(req)
 
-    @pytest.mark.asyncio
-    async def test_well_known_skips_auth(self):
-        result, call_next, req = await self._call(
+    def test_well_known_skips_auth(self):
+        result, call_next, req = self._call(
             "/.well-known/oauth-authorization-server", headers={})
         call_next.assert_called_once_with(req)
 
-    @pytest.mark.asyncio
-    async def test_mcp_init_tracks_session(self):
-        await self._call(
+    def test_mcp_init_tracks_session(self):
+        self._call(
             "/mcp",
             headers={"authorization": f"Bearer {server.MCP_AUTH_TOKEN}"},
             query_params={"session_id": "sess-abc"})
         with server._session_lock:
             assert "sess-abc" in server._authenticated_sessions
 
-    @pytest.mark.asyncio
-    async def test_messages_with_valid_session_passes(self):
+    def test_messages_with_valid_session_passes(self):
         with server._session_lock:
             server._authenticated_sessions.add("sess-ok")
-        result, call_next, req = await self._call(
+        result, call_next, req = self._call(
             "/messages", headers={}, query_params={"session_id": "sess-ok"})
         call_next.assert_called_once_with(req)
 
-    @pytest.mark.asyncio
-    async def test_messages_with_unknown_session_rejects(self):
-        result, call_next, _ = await self._call(
+    def test_messages_with_unknown_session_rejects(self):
+        result, call_next, _ = self._call(
             "/messages", headers={}, query_params={"session_id": "sess-unknown"})
         call_next.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_response_header_session_tracked(self):
-        await self._call(
+    def test_response_header_session_tracked(self):
+        self._call(
             "/mcp",
             headers={"authorization": f"Bearer {server.MCP_AUTH_TOKEN}"},
             resp_headers={"mcp-session-id": "from-resp"})
         with server._session_lock:
             assert "from-resp" in server._authenticated_sessions
+
+
+class TestPathValidation:
+    """Path traversal prevention in MCP tools."""
+
+    def test_home_directory_allowed(self):
+        # Create a temp file under $HOME to test
+        import tempfile
+        home = Path.home()
+        with tempfile.NamedTemporaryFile(dir=home, suffix=".txt", delete=False) as f:
+            f.write(b"test")
+            path = f.name
+        try:
+            assert server._validate_path(path) is None
+        finally:
+            Path(path).unlink()
+
+    def test_tmp_directory_allowed(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile(dir="/tmp", suffix=".txt", delete=False) as f:
+            f.write(b"test")
+            path = f.name
+        try:
+            assert server._validate_path(path) is None
+        finally:
+            Path(path).unlink()
+
+    def test_etc_passwd_rejected(self):
+        result = server._validate_path("/etc/passwd")
+        assert result is not None
+        assert "not allowed" in result
+
+    def test_ssh_keys_rejected(self):
+        result = server._validate_path("/root/.ssh/id_rsa")
+        assert result is not None
+        assert "not allowed" in result
+
+    def test_proc_environ_rejected(self):
+        result = server._validate_path("/proc/self/environ")
+        assert result is not None
+        assert "not allowed" in result
+
+    def test_traversal_via_dotdot_rejected(self):
+        # Try to escape from $HOME via ../
+        result = server._validate_path(str(Path.home() / ".." / "etc" / "passwd"))
+        assert result is not None
+        assert "not allowed" in result
+
+    def test_nonexistent_file_rejected_by_default(self):
+        result = server._validate_path("/tmp/nonexistent_file_abc123.txt")
+        assert result is not None
+        assert "not found" in result.lower()
+
+    def test_nonexistent_file_allowed_for_writes(self):
+        result = server._validate_path("/tmp/new_output_file.png", must_exist=False)
+        assert result is None
+
+    def test_validate_paths_rejects_bad_in_list(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile(dir="/tmp", suffix=".txt", delete=False) as f:
+            f.write(b"test")
+            good_path = f.name
+        try:
+            result = server._validate_paths([good_path, "/etc/passwd"])
+            assert result is not None
+            assert "not allowed" in result
+        finally:
+            Path(good_path).unlink()
