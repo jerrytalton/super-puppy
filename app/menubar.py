@@ -2167,8 +2167,18 @@ class LocalModelsApp(rumps.App):
     def _check_for_updates(self):
         behind, remote_tag, remote_hash = check_repo_update_available()
         self.update_available = behind
+
         if behind <= 0:
-            return
+            # Repo is current, but the running app may be stale (e.g. we
+            # pushed from this machine). If the running version doesn't
+            # match the latest tag, trigger a restart to pick up new code.
+            latest_tag, _ = get_latest_remote_tag()
+            if latest_tag and latest_tag != self.app_version:
+                logging.info("Repo is current but running %s (latest: %s) — restarting",
+                             self.app_version, latest_tag)
+                remote_tag = latest_tag
+            else:
+                return
 
         # Skip if this exact release was already rolled back
         skipped = ""
