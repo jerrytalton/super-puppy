@@ -740,6 +740,9 @@ def api_profiles_activate(name):
 @app.route("/api/profiles/<name>/warm", methods=["POST"])
 def api_profiles_warm(name):
     """Pre-load the preferred models into server memory."""
+    proxied = _proxy_to_desktop(f"/api/profiles/{name}/warm")
+    if proxied is not None:
+        return proxied
     data = load_profiles()
     profile = data["profiles"].get(name)
     if not profile:
@@ -941,8 +944,33 @@ def _chat_stream(model, backend, messages, think=True, tool="chat"):
 STREAM_TOOLS = {"code", "general", "review", "translate", "summarize"}
 
 
+def _proxy_to_desktop(path: str, method: str = "POST"):
+    """In client mode, forward requests to the desktop's profile server.
+
+    Returns a Flask Response if proxied, or None if running locally.
+    """
+    if not _is_remote_ollama():
+        return None
+    try:
+        url = f"{_desktop_profile_server_url()}{path}"
+        if method == "POST":
+            resp = requests.post(url, json=request.json, timeout=300, stream=True)
+        else:
+            resp = requests.get(url, params=request.args, timeout=30, stream=True)
+        excluded = {"transfer-encoding", "content-encoding", "connection"}
+        headers = {k: v for k, v in resp.headers.items() if k.lower() not in excluded}
+        return Response(resp.iter_content(chunk_size=4096),
+                        status=resp.status_code, headers=headers,
+                        content_type=resp.headers.get("content-type"))
+    except Exception as e:
+        return jsonify({"error": f"Desktop unreachable: {e}"}), 502
+
+
 @app.route("/api/test/stream", methods=["POST"])
 def api_test_stream():
+    proxied = _proxy_to_desktop("/api/test/stream")
+    if proxied is not None:
+        return proxied
     body = request.json
     tool = body.get("tool")
     override = body.get("model")
@@ -1023,6 +1051,9 @@ def api_test_stream():
 
 @app.route("/api/test", methods=["POST"])
 def api_test():
+    proxied = _proxy_to_desktop("/api/test")
+    if proxied is not None:
+        return proxied
     body = request.json
     tool = body.get("tool")
     override = body.get("model")
@@ -1418,6 +1449,9 @@ MCP_PORT = int(os.environ.get("MCP_PORT", "8100"))
 @app.route("/api/gpu")
 def api_gpu():
     """Report playground activity and GPU contention."""
+    proxied = _proxy_to_desktop("/api/gpu", method="GET")
+    if proxied is not None:
+        return proxied
     # What the playground is doing right now (pick most recent if multiple)
     with _playground_lock:
         own = None
@@ -1443,6 +1477,9 @@ def api_gpu():
 @app.route("/api/activity")
 def api_activity():
     """Proxy the MCP server's /activity endpoint for the dashboard."""
+    proxied = _proxy_to_desktop("/api/activity", method="GET")
+    if proxied is not None:
+        return proxied
     try:
         resp = requests.get(f"http://127.0.0.1:{MCP_PORT}/activity", timeout=3)
         data = resp.json()
