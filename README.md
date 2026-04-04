@@ -153,7 +153,6 @@ pkill -f mlx-openai-server
 start-local-models
 ```
 
-The menu bar app also checks HuggingFace hourly for trending models and offers to install them.
 
 ## Configuration
 
@@ -184,20 +183,31 @@ super-puppy/
 ├── app/
 │   ├── menubar.py               # Menu bar app (PEP 723, rumps)
 │   ├── profile-server.py        # Profiles + Playground web UI
+│   ├── super-puppy.c            # Native launcher for macOS app bundle
+│   ├── SuperPuppy.app/          # macOS app bundle (built by install.sh)
 │   ├── tools.html               # Playground interface
 │   ├── profiles.html            # Model profiles interface
-│   └── icon.png
+│   └── activity.html            # Activity monitor interface
+├── mcp/
+│   └── local-models-server.py   # MCP server (PEP 723, runs via uv)
 ├── bin/
-│   ├── local-models-mcp-detect  # MCP wrapper with Tailscale discovery
 │   ├── start-local-models       # Service manager
-│   └── local-models-menubar     # App launcher
+│   ├── local-models-menubar     # App launcher
+│   ├── local-models-mcp-detect  # MCP wrapper with Tailscale discovery
+│   ├── local-models-mcp-auth    # MCP auth token management
+│   ├── claude-local             # Claude with local model tools
+│   ├── tailscale-status         # Tailscale connectivity check
+│   └── post-update.sh           # Post-update hook for auto-update
 ├── config/
 │   ├── mlx-server/              # MLX configs (high-memory + lightweight)
-│   ├── local-models/            # Network config, preferences, easter eggs
+│   ├── local-models/            # Network config, preferences
 │   └── launchd/                 # LaunchAgent plists
 ├── lib/
 │   ├── models.py                # Shared model constants
 │   └── hf_scanner.py            # HuggingFace model discovery
+├── tests/                       # pytest unit + end-to-end tests
+├── web/                         # Marketing site
+├── docs/                        # Setup documentation
 ├── install.sh                   # Interactive installer
 └── LICENSE                      # GPLv3
 ```
