@@ -12,6 +12,8 @@ No cloud, no per-token billing — inference is fully local. Write against local
 
 Super Puppy is **not** a training or fine-tuning platform, a cloud service, or a production deployment tool. It's for people who want to run inference on hardware they own — for development, experimentation, creative work, and daily use. You need enough unified memory for the models you care about: 64GB gets you started, 128GB+ handles most things, 256GB+ runs everything.
 
+<p align="center"><img src="docs/profiles.png" width="720" alt="Model Profiles — VRAM visualization and task-to-model assignment"></p>
+
 ## Quick Start
 
 **Prerequisites:** Xcode Command Line Tools (provides `git`), Homebrew.
@@ -87,6 +89,8 @@ curl http://localhost:8000/v1/models
 ### Playground
 
 The menu bar app serves a web-based Playground where you can test any capability interactively — text generation, vision, image generation, transcription, TTS, translation. Open it from the Super Puppy menu or access it from other devices on your network. With Tailscale configured, the Playground is accessible from anywhere over HTTPS.
+
+<p align="center"><img src="docs/playground.png" width="520" alt="Playground — testing image generation with a local diffusion model"></p>
 
 The Playground is a PWA — on iOS or iPadOS, open it in Safari and tap "Add to Home Screen" to install it as a standalone app. On Android, Chrome will prompt you to install it. Your phone becomes a frontend to your desktop's GPU.
 
