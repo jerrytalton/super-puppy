@@ -1488,6 +1488,7 @@ class LocalModelsApp(rumps.App):
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+                proc.wait()
         self._mcp_proc = None
         log_fh = getattr(self, '_mcp_log', None)
         if log_fh and not log_fh.closed:
@@ -1622,7 +1623,10 @@ class LocalModelsApp(rumps.App):
                 if self.ram_gb < 48:
                     mlx_config = os.path.expanduser(
                         "~/.config/mlx-server/config-laptop.yaml")
-                mlx_log = open("/tmp/local-models-mlx-restart.log", "w")
+                if hasattr(self, '_mlx_log') and self._mlx_log and not self._mlx_log.closed:
+                    self._mlx_log.close()
+                self._mlx_log = open("/tmp/local-models-mlx-restart.log", "w")
+                mlx_log = self._mlx_log
                 env = os.environ.copy()
                 # Ensure Homebrew is on PATH for tools like ffmpeg
                 if "/opt/homebrew/bin" not in env.get("PATH", ""):
@@ -1726,8 +1730,8 @@ class LocalModelsApp(rumps.App):
 
         # Auto-restart downed services on desktop (at most once per 2 minutes)
         if (self.servers_started
-                and (not self.ollama_ok and not self.ollama_loading
-                     or not self.mlx_ok and not self.mlx_loading)):
+                and ((not self.ollama_ok and not self.ollama_loading)
+                     or (not self.mlx_ok and not self.mlx_loading))):
             now = time.time()
             if now - getattr(self, '_last_restart_attempt', 0) > 120:
                 self._last_restart_attempt = now

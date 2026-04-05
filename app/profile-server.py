@@ -969,6 +969,9 @@ def _chat_stream(model, backend, messages, think=True, tool="chat"):
 STREAM_TOOLS = {"code", "general", "review", "translate", "summarize"}
 
 
+_MAX_PROXY_HOPS = 3
+
+
 def _proxy_to_desktop(path: str, method: str = "POST"):
     """In client mode, forward requests to the desktop's profile server.
 
@@ -976,12 +979,18 @@ def _proxy_to_desktop(path: str, method: str = "POST"):
     """
     if not _is_remote_ollama():
         return None
+    hops = int(request.headers.get("X-SP-Proxy-Hops", "0"))
+    if hops >= _MAX_PROXY_HOPS:
+        return jsonify({"error": "Proxy loop detected — too many hops between servers"}), 502
     try:
         url = f"{_desktop_profile_server_url()}{path}"
+        proxy_headers = {"X-SP-Proxy-Hops": str(hops + 1)}
         if method == "POST":
-            resp = requests.post(url, json=request.json, timeout=300, stream=True)
+            resp = requests.post(url, json=request.json, headers=proxy_headers,
+                                 timeout=300, stream=True)
         else:
-            resp = requests.get(url, params=request.args, timeout=30, stream=True)
+            resp = requests.get(url, params=request.args, headers=proxy_headers,
+                                timeout=30, stream=True)
         excluded = {"transfer-encoding", "content-encoding", "connection"}
         headers = {k: v for k, v in resp.headers.items() if k.lower() not in excluded}
         return Response(resp.iter_content(chunk_size=4096),
