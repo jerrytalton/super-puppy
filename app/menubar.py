@@ -1059,6 +1059,7 @@ class LocalModelsApp(rumps.App):
         self.last_update_check = 0
         self.update_available = 0      # commits behind
         self.app_version = get_version()
+        self._launch_hash = self._get_head_hash()
         self.app_ready = False         # set True once run loop starts
         self._health_checked = False   # post-update health comparison done
 
@@ -2172,6 +2173,14 @@ class LocalModelsApp(rumps.App):
     # App update (git)
     # -------------------------------------------------------------------
 
+    def _get_head_hash(self):
+        try:
+            return subprocess.check_output(
+                ["git", "-C", REPO_DIR, "rev-parse", "HEAD"],
+                text=True, stderr=subprocess.DEVNULL, timeout=5).strip()
+        except Exception:
+            return ""
+
     def _schedule_update_check(self):
         if self.conf.get("AUTO_UPDATE", "true").lower() == "false":
             return
@@ -2184,14 +2193,15 @@ class LocalModelsApp(rumps.App):
         self.update_available = behind
 
         if behind <= 0:
-            # Repo is current, but the running app may be stale (e.g. we
-            # pushed from this machine). If the running version doesn't
-            # match the latest tag, trigger a restart to pick up new code.
-            latest_tag, _ = get_latest_remote_tag()
-            if latest_tag and latest_tag != self.app_version:
-                logging.info("Repo is current but running %s (latest: %s) — restarting",
-                             self.app_version, latest_tag)
-                remote_tag = latest_tag
+            # No newer tag on origin — but the code on disk may have
+            # changed since launch (commit, pull, or tag on this machine).
+            # Compare the commit hash we launched from against current HEAD.
+            current_hash = self._get_head_hash()
+            if current_hash and current_hash != self._launch_hash:
+                current_ver = get_version()
+                logging.info("Code on disk changed since launch (%s → %s) — restarting",
+                             self.app_version, current_ver)
+                remote_tag = current_ver
             else:
                 return
 
@@ -2223,12 +2233,8 @@ class LocalModelsApp(rumps.App):
 
     def _auto_update(self, target_tag):
         # Save pre-update tag/hash for precise rollback
-        pre_hash = ""
-        pre_tag = get_version()
+        pre_hash = self._launch_hash
         try:
-            pre_hash = subprocess.check_output(
-                ["git", "-C", REPO_DIR, "rev-parse", "HEAD"],
-                text=True, timeout=5).strip()
             with open(UPDATE_PRE_HASH_FILE, "w") as f:
                 f.write(pre_hash)
         except Exception:
@@ -2254,24 +2260,32 @@ class LocalModelsApp(rumps.App):
         except RuntimeError:
             pass
 
-        # Check if MCP server code changed (to decide whether to restart it)
-        mcp_changed = self._mcp_code_changed(target_tag)
+        # Check if MCP server code changed (to decide whether to restart it).
+        # Compare against launch hash — works for both tag updates and drift.
+        mcp_changed = self._mcp_code_changed(self._launch_hash)
 
-        success, output = apply_repo_update(target_tag)
-        if not success:
-            logging.error("Auto-update failed: %s", output)
-            # Reset to pre-update commit so we don't stay on broken code
-            if pre_hash:
-                subprocess.run(
-                    ["git", "-C", REPO_DIR, "reset", "--hard", pre_hash],
-                    capture_output=True, timeout=10)
-            try:
-                rumps.notification("Super Puppy", "Update failed — rolled back",
-                                   output[:100])
-            except RuntimeError:
-                pass
-            self._cleanup_update_files()
-            return
+        # If HEAD already moved past our launch hash (commit/pull on this
+        # machine), the new code is on disk — skip checkout, just restart.
+        # Otherwise a remote tag needs to be checked out.
+        current_hash = self._get_head_hash()
+        if current_hash == self._launch_hash:
+            # HEAD hasn't moved locally — need to check out the remote tag
+            success, output = apply_repo_update(target_tag)
+            if not success:
+                logging.error("Auto-update failed: %s", output)
+                if pre_hash:
+                    subprocess.run(
+                        ["git", "-C", REPO_DIR, "reset", "--hard", pre_hash],
+                        capture_output=True, timeout=10)
+                try:
+                    rumps.notification("Super Puppy", "Update failed — rolled back",
+                                       output[:100])
+                except RuntimeError:
+                    pass
+                self._cleanup_update_files()
+                return
+        else:
+            logging.info("Code already on disk — skipping checkout, restarting")
 
         # Run post-update hook (rebuild binary, update symlinks)
         post_update = os.path.join(REPO_DIR, "bin", "post-update.sh")

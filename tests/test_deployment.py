@@ -89,6 +89,7 @@ def app_instance(update_dir):
     inst.conf = {"AUTO_UPDATE": "true"}
     inst.profile_server = None
     inst._health_checked = False
+    inst._launch_hash = "launch000"
     return inst
 
 
@@ -354,37 +355,36 @@ class TestCheckForUpdates:
         mock_update.assert_called_once_with("v2.0.0")
 
     def test_no_update_available(self, app_instance, update_dir):
-        app_instance.app_version = "v2.0.0"
+        """No remote update and HEAD hasn't moved — no action."""
         with patch("app.menubar.check_repo_update_available",
                     return_value=(0, "", "")), \
-             patch("app.menubar.get_latest_remote_tag",
-                    return_value=("v2.0.0", "abc")), \
+             patch.object(app_instance, "_get_head_hash",
+                          return_value="launch000"), \
              patch.object(app_instance, "_auto_update") as mock_update:
             app_instance._check_for_updates()
 
         mock_update.assert_not_called()
         assert app_instance.update_available == 0
 
-    def test_repo_current_but_app_stale_triggers_restart(self, app_instance, update_dir):
-        """Pushed from this machine: repo is current but running old version."""
-        app_instance.app_version = "v1.0.0"
+    def test_drift_triggers_restart(self, app_instance, update_dir):
+        """HEAD moved since launch (commit/pull on this machine) — restart."""
         with patch("app.menubar.check_repo_update_available",
                     return_value=(0, "", "")), \
-             patch("app.menubar.get_latest_remote_tag",
-                    return_value=("v2.0.0", "new123")), \
+             patch.object(app_instance, "_get_head_hash",
+                          return_value="newcommit456"), \
+             patch("app.menubar.get_version", return_value="v2.0.0"), \
              patch.object(app_instance, "_mcp_recently_active", return_value=False), \
              patch.object(app_instance, "_auto_update") as mock_update:
             app_instance._check_for_updates()
 
         mock_update.assert_called_once_with("v2.0.0")
 
-    def test_repo_current_and_app_current_no_restart(self, app_instance, update_dir):
-        """Repo and app both at latest tag — no action."""
-        app_instance.app_version = "v2.0.0"
+    def test_no_drift_no_restart(self, app_instance, update_dir):
+        """No remote update, HEAD unchanged — no action."""
         with patch("app.menubar.check_repo_update_available",
                     return_value=(0, "", "")), \
-             patch("app.menubar.get_latest_remote_tag",
-                    return_value=("v2.0.0", "abc")), \
+             patch.object(app_instance, "_get_head_hash",
+                          return_value="launch000"), \
              patch.object(app_instance, "_auto_update") as mock_update:
             app_instance._check_for_updates()
 
@@ -405,8 +405,8 @@ class TestAutoUpdateDisable:
         app_instance.last_update_check = 0
         with patch("app.menubar.check_repo_update_available",
                     return_value=(0, None, None)), \
-             patch("app.menubar.get_latest_remote_tag",
-                    return_value=(None, None)):
+             patch.object(app_instance, "_get_head_hash",
+                          return_value="launch000"):
             app_instance._schedule_update_check()
         assert app_instance.last_update_check > 0
 
@@ -415,8 +415,8 @@ class TestAutoUpdateDisable:
         app_instance.last_update_check = 0
         with patch("app.menubar.check_repo_update_available",
                     return_value=(0, None, None)), \
-             patch("app.menubar.get_latest_remote_tag",
-                    return_value=(None, None)):
+             patch.object(app_instance, "_get_head_hash",
+                          return_value="launch000"):
             app_instance._schedule_update_check()
         assert app_instance.last_update_check > 0
 
@@ -437,8 +437,8 @@ class TestAutoUpdate:
 
         with patch("app.menubar.apply_repo_update", return_value=(True, "ok")), \
              patch("app.menubar.subprocess.run", side_effect=mock_run), \
-             patch("app.menubar.subprocess.check_output", return_value="abc123\n"), \
-             patch("app.menubar.get_version", return_value="v1.0.0"), \
+             patch.object(app_instance, "_get_head_hash",
+                          return_value="launch000"), \
              patch.object(app_instance, "_mcp_code_changed", return_value=False), \
              patch.object(app_instance, "_stop_mcp_server", create=True), \
              patch("os.path.isfile", return_value=True), \
@@ -452,24 +452,24 @@ class TestAutoUpdate:
         """Failed checkout resets to pre-update hash."""
         with patch("app.menubar.apply_repo_update",
                     return_value=(False, "checkout failed")), \
-             patch("app.menubar.subprocess.check_output", return_value="pre123\n"), \
              patch("app.menubar.subprocess.run") as mock_run, \
-             patch("app.menubar.get_version", return_value="v1.0.0"), \
+             patch.object(app_instance, "_get_head_hash",
+                          return_value="launch000"), \
              patch.object(app_instance, "_mcp_code_changed", return_value=False):
             app_instance._auto_update("v2.0.0")
 
-        # Should have reset --hard to pre-update hash
+        # Should have reset --hard to pre-update (launch) hash
         reset_calls = [c for c in mock_run.call_args_list
                        if "reset" in str(c)]
         assert len(reset_calls) == 1
-        assert "pre123" in str(reset_calls[0])
+        assert "launch000" in str(reset_calls[0])
 
     def test_writes_crash_marker(self, app_instance, update_dir):
         """update_started file is written after successful checkout."""
         with patch("app.menubar.apply_repo_update", return_value=(True, "ok")), \
              patch("app.menubar.subprocess.run", return_value=_mock_run()), \
-             patch("app.menubar.subprocess.check_output", return_value="abc\n"), \
-             patch("app.menubar.get_version", return_value="v1.0.0"), \
+             patch.object(app_instance, "_get_head_hash",
+                          return_value="launch000"), \
              patch.object(app_instance, "_mcp_code_changed", return_value=False), \
              patch.object(app_instance, "_stop_mcp_server", create=True), \
              patch("os.path.isfile", return_value=False), \
@@ -480,6 +480,21 @@ class TestAutoUpdate:
         assert marker.exists()
         ts = float(marker.read_text())
         assert time.time() - ts < 5
+
+    def test_drift_skips_checkout(self, app_instance, update_dir):
+        """When HEAD moved since launch (drift), skip checkout and just restart."""
+        with patch("app.menubar.apply_repo_update") as mock_checkout, \
+             patch("app.menubar.subprocess.run", return_value=_mock_run()), \
+             patch.object(app_instance, "_get_head_hash",
+                          return_value="drifted999"), \
+             patch.object(app_instance, "_mcp_code_changed", return_value=False), \
+             patch.object(app_instance, "_stop_mcp_server", create=True), \
+             patch("os.path.isfile", return_value=False), \
+             patch("os._exit") as mock_exit:
+            app_instance._auto_update("v2.0.0")
+
+        mock_checkout.assert_not_called()
+        mock_exit.assert_called_once_with(1)
 
 
 # ---------------------------------------------------------------------------
