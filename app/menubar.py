@@ -2423,6 +2423,17 @@ class LocalModelsApp(rumps.App):
             except FileNotFoundError:
                 pass
             return
+        # If launch_attempted exists, the shell wrapper is managing the
+        # rollback lifecycle (two-phase: first launch proceeds, second
+        # launch triggers rollback). Rewrite update_started to NOW so
+        # _mark_startup_healthy measures from this launch, not the exit.
+        if os.path.exists(LAUNCH_ATTEMPTED_FILE):
+            try:
+                with open(UPDATE_STARTED_FILE, "w") as f:
+                    f.write(str(time.time()))
+            except Exception:
+                pass
+            return
         # Previous launch died within the crash window after an update
         logging.warning("Crash detected within %ds of update — rolling back", int(elapsed))
         try:
