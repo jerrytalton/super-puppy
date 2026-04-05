@@ -6,19 +6,9 @@ Your Mac has a GPU that can run serious AI models — probably while it's sittin
 
 It works as a **server** or a **client** — and every client is also a server. Install it on a beefy desktop and it serves models over Tailscale. Install it on a laptop and it auto-discovers the desktop, routing requests to the bigger machine's GPU. When the desktop is unreachable — you're on a plane, at a coffee shop, whatever — the same tools keep working against local models on the laptop itself. Your code, your scripts, your Claude Code workflows never have to care which machine is doing the work. They hit the same APIs either way; Super Puppy handles the routing.
 
-That's the core idea: write against local AI APIs once, and get the best available hardware transparently. Your desktop's full memory when it's reachable, your laptop's own GPU when it's not. No cloud, no per-token billing — inference is fully local. (Initial model downloads and auto-update checks do require network access; see [Network Transparency](#network-transparency) below.)
+No cloud, no per-token billing — inference is fully local. Write against local AI APIs once, get the best available hardware transparently. (Initial model downloads and auto-update checks do require network access; see [Network Transparency](#network-transparency).)
 
-Super Puppy is **not** a training or fine-tuning platform, a cloud service, or a production deployment tool. It's for people who want to run inference on hardware they own — for development, experimentation, creative work, and daily use.
-
-### Memory Tiers
-
-| RAM | What works | Profile |
-|-----|-----------|---------|
-| 32–47GB | Ollama only (MLX disabled below 48GB). Small models (8–14B). | — |
-| 48–63GB | Ollama + MLX. Desktop-class models (up to 32B). | Laptop |
-| 64–127GB | Full model coverage. 32B coders, vision, TTS, image gen. | Desktop |
-| 128–255GB | Large MoE models (70B+). All capabilities comfortable. | Server |
-| 256GB+ | Everything including 400B+ MoE with full context. | Maximum |
+Super Puppy is **not** a training or fine-tuning platform, a cloud service, or a production deployment tool. It's for people who want to run inference on hardware they own — for development, experimentation, creative work, and daily use. You need enough unified memory for the models you care about: 64GB gets you started, 128GB+ handles most things, 256GB+ runs everything.
 
 ## Quick Start
 
@@ -209,6 +199,18 @@ Approximate times on Apple Silicon (varies by model size and quantization):
 ## Configuration
 
 All user-writable config lives in `~/.config/local-models/`. The installer sets these up interactively.
+
+### Memory and Profiles
+
+The installer picks a profile based on your machine's RAM. You can change it any time from the Model Profiles page.
+
+| RAM | What you get | Default profile |
+|-----|-------------|-----------------|
+| 32–47GB | Ollama only (MLX needs 48GB+). Small models, no image gen. | — |
+| 48–63GB | Ollama + MLX. Capable coders and chat up to 32B. | Laptop |
+| 64–127GB | Everything: code, vision, TTS, image gen, embeddings. | Desktop |
+| 128–255GB | Plus large MoE models (70B+) with room to spare. | Server |
+| 256GB+ | Full fleet including 400B+ MoE at full context. | Maximum |
 
 | File | What |
 |------|------|
