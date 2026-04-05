@@ -287,6 +287,7 @@ from lib.models import (
     STANDARD_TASKS, SPECIAL_TASKS, TASK_FILTERS, KNOWN_ACTIVE_PARAMS,
     ALWAYS_EXCLUDE, active_params_b, model_matches_filter,
     MCP_PREFS_FILE as _MCP_PREFS_PATH, CLAUDE_CONFIG_FILE,
+    validate_network_conf,
 )
 MCP_PREFS_FILE = str(_MCP_PREFS_PATH)
 
@@ -1020,6 +1021,7 @@ class LocalModelsApp(rumps.App):
         super().__init__("Local Models", icon=icon, template=True,
                          quit_button=None)
 
+        validate_network_conf(logger=logging.getLogger())
         self.conf = load_network_conf()
         self.desktop = is_desktop()
         self.ram_gb = get_ram_gb()

@@ -129,15 +129,25 @@ class TestIsRemoteOllama:
 
 
 class TestRequestsErrorDetail:
-    def test_http_error(self):
+    def test_http_error_model_not_found(self):
         resp = MagicMock()
         resp.status_code = 404
-        resp.text = "model not found"
+        resp.text = '{"error":"model \'qwen3:8b\' not found, try pulling it"}'
         resp.url = "http://localhost:11434/api/chat"
         exc = ps.requests.HTTPError(response=resp)
         result = ps._requests_error_detail(exc)
-        assert "404" in result
-        assert "model not found" in result
+        assert "not downloaded" in result
+        assert "ollama pull qwen3:8b" in result
+
+    def test_http_error_generic(self):
+        resp = MagicMock()
+        resp.status_code = 503
+        resp.text = "Service Unavailable"
+        resp.url = "http://localhost:8000"
+        exc = ps.requests.HTTPError(response=resp)
+        result = ps._requests_error_detail(exc)
+        assert "503" in result
+        assert "localhost:8000" in result
 
     def test_connection_error(self):
         exc = ps.requests.ConnectionError("refused")
