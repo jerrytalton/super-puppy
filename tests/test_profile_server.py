@@ -238,6 +238,21 @@ class TestProfilesCRUD:
         assert loaded["version"] == ps.PROFILES_VERSION
         assert "everyday" in loaded["profiles"]
 
+    def test_version_bump_preserves_custom_profiles(self, profiles_dir):
+        old = {"version": 1, "active": "myconfig",
+               "profiles": {
+                   "everyday": {"tasks": {}},
+                   "myconfig": {"label": "My Config", "tasks": {"code": "custom-model"},
+                                "max_ram_gb": 128, "thinking": {"code": True}},
+               }}
+        (profiles_dir / "profiles.json").write_text(json.dumps(old))
+        loaded = ps.load_profiles()
+        assert loaded["version"] == ps.PROFILES_VERSION
+        assert "myconfig" in loaded["profiles"]
+        assert loaded["profiles"]["myconfig"]["tasks"]["code"] == "custom-model"
+        assert loaded["profiles"]["myconfig"]["max_ram_gb"] == 128
+        assert loaded["active"] == "myconfig"
+
 
 # ── Flask routes ────────────────────────────────────────────────────
 
@@ -284,6 +299,19 @@ class TestRoutes:
         data = ps.load_profiles()
         assert "custom" in data["profiles"]
         assert data["profiles"]["custom"]["tasks"]["code"] == "qwen3:8b"
+
+    def test_api_profiles_save_persists_max_ram_and_thinking(self, client, profiles_dir):
+        resp = client.post("/api/profiles", json={
+            "name": "custom",
+            "label": "Custom",
+            "tasks": {"code": "qwen3:8b"},
+            "thinking": {"code": True},
+            "max_ram_gb": 128,
+        })
+        assert resp.status_code == 200
+        data = ps.load_profiles()
+        assert data["profiles"]["custom"]["max_ram_gb"] == 128
+        assert data["profiles"]["custom"]["thinking"]["code"] is True
 
     def test_api_profiles_save_requires_name(self, client, profiles_dir):
         resp = client.post("/api/profiles", json={"label": "No name"})

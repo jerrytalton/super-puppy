@@ -243,6 +243,10 @@ async function init() {
   render();
 }
 
+window.addEventListener('beforeunload', (e) => {
+  if (S.dirty) { e.preventDefault(); }
+});
+
 async function refreshModels() {
   const [sys, models] = await Promise.all([
     fetch('/api/system', _authHeaders()).then(r=>r.json()),
@@ -305,12 +309,11 @@ function render() {
 function renderProfiles() {
   const el = document.getElementById('profiles');
   el.innerHTML = '';
-  const order = Object.keys(S.profiles.profiles).sort((a,b) => {
+  const profs = S.profiles.profiles;
+  const order = Object.keys(profs).sort((a,b) => {
     if (a === 'custom') return 1;
     if (b === 'custom') return -1;
-    if (a === 'everyday') return -1;
-    if (b === 'everyday') return 1;
-    return 0;
+    return (profs[a].max_ram_gb || 0) - (profs[b].max_ram_gb || 0);
   });
   for (const name of order) {
     const p = S.profiles.profiles[name];
@@ -322,10 +325,10 @@ function renderProfiles() {
     el.appendChild(b);
   }
   const isActive = S.sel === S.profiles.active;
-  if (S.sel && !isActive) {
+  if (S.sel && (!isActive || S.dirty)) {
     const b = document.createElement('button');
     b.className = 'prof-btn go';
-    b.textContent = 'Activate';
+    b.textContent = S.dirty && isActive ? 'Save Changes' : 'Activate';
     b.onclick = () => activate(S.sel);
     el.appendChild(b);
   }
@@ -460,6 +463,7 @@ function renderTasks() {
       e.stopPropagation();
       switchToCustom();
       S.thinkPicks[key] = !think;
+      S.dirty = true;
       render();
     };
     row.querySelector('.task-header').onclick = () => {
@@ -480,7 +484,7 @@ function renderTasks() {
       card.className = 'card' + (isSelected?' selected':'') + (tooLarge?' too-large':'');
 
       if (!tooLarge) {
-        card.onclick = () => { switchToCustom(); S.picks[key] = m.name; render(); };
+        card.onclick = () => { switchToCustom(); S.picks[key] = m.name; S.dirty = true; render(); };
       }
 
       let badges = '';
@@ -521,6 +525,7 @@ async function activate(name) {
     const actResp = await fetch(`/api/profiles/${name}/activate`, _authHeaders({method:'POST'}));
     const actData = await actResp.json();
     S.profiles.active = name;
+    S.dirty = false;
     render();
     if (actData.warnings?.length) {
       const msg = 'Pruned stale models from preferences:\n' + actData.warnings.join('\n');
