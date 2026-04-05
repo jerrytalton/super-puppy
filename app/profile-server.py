@@ -553,11 +553,16 @@ def load_profiles():
             data = json.loads(PROFILES_FILE.read_text())
             if data.get("version", 0) == PROFILES_VERSION:
                 return data
-            # Version bump: refresh presets, keep user's selection if it's a preset
+            # Version bump: refresh presets but preserve custom profiles
             active = data.get("active", DEFAULT_PROFILES["active"])
-            if active not in DEFAULT_PROFILES["profiles"]:
-                active = DEFAULT_PROFILES["active"]
             refreshed = {**DEFAULT_PROFILES, "active": active}
+            old_profiles = data.get("profiles", {})
+            for name, profile in old_profiles.items():
+                if name not in DEFAULT_PROFILES["profiles"]:
+                    refreshed["profiles"][name] = profile
+            if active not in refreshed["profiles"]:
+                active = DEFAULT_PROFILES["active"]
+            refreshed["active"] = active
             save_profiles(refreshed)
             return refreshed
         except Exception:
@@ -677,12 +682,17 @@ def api_profiles_save():
     name = body.get("name", "")
     if not name:
         return jsonify({"error": "name required"}), 400
-    data["profiles"][name] = {
+    profile = {
         "label": body.get("label", name),
         "description": body.get("description", ""),
         "keep_loaded": body.get("keep_loaded", []),
         "tasks": body.get("tasks", {}),
     }
+    if "thinking" in body:
+        profile["thinking"] = body["thinking"]
+    if "max_ram_gb" in body:
+        profile["max_ram_gb"] = body["max_ram_gb"]
+    data["profiles"][name] = profile
     save_profiles(data)
     return jsonify({"ok": True})
 
