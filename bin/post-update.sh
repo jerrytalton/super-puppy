@@ -54,6 +54,16 @@ fi
 
 log "Symlinks updated"
 
+# ── Git tag verification (needed for auto-update) ──────────────────
+ALLOWED_SIGNERS="$HOME/.config/git/allowed_signers"
+REPO_SIGNERS="$REPO_DIR/config/git/allowed_signers"
+if [ -f "$REPO_SIGNERS" ]; then
+    mkdir -p "$(dirname "$ALLOWED_SIGNERS")"
+    cp "$REPO_SIGNERS" "$ALLOWED_SIGNERS"
+    git -C "$REPO_DIR" config gpg.ssh.allowedSignersFile "$ALLOWED_SIGNERS"
+    log "Tag verification configured"
+fi
+
 # ── Build app bundle ────────────────────────────────────────────────
 APP_MACOS="$REPO_DIR/app/SuperPuppy.app/Contents/MacOS"
 APP_RES="$REPO_DIR/app/SuperPuppy.app/Contents/Resources"
