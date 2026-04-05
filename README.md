@@ -184,18 +184,6 @@ All inference runs locally — model input and output never leave your machine. 
 
 For air-gapped environments: pre-download all models, set `AUTO_UPDATE=false`, and ensure all Python dependencies are cached.
 
-## Rough Benchmarks
-
-Approximate times on Apple Silicon (varies by model size and quantization):
-
-| Operation | M4 Max 128GB | M4 Ultra 512GB |
-|-----------|-------------|----------------|
-| Image generation (Flux2) | 2–5 min | 1–3 min |
-| Audio transcription (Whisper v3) | ~0.3x realtime | ~0.15x realtime |
-| TTS first run (Voxtral bf16 download) | ~4GB download | ~4GB download |
-| TTS generation (short text) | 5–15 sec | 3–8 sec |
-| 32B code generation | 20–40 tok/s | 40–80 tok/s |
-
 ## Configuration
 
 All user-writable config lives in `~/.config/local-models/`. The installer sets these up interactively.
