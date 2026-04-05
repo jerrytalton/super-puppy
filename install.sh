@@ -3,12 +3,31 @@
 # Super Puppy installer.
 # Symlinks scripts, copies configs, and walks through setup interactively.
 #
-# Run from the repo root: ./install.sh
+# One-line install (curl from GitHub):
+#   bash <(curl -fsSL superpuppy.ai/install.sh)
+#
+# Or from a local clone:
+#   ./install.sh
 #   --rotate-token   Force re-reading the MCP auth token from 1Password
 #   --reconfigure    Re-run interactive setup even if network.conf exists
 #   --uninstall      Remove symlinks, LaunchAgents, configs, and MCP registration
 
 set -euo pipefail
+
+# ── Bootstrap: clone the repo if running via curl pipe ─────────────
+# Detect: if this script isn't inside a git repo, we're being piped.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" 2>/dev/null)" 2>/dev/null && pwd 2>/dev/null)" || SCRIPT_DIR=""
+if [ -z "$SCRIPT_DIR" ] || ! git -C "$SCRIPT_DIR" rev-parse --git-dir &>/dev/null; then
+    INSTALL_DIR="$HOME/super-puppy"
+    echo "Cloning Super Puppy into $INSTALL_DIR..."
+    if [ -d "$INSTALL_DIR/.git" ]; then
+        echo "  Already cloned — pulling latest..."
+        git -C "$INSTALL_DIR" pull --quiet
+    else
+        git clone https://github.com/jerrytalton/super-puppy "$INSTALL_DIR"
+    fi
+    exec "$INSTALL_DIR/install.sh" "$@"
+fi
 
 FORCE_TOKEN_REFRESH=false
 RECONFIGURE=false
