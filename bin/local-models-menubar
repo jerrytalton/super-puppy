@@ -7,43 +7,56 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0" || echo "$0")")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 
 # ── Pre-Python rollback check ──────────────────────────────────────
-# If the previous launch wrote an update_started marker and then crashed
-# before the Python rollback code could run (import error, missing dep),
-# we catch it here �� before Python even loads.
+# Catches import-level crashes that kill Python before the in-app
+# rollback code can run.  Uses a two-phase marker:
+#
+#   update_started  — written by _auto_update() before os._exit(1)
+#   launch_attempted — written HERE on the first launch after update
+#
+# First launch after update:  update_started exists, launch_attempted
+#   does NOT → create launch_attempted, proceed normally.
+# Second launch (new code crashed): BOTH exist → roll back.
+# App survives 90s: Python clears both markers.
 CONFIG_DIR="$HOME/.config/local-models"
 UPDATE_STARTED="$CONFIG_DIR/update_started"
 UPDATE_PRE_HASH="$CONFIG_DIR/update_pre_hash"
 UPDATE_SKIPPED="$CONFIG_DIR/update_skipped"
+LAUNCH_ATTEMPTED="$CONFIG_DIR/launch_attempted"
 CRASH_WINDOW=90
 
 if [ -f "$UPDATE_STARTED" ]; then
     started=$(cat "$UPDATE_STARTED" 2>/dev/null)
     now=$(date +%s)
-    # started is a float (Python time.time()); truncate to int for bash
     started_int=${started%%.*}
     elapsed=$((now - started_int))
 
-    if [ "$elapsed" -lt "$CRASH_WINDOW" ] && [ -f "$UPDATE_PRE_HASH" ]; then
-        pre_hash=$(cat "$UPDATE_PRE_HASH" 2>/dev/null)
-        if [ -n "$pre_hash" ]; then
-            bad_hash=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null)
-            echo "[pre-python-rollback] Crash within ${elapsed}s of update — rolling back to ${pre_hash:0:8}" >&2
-            git -C "$REPO_DIR" checkout --force "$pre_hash" 2>/dev/null
+    if [ "$elapsed" -lt "$CRASH_WINDOW" ]; then
+        if [ -f "$LAUNCH_ATTEMPTED" ]; then
+            # Second launch within crash window — new code crashed, roll back
+            pre_hash=$(cat "$UPDATE_PRE_HASH" 2>/dev/null)
+            if [ -n "$pre_hash" ]; then
+                bad_hash=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null)
+                echo "[pre-python-rollback] Crash within ${elapsed}s of update — rolling back to ${pre_hash:0:8}" >&2
+                git -C "$REPO_DIR" checkout --force "$pre_hash" 2>/dev/null
 
-            # Rebuild binary/symlinks for the restored code
-            if [ -x "$REPO_DIR/bin/post-update.sh" ]; then
-                "$REPO_DIR/bin/post-update.sh" 2>&1 | sed 's/^/[rollback] /' >&2 || true
+                if [ -x "$REPO_DIR/bin/post-update.sh" ]; then
+                    "$REPO_DIR/bin/post-update.sh" 2>&1 | sed 's/^/[rollback] /' >&2 || true
+                fi
+
+                if [ -n "$bad_hash" ]; then
+                    mkdir -p "$CONFIG_DIR"
+                    printf '%s\n%s' "$bad_hash" "$(date +%s)" > "$UPDATE_SKIPPED"
+                fi
+
+                rm -f "$UPDATE_STARTED" "$UPDATE_PRE_HASH" "$LAUNCH_ATTEMPTED"
             fi
-
-            # Record skipped release (hash + timestamp)
-            if [ -n "$bad_hash" ]; then
-                mkdir -p "$CONFIG_DIR"
-                printf '%s\n%s' "$bad_hash" "$(date +%s)" > "$UPDATE_SKIPPED"
-            fi
-
-            # Clean up markers
-            rm -f "$UPDATE_STARTED" "$UPDATE_PRE_HASH"
+        else
+            # First launch after update — mark that we tried, proceed
+            touch "$LAUNCH_ATTEMPTED"
         fi
+    else
+        # Outside crash window — clean up stale markers
+        rm -f "$LAUNCH_ATTEMPTED"
     fi
 fi
 

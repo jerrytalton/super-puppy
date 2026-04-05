@@ -123,6 +123,7 @@ UPDATE_SKIP_EXPIRY = 86400   # seconds (24h) — skipped releases become retryab
 UPDATE_STARTED_FILE = os.path.expanduser("~/.config/local-models/update_started")
 UPDATE_SKIPPED_FILE = os.path.expanduser("~/.config/local-models/update_skipped")
 UPDATE_PRE_HASH_FILE = os.path.expanduser("~/.config/local-models/update_pre_hash")
+LAUNCH_ATTEMPTED_FILE = os.path.expanduser("~/.config/local-models/launch_attempted")
 PRE_UPDATE_HEALTH_FILE = os.path.expanduser("~/.config/local-models/pre_update_health.json")
 MCP_LOG_FILE = "/tmp/local-models-mcp.log"
 
@@ -2475,7 +2476,7 @@ class LocalModelsApp(rumps.App):
                 pass
 
     def _cleanup_update_files(self):
-        for f in (UPDATE_STARTED_FILE, UPDATE_PRE_HASH_FILE):
+        for f in (UPDATE_STARTED_FILE, UPDATE_PRE_HASH_FILE, LAUNCH_ATTEMPTED_FILE):
             try:
                 os.unlink(f)
             except FileNotFoundError:
@@ -2661,10 +2662,10 @@ if __name__ == "__main__":
     # Rotate log on startup (keep last 1000 lines)
     log_path = "/tmp/local-models-menubar.log"
     try:
-        with open(log_path) as f:
+        with open(log_path, encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
         if len(lines) > 1000:
-            with open(log_path, "w") as f:
+            with open(log_path, "w", encoding="utf-8") as f:
                 f.writelines(lines[-500:])
     except FileNotFoundError:
         pass
