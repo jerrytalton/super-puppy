@@ -421,6 +421,31 @@ def verify_tag_signature(tag):
     return False, result.stderr.strip()[:200]
 
 
+def _update_allowed_signers(target_ref):
+    """Fetch allowed_signers from a tag/ref without checking it out.
+
+    Handles signing key rotation: if the new release ships a new key,
+    we install it before verifying the tag so old installs aren't bricked.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", REPO_DIR, "show",
+             f"{target_ref}:config/git/allowed_signers"],
+            capture_output=True, text=True, timeout=5)
+        if result.returncode != 0 or not result.stdout.strip():
+            return
+        signers_path = os.path.expanduser("~/.config/git/allowed_signers")
+        os.makedirs(os.path.dirname(signers_path), exist_ok=True)
+        with open(signers_path, "w") as f:
+            f.write(result.stdout)
+        subprocess.run(
+            ["git", "-C", REPO_DIR, "config",
+             "gpg.ssh.allowedSignersFile", signers_path],
+            capture_output=True, timeout=5)
+    except Exception as e:
+        logging.debug("Could not update allowed_signers from %s: %s", target_ref, e)
+
+
 def apply_repo_update(target_tag):
     """Check out a tagged release. Returns (success, output).
 
@@ -429,6 +454,10 @@ def apply_repo_update(target_tag):
     preserve — the repo IS the installed app.
     """
     try:
+        # Update allowed_signers from the new tag before verification,
+        # so signing key rotations don't brick old installs.
+        _update_allowed_signers(target_tag)
+
         sig_ok, sig_detail = verify_tag_signature(target_tag)
         if not sig_ok:
             logging.warning("Refusing unsigned update %s: %s", target_tag, sig_detail)
