@@ -186,17 +186,17 @@ All inference runs locally — model input and output never leave your machine. 
 
 All user-writable config lives in `~/.config/local-models/`. The installer sets these up interactively.
 
-### Memory and Profiles
+### Profiles
 
-The installer picks a profile based on your machine's RAM. You can change it any time from the Model Profiles page.
+The installer picks a profile based on RAM. Change it any time from Model Profiles.
 
-| RAM | What you get | Default profile |
-|-----|-------------|-----------------|
-| 32–47GB | Ollama only (MLX needs 48GB+). Small models, no image gen. | — |
-| 48–63GB | Ollama + MLX. Capable coders and chat up to 32B. | Laptop |
-| 64–127GB | Everything: code, vision, TTS, image gen, embeddings. | Desktop |
-| 128–255GB | Plus large MoE models (70B+) with room to spare. | Server |
-| 256GB+ | Full fleet including 400B+ MoE at full context. | Maximum |
+| RAM | Profile | What fits |
+|-----|---------|-----------|
+| <48GB | — | Ollama only, small models |
+| <64GB | Laptop | Ollama + MLX, up to 32B |
+| <128GB | Desktop | Everything: code, vision, TTS, image gen |
+| <256GB | Server | Plus large MoE (70B+) |
+| 256GB+ | Maximum | Full fleet, 400B+ MoE |
 
 | File | What |
 |------|------|
