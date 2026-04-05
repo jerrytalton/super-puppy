@@ -15,6 +15,11 @@ MCP-first architecture working with 16 tools:
 
 ## Next Steps
 
+### Auto-Update: Remaining Items
+- **Key rotation**: `verify_tag_signature` runs before checkout, using old `allowed_signers`. Rotating signing keys breaks all old installs. Need a forward-compatible key update mechanism.
+- **Heavy MCP user**: 10-minute max deferral may interrupt long inference jobs. Consider longer ceiling or smarter detection.
+- **`KeepAlive` policy**: `SuccessfulExit: false` means a clean exit (0) permanently kills the app. Consider `KeepAlive: true` with an intentional-quit marker.
+
 ### Profile Server Authentication
 The profile server (Flask) has no authentication. When exposed via Tailscale, anyone on the tailnet has full access to all tools. Add bearer token auth when `PROFILE_HOST` is `0.0.0.0`.
 
@@ -32,6 +37,6 @@ The profile server (Flask) has no authentication. When exposed via Tailscale, an
 - Add log rotation for `/tmp/local-models-*.log` files
 
 ### Testing
-- 56 tests passing (25 unit + 43 e2e + 28 error handling)
+- 194 unit tests passing (52 deployment + 33 core + 46 MCP + 50 profile + 4 playground + 9 remaining)
 - `local_computer_use` needs e2e test coverage
 - Laptop-away fallback path needs testing

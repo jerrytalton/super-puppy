@@ -90,6 +90,8 @@ def app_instance(update_dir):
     inst.profile_server = None
     inst._health_checked = False
     inst._launch_hash = "launch000"
+    inst._update_defer_count = 0
+    inst._rolled_back = False
     return inst
 
 
@@ -181,40 +183,36 @@ class TestApplyRepoUpdate:
     def _verified(self):
         return patch("app.menubar.verify_tag_signature", return_value=(True, "ok"))
 
-    def test_clean_checkout(self):
+    def test_force_checkout(self):
         calls = []
         def mock_run(cmd, **kw):
             calls.append(cmd)
-            if "status" in cmd:
-                return _mock_run(stdout="")  # clean worktree
-            if "checkout" in cmd:
-                return _mock_run()
             return _mock_run()
         with self._verified(), \
              patch("app.menubar.subprocess.run", side_effect=mock_run):
             ok, msg = menubar.apply_repo_update("v2.0.0")
         assert ok is True
         assert "v2.0.0" in msg
+        # Should use --force, not stash
+        checkout_calls = [c for c in calls if "checkout" in c]
+        assert len(checkout_calls) == 1
+        assert "--force" in checkout_calls[0]
         assert not any("stash" in str(c) for c in calls)
 
-    def test_stash_and_pop(self):
+    def test_runs_git_clean(self):
         calls = []
         def mock_run(cmd, **kw):
             calls.append(cmd)
-            if "status" in cmd:
-                return _mock_run(stdout=" M file.py\n")  # dirty worktree
             return _mock_run()
         with self._verified(), \
              patch("app.menubar.subprocess.run", side_effect=mock_run):
-            ok, _ = menubar.apply_repo_update("v2.0.0")
-        assert ok is True
-        stash_cmds = [c for c in calls if "stash" in c]
-        assert len(stash_cmds) == 2  # stash + stash pop
+            menubar.apply_repo_update("v2.0.0")
+        clean_calls = [c for c in calls if "clean" in c]
+        assert len(clean_calls) == 1
+        assert "-fd" in clean_calls[0]
 
     def test_checkout_failure(self):
         def mock_run(cmd, **kw):
-            if "status" in cmd:
-                return _mock_run(stdout="")
             if "checkout" in cmd:
                 return _mock_run(returncode=1, stderr="error: pathspec")
             return _mock_run()
@@ -223,19 +221,6 @@ class TestApplyRepoUpdate:
             ok, msg = menubar.apply_repo_update("v99.0.0")
         assert ok is False
         assert "pathspec" in msg
-
-    def test_stash_pop_failure(self):
-        def mock_run(cmd, **kw):
-            if "status" in cmd:
-                return _mock_run(stdout=" M file.py\n")
-            if "stash" in cmd and "pop" in cmd:
-                return _mock_run(returncode=1, stderr="CONFLICT")
-            return _mock_run()
-        with self._verified(), \
-             patch("app.menubar.subprocess.run", side_effect=mock_run):
-            ok, msg = menubar.apply_repo_update("v2.0.0")
-        assert ok is False
-        assert "CONFLICT" in msg
 
     def test_exception_returns_false(self):
         with self._verified(), \
@@ -288,16 +273,20 @@ class TestStartupRollbackCheck:
              patch("app.menubar.get_version", return_value="v1.0.0"):
             app_instance._startup_rollback_check()
 
-        # Should have checked out the old commit
+        # Should have checked out the old commit with --force
         checkout_calls = [c for c in mock_run.call_args_list
                           if "checkout" in str(c)]
         assert len(checkout_calls) == 1
         assert "oldcommit123" in str(checkout_calls[0])
+        assert "--force" in str(checkout_calls[0])
 
-        # Should have written the bad hash to skip file
+        # Should have written the bad hash + timestamp to skip file
         skip_file = update_dir / "update_skipped"
         assert skip_file.exists()
-        assert skip_file.read_text() == "badcommit456"
+        skip_data = skip_file.read_text()
+        assert skip_data.startswith("badcommit456\n")
+        skip_ts = float(skip_data.split("\n")[1])
+        assert time.time() - skip_ts < 5
 
         # Marker should be cleaned up
         assert not marker.exists()
@@ -316,6 +305,43 @@ class TestStartupRollbackCheck:
                           if "checkout" in str(c)]
         assert len(checkout_calls) == 0
 
+    def test_rollback_runs_post_update(self, app_instance, update_dir):
+        """Rollback runs post-update.sh to rebuild binary for old code."""
+        marker = update_dir / "update_started"
+        marker.write_text(str(time.time() - 5))
+        pre_hash = update_dir / "update_pre_hash"
+        pre_hash.write_text("oldcommit123")
+
+        calls = []
+        def mock_run(cmd, **kw):
+            calls.append(cmd)
+            return _mock_run()
+
+        with patch("app.menubar.subprocess.check_output", return_value="badcommit456\n"), \
+             patch("app.menubar.subprocess.run", side_effect=mock_run), \
+             patch("app.menubar.get_version", return_value="v1.0.0"), \
+             patch("os.path.isfile", return_value=True):
+            app_instance._startup_rollback_check()
+
+        post_update_calls = [c for c in calls
+                             if isinstance(c, list) and "post-update.sh" in str(c)]
+        assert len(post_update_calls) == 1
+
+    def test_rollback_sets_rolled_back_flag(self, app_instance, update_dir):
+        """Rollback sets _rolled_back so _mark_startup_healthy won't clear skip."""
+        marker = update_dir / "update_started"
+        marker.write_text(str(time.time() - 5))
+        pre_hash = update_dir / "update_pre_hash"
+        pre_hash.write_text("oldcommit123")
+
+        with patch("app.menubar.subprocess.check_output", return_value="badcommit456\n"), \
+             patch("app.menubar.subprocess.run", return_value=_mock_run()), \
+             patch("app.menubar.get_version", return_value="v1.0.0"), \
+             patch("os.path.isfile", return_value=False):
+            app_instance._startup_rollback_check()
+
+        assert app_instance._rolled_back is True
+
 
 # ---------------------------------------------------------------------------
 # _check_for_updates (integration of skip + idle + dispatch)
@@ -323,9 +349,9 @@ class TestStartupRollbackCheck:
 
 class TestCheckForUpdates:
     def test_skips_rolled_back_release(self, app_instance, update_dir):
-        """A previously rolled-back hash is skipped."""
+        """A previously rolled-back hash is skipped (within 24h)."""
         skip_file = update_dir / "update_skipped"
-        skip_file.write_text("badrelease123")
+        skip_file.write_text(f"badrelease123\n{time.time()}")
 
         with patch("app.menubar.check_repo_update_available",
                     return_value=(1, "v2.0.0", "badrelease123")), \
@@ -334,8 +360,37 @@ class TestCheckForUpdates:
 
         mock_update.assert_not_called()
 
+    def test_skip_expires_after_24h(self, app_instance, update_dir):
+        """A skip entry older than 24h is ignored — retry the update."""
+        skip_file = update_dir / "update_skipped"
+        old_ts = time.time() - 90000  # 25 hours ago
+        skip_file.write_text(f"badrelease123\n{old_ts}")
+
+        with patch("app.menubar.check_repo_update_available",
+                    return_value=(1, "v2.0.0", "badrelease123")), \
+             patch.object(app_instance, "_mcp_recently_active", return_value=False), \
+             patch.object(app_instance, "_auto_update") as mock_update:
+            app_instance._check_for_updates()
+
+        mock_update.assert_called_once_with("v2.0.0")
+        assert not skip_file.exists()  # expired skip removed
+
+    def test_skip_without_timestamp_treated_as_expired(self, app_instance, update_dir):
+        """Old-format skip file (hash only, no timestamp) is treated as expired."""
+        skip_file = update_dir / "update_skipped"
+        skip_file.write_text("badrelease123")  # legacy format
+
+        with patch("app.menubar.check_repo_update_available",
+                    return_value=(1, "v2.0.0", "badrelease123")), \
+             patch.object(app_instance, "_mcp_recently_active", return_value=False), \
+             patch.object(app_instance, "_auto_update") as mock_update:
+            app_instance._check_for_updates()
+
+        mock_update.assert_called_once_with("v2.0.0")
+
     def test_defers_when_mcp_active(self, app_instance, update_dir):
         """Update deferred when MCP was recently active."""
+        app_instance._update_defer_count = 0
         with patch("app.menubar.check_repo_update_available",
                     return_value=(1, "v2.0.0", "newrelease")), \
              patch.object(app_instance, "_mcp_recently_active", return_value=True), \
@@ -343,9 +398,23 @@ class TestCheckForUpdates:
             app_instance._check_for_updates()
 
         mock_update.assert_not_called()
+        assert app_instance._update_defer_count == 1
+
+    def test_forces_update_after_max_deferrals(self, app_instance, update_dir):
+        """After MAX_UPDATE_DEFERRALS, update proceeds despite MCP activity."""
+        app_instance._update_defer_count = menubar.MAX_UPDATE_DEFERRALS - 1
+        with patch("app.menubar.check_repo_update_available",
+                    return_value=(1, "v2.0.0", "newrelease")), \
+             patch.object(app_instance, "_mcp_recently_active", return_value=True), \
+             patch.object(app_instance, "_auto_update") as mock_update:
+            app_instance._check_for_updates()
+
+        mock_update.assert_called_once_with("v2.0.0")
+        assert app_instance._update_defer_count == 0  # reset after proceeding
 
     def test_triggers_auto_update(self, app_instance, update_dir):
         """Normal update triggers _auto_update."""
+        app_instance._update_defer_count = 0
         with patch("app.menubar.check_repo_update_available",
                     return_value=(1, "v2.0.0", "newrelease")), \
              patch.object(app_instance, "_mcp_recently_active", return_value=False), \
@@ -368,6 +437,7 @@ class TestCheckForUpdates:
 
     def test_drift_triggers_restart(self, app_instance, update_dir):
         """HEAD moved since launch (commit/pull on this machine) — restart."""
+        app_instance._update_defer_count = 0
         with patch("app.menubar.check_repo_update_available",
                     return_value=(0, "", "")), \
              patch.object(app_instance, "_get_head_hash",
@@ -448,8 +518,23 @@ class TestAutoUpdate:
         assert len(post_update_ran) == 1
         mock_exit.assert_called_once_with(1)
 
+    def test_mcp_code_changed_uses_target_tag(self, app_instance, update_dir):
+        """For tag updates (HEAD == launch hash), diff target is the new tag."""
+        with patch("app.menubar.apply_repo_update", return_value=(True, "ok")), \
+             patch("app.menubar.subprocess.run", return_value=_mock_run()), \
+             patch.object(app_instance, "_get_head_hash",
+                          return_value="launch000"), \
+             patch.object(app_instance, "_mcp_code_changed",
+                          return_value=True) as mock_mcc, \
+             patch.object(app_instance, "_stop_mcp_server", create=True), \
+             patch("os.path.isfile", return_value=False), \
+             patch("os._exit"):
+            app_instance._auto_update("v2.0.0")
+
+        mock_mcc.assert_called_once_with("v2.0.0")
+
     def test_failed_checkout_rolls_back(self, app_instance, update_dir):
-        """Failed checkout resets to pre-update hash."""
+        """Failed checkout rolls back to pre-update hash."""
         with patch("app.menubar.apply_repo_update",
                     return_value=(False, "checkout failed")), \
              patch("app.menubar.subprocess.run") as mock_run, \
@@ -458,11 +543,35 @@ class TestAutoUpdate:
              patch.object(app_instance, "_mcp_code_changed", return_value=False):
             app_instance._auto_update("v2.0.0")
 
-        # Should have reset --hard to pre-update (launch) hash
-        reset_calls = [c for c in mock_run.call_args_list
-                       if "reset" in str(c)]
-        assert len(reset_calls) == 1
-        assert "launch000" in str(reset_calls[0])
+        # Should have checked out pre-update hash with --force
+        checkout_calls = [c for c in mock_run.call_args_list
+                          if "checkout" in str(c) and "--force" in str(c)]
+        assert len(checkout_calls) == 1
+        assert "launch000" in str(checkout_calls[0])
+
+    def test_post_update_failure_aborts_restart(self, app_instance, update_dir):
+        """If post-update.sh fails, roll back and do NOT call os._exit."""
+        def mock_run(cmd, **kw):
+            if isinstance(cmd, list) and "post-update.sh" in str(cmd[-1]):
+                return _mock_run(returncode=1, stderr="cc: error: no such file")
+            return _mock_run()
+
+        with patch("app.menubar.apply_repo_update", return_value=(True, "ok")), \
+             patch("app.menubar.subprocess.run", side_effect=mock_run) as mock_sub, \
+             patch.object(app_instance, "_get_head_hash",
+                          return_value="launch000"), \
+             patch.object(app_instance, "_mcp_code_changed", return_value=False), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os._exit") as mock_exit:
+            app_instance._auto_update("v2.0.0")
+
+        # Should NOT have exited
+        mock_exit.assert_not_called()
+        # Should have rolled back
+        rollback_calls = [c for c in mock_sub.call_args_list
+                          if "checkout" in str(c) and "--force" in str(c)]
+        assert len(rollback_calls) == 1
+        assert "launch000" in str(rollback_calls[0])
 
     def test_writes_crash_marker(self, app_instance, update_dir):
         """update_started file is written after successful checkout."""
@@ -532,7 +641,7 @@ class TestMarkStartupHealthy:
     def test_unblocks_skipped_on_new_commit(self, app_instance, update_dir):
         """If current HEAD differs from skipped hash, clear the skip file."""
         skip = update_dir / "update_skipped"
-        skip.write_text("oldbadhash")
+        skip.write_text(f"oldbadhash\n{time.time()}")
         with patch("app.menubar.subprocess.check_output", return_value="newgoodhash\n"):
             app_instance._mark_startup_healthy()
         assert not skip.exists()
@@ -540,9 +649,19 @@ class TestMarkStartupHealthy:
     def test_keeps_skip_on_same_commit(self, app_instance, update_dir):
         """If HEAD is still the skipped commit, keep the skip file."""
         skip = update_dir / "update_skipped"
-        skip.write_text("samehash")
+        skip.write_text(f"samehash\n{time.time()}")
         with patch("app.menubar.subprocess.check_output", return_value="samehash\n"):
             app_instance._mark_startup_healthy()
+        assert skip.exists()
+
+    def test_skips_cleanup_after_rollback(self, app_instance, update_dir):
+        """If _rolled_back is set, _mark_startup_healthy is a no-op."""
+        app_instance._rolled_back = True
+        (update_dir / "update_started").write_text("123")
+        skip = update_dir / "update_skipped"
+        skip.write_text(f"badhash\n{time.time()}")
+        app_instance._mark_startup_healthy()
+        # Skip file must survive — rollback wrote it, healthy timer shouldn't clear it
         assert skip.exists()
 
 

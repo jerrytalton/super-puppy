@@ -112,9 +112,9 @@ Dependencies are pinned to exact versions in PEP 723 inline metadata.
 Run all tests: `uv run --with pytest --with flask --with pyyaml --with requests pytest tests/ -v`
 
 - `tests/test_core.py` — 28 unit tests (mocked subprocesses, real sockets)
-- `tests/test_deployment.py` — 41 tests for auto-update, rollback, tag verification, and post-update pipeline
+- `tests/test_deployment.py` — 52 tests for auto-update, rollback, tag verification, and post-update pipeline
 - `tests/test_mcp_server.py` — 46 tests for model selection, GPU tracking, auth, job store, path validation
-- `tests/test_profile_server.py` — 50 tests for Flask routes, profiles CRUD, model selection, config, auth
+- `tests/test_profile_server.py` — 56 tests for Flask routes, profiles CRUD, model selection, config, auth
 - `tests/test_playground_coverage.py` — 4 tests ensuring MCP tools have playground UI and API routes
 - `tests/test_e2e.py` — 43 end-to-end tests against live services
 - `tests/test_error_handling.py` — 24 tests for error handling and model validation

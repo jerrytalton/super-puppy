@@ -117,7 +117,9 @@ MODE_CONF = os.path.expanduser("~/.config/local-models/mode.conf")
 POLL_INTERVAL = 8           # seconds between status refreshes
 UPDATE_CHECK_INTERVAL = 120  # seconds between git update checks (2 min)
 UPDATE_IDLE_SECONDS = 60     # don't auto-update if MCP active within 60s
-UPDATE_CRASH_WINDOW = 30     # seconds — if app dies within this after update, roll back
+MAX_UPDATE_DEFERRALS = 5     # max consecutive MCP idle deferrals before forcing update
+UPDATE_CRASH_WINDOW = 90     # seconds — if app dies within this after update, roll back
+UPDATE_SKIP_EXPIRY = 86400   # seconds (24h) — skipped releases become retryable
 UPDATE_STARTED_FILE = os.path.expanduser("~/.config/local-models/update_started")
 UPDATE_SKIPPED_FILE = os.path.expanduser("~/.config/local-models/update_skipped")
 UPDATE_PRE_HASH_FILE = os.path.expanduser("~/.config/local-models/update_pre_hash")
@@ -421,9 +423,9 @@ def verify_tag_signature(tag):
 def apply_repo_update(target_tag):
     """Check out a tagged release. Returns (success, output).
 
-    Verifies the tag signature, stashes local changes, checks out the tag
-    (detached HEAD), and pops the stash. Symlinks point into the repo, so
-    checking out new code is enough; the restart picks up changes.
+    Verifies the tag signature, force-checks out the tag (detached HEAD),
+    and cleans untracked files. End users don't have local changes to
+    preserve — the repo IS the installed app.
     """
     try:
         sig_ok, sig_detail = verify_tag_signature(target_tag)
@@ -431,26 +433,21 @@ def apply_repo_update(target_tag):
             logging.warning("Refusing unsigned update %s: %s", target_tag, sig_detail)
             return False, f"Tag signature verification failed: {sig_detail}"
 
-        status = subprocess.run(
-            ["git", "-C", REPO_DIR, "status", "--porcelain"],
-            capture_output=True, text=True, timeout=5)
-        has_changes = bool(status.stdout.strip())
-        if has_changes:
-            subprocess.run(["git", "-C", REPO_DIR, "stash", "--quiet"],
-                           capture_output=True, timeout=10)
         checkout = subprocess.run(
-            ["git", "-C", REPO_DIR, "checkout", target_tag],
+            ["git", "-C", REPO_DIR, "checkout", "--force", target_tag],
             capture_output=True, text=True, timeout=30)
         if checkout.returncode != 0:
+            logging.error("git checkout --force %s failed: %s",
+                          target_tag, checkout.stderr.strip())
             return False, checkout.stderr.strip()
-        if has_changes:
-            pop = subprocess.run(
-                ["git", "-C", REPO_DIR, "stash", "pop", "--quiet"],
-                capture_output=True, text=True, timeout=10)
-            if pop.returncode != 0:
-                return False, f"Stash pop failed: {pop.stderr.strip()}"
+        # Remove untracked files that might conflict with the new version
+        subprocess.run(
+            ["git", "-C", REPO_DIR, "clean", "-fd", "--exclude=*.log"],
+            capture_output=True, timeout=10)
+        logging.info("Checked out %s (force)", target_tag)
         return True, f"Checked out {target_tag}"
     except Exception as e:
+        logging.error("apply_repo_update exception: %s", e)
         return False, str(e)
 
 
@@ -1058,10 +1055,12 @@ class LocalModelsApp(rumps.App):
         self.mlx_config_info = query_mlx_model_info_from_config()
         self.last_update_check = 0
         self.update_available = 0      # commits behind
+        self._update_defer_count = 0   # consecutive MCP idle deferrals
         self.app_version = get_version()
         self._launch_hash = self._get_head_hash()
         self.app_ready = False         # set True once run loop starts
         self._health_checked = False   # post-update health comparison done
+        self._rolled_back = False      # set True if startup rollback fired
 
         # Profile viewer / tool tester state
         self.profile_server = None
@@ -2227,21 +2226,40 @@ class LocalModelsApp(rumps.App):
             else:
                 return
 
-        # Skip if this exact release was already rolled back
-        skipped = ""
+        # Skip if this exact release was already rolled back (within 24h)
         try:
             with open(UPDATE_SKIPPED_FILE) as f:
-                skipped = f.read().strip()
+                skip_data = f.read().strip()
+            # Format: "hash\ntimestamp" (timestamp added for expiry)
+            skip_parts = skip_data.split("\n", 1)
+            skip_hash = skip_parts[0]
+            skip_ts = float(skip_parts[1]) if len(skip_parts) > 1 else 0
+            if skip_hash == remote_hash:
+                if time.time() - skip_ts < UPDATE_SKIP_EXPIRY:
+                    logging.info("Skipping update to %s (rolled back %.0fh ago)",
+                                 remote_tag, (time.time() - skip_ts) / 3600)
+                    return
+                logging.info("Skip for %s expired after 24h — retrying", remote_tag)
+                os.unlink(UPDATE_SKIPPED_FILE)
         except FileNotFoundError:
             pass
-        if skipped and skipped == remote_hash:
-            logging.info("Skipping update to %s (previously rolled back)", remote_tag)
-            return
+        except (ValueError, OSError) as e:
+            logging.warning("Bad skip file, removing: %s", e)
+            try:
+                os.unlink(UPDATE_SKIPPED_FILE)
+            except FileNotFoundError:
+                pass
 
-        # Idle gate: don't interrupt active MCP sessions
+        # Idle gate: don't interrupt active MCP sessions (max 5 deferrals)
         if self._mcp_recently_active():
-            logging.info("Deferring update — MCP recently active")
-            return
+            self._update_defer_count += 1
+            if self._update_defer_count < MAX_UPDATE_DEFERRALS:
+                logging.info("Deferring update — MCP active (attempt %d/%d)",
+                             self._update_defer_count, MAX_UPDATE_DEFERRALS)
+                return
+            logging.info("MCP active but hit max deferrals (%d) — forcing update",
+                         MAX_UPDATE_DEFERRALS)
+        self._update_defer_count = 0
 
         logging.info("Auto-updating to %s", remote_tag)
         self._auto_update(remote_tag)
@@ -2287,21 +2305,24 @@ class LocalModelsApp(rumps.App):
             pass
 
         # Check if MCP server code changed (to decide whether to restart it).
-        # Compare against launch hash — works for both tag updates and drift.
-        mcp_changed = self._mcp_code_changed(self._launch_hash)
+        # For tag updates, diff HEAD (still old code) against the target tag.
+        # For drift, HEAD already moved, so diff against the launch hash.
+        current_hash = self._get_head_hash()
+        diff_target = target_tag if current_hash == self._launch_hash else self._launch_hash
+        mcp_changed = self._mcp_code_changed(diff_target)
 
         # If HEAD already moved past our launch hash (commit/pull on this
         # machine), the new code is on disk — skip checkout, just restart.
         # Otherwise a remote tag needs to be checked out.
-        current_hash = self._get_head_hash()
         if current_hash == self._launch_hash:
             # HEAD hasn't moved locally — need to check out the remote tag
             success, output = apply_repo_update(target_tag)
             if not success:
-                logging.error("Auto-update failed: %s", output)
+                logging.error("Auto-update checkout failed: %s", output)
                 if pre_hash:
+                    logging.info("Rolling back to %s", pre_hash[:8])
                     subprocess.run(
-                        ["git", "-C", REPO_DIR, "reset", "--hard", pre_hash],
+                        ["git", "-C", REPO_DIR, "checkout", "--force", pre_hash],
                         capture_output=True, timeout=10)
                 try:
                     rumps.notification("Super Puppy", "Update failed — rolled back",
@@ -2313,19 +2334,40 @@ class LocalModelsApp(rumps.App):
         else:
             logging.info("Code already on disk — skipping checkout, restarting")
 
-        # Run post-update hook (rebuild binary, update symlinks)
+        # Run post-update hook (rebuild binary, update symlinks).
+        # If this fails, the binary may be broken — abort instead of
+        # restarting into a crash→rollback→skip-forever loop.
         post_update = os.path.join(REPO_DIR, "bin", "post-update.sh")
         if os.path.isfile(post_update):
             try:
                 result = subprocess.run(
                     [post_update], capture_output=True, text=True, timeout=120)
                 if result.returncode != 0:
-                    logging.error("post-update.sh failed: %s", result.stderr)
-                else:
-                    logging.info("post-update.sh: %s",
-                                 result.stdout.strip().split("\n")[-1])
+                    logging.error("post-update.sh failed (rc=%d): %s",
+                                  result.returncode, result.stderr.strip())
+                    # Roll back — don't restart on a broken build
+                    if pre_hash:
+                        logging.info("Rolling back checkout to %s", pre_hash[:8])
+                        subprocess.run(
+                            ["git", "-C", REPO_DIR, "checkout", "--force", pre_hash],
+                            capture_output=True, timeout=10)
+                    try:
+                        rumps.notification("Super Puppy", "Update failed",
+                                           "post-update.sh failed — rolled back")
+                    except RuntimeError:
+                        pass
+                    self._cleanup_update_files()
+                    return
+                logging.info("post-update.sh: %s",
+                             result.stdout.strip().split("\n")[-1])
             except Exception as e:
-                logging.warning("post-update.sh error: %s", e)
+                logging.error("post-update.sh exception: %s — rolling back", e)
+                if pre_hash:
+                    subprocess.run(
+                        ["git", "-C", REPO_DIR, "checkout", "--force", pre_hash],
+                        capture_output=True, timeout=10)
+                self._cleanup_update_files()
+                return
 
         # Write update_started marker for crash rollback detection
         try:
@@ -2335,6 +2377,7 @@ class LocalModelsApp(rumps.App):
             pass
 
         # Restart — skip MCP kill if its code didn't change
+        logging.info("Stopping services before restart (mcp_changed=%s)", mcp_changed)
         if self.profile_server and self.profile_server.poll() is None:
             self.profile_server.terminate()
         if mcp_changed:
@@ -2346,6 +2389,7 @@ class LocalModelsApp(rumps.App):
             pass
         # Exit non-zero so launchd's KeepAlive restarts us on the new code.
         # os._exit bypasses atexit handlers to ensure a clean, fast exit.
+        logging.info("Exiting for restart (os._exit(1)) — launchd will relaunch")
         os._exit(1)
 
     def _mcp_code_changed(self, target_ref="origin/main"):
@@ -2397,13 +2441,23 @@ class LocalModelsApp(rumps.App):
                 logging.error("No pre-update hash found, cannot roll back")
                 return
             subprocess.run(
-                ["git", "-C", REPO_DIR, "checkout", rollback_target],
+                ["git", "-C", REPO_DIR, "checkout", "--force", rollback_target],
                 capture_output=True, timeout=10)
-            # Record skipped release hash so we don't retry it
+            # Rebuild binary/symlinks to match the rolled-back code
+            post_update = os.path.join(REPO_DIR, "bin", "post-update.sh")
+            if os.path.isfile(post_update):
+                try:
+                    subprocess.run([post_update], capture_output=True,
+                                   text=True, timeout=120)
+                except Exception as e:
+                    logging.warning("post-update.sh after rollback failed: %s", e)
+            # Record skipped release hash + timestamp so we don't retry
+            # for 24h (but the skip expires so a fixed env can retry)
             os.makedirs(os.path.dirname(UPDATE_SKIPPED_FILE), exist_ok=True)
             with open(UPDATE_SKIPPED_FILE, "w") as f:
-                f.write(current_hash)
+                f.write(f"{current_hash}\n{time.time()}")
             self.app_version = get_version()
+            self._rolled_back = True
             logging.warning("Rolled back to %s (skipped %s)",
                             self.app_version, current_hash[:8])
             try:
@@ -2429,15 +2483,18 @@ class LocalModelsApp(rumps.App):
 
     def _mark_startup_healthy(self):
         """Clear update markers after surviving the crash window."""
+        if self._rolled_back:
+            return  # rollback already handled cleanup; don't clear skip file
         self._cleanup_update_files()
         # If we survived an update past the previously-skipped commit, unblock.
         try:
             with open(UPDATE_SKIPPED_FILE) as f:
-                skipped = f.read().strip()
+                skip_data = f.read().strip()
+            skip_hash = skip_data.split("\n", 1)[0]
             head = subprocess.check_output(
                 ["git", "-C", REPO_DIR, "rev-parse", "HEAD"],
                 text=True, timeout=5).strip()
-            if head != skipped:
+            if head != skip_hash:
                 os.unlink(UPDATE_SKIPPED_FILE)
         except (FileNotFoundError, Exception):
             pass
@@ -2611,5 +2668,9 @@ if __name__ == "__main__":
                 f.writelines(lines[-500:])
     except FileNotFoundError:
         pass
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        datefmt="%H:%M:%S")
     acquire_lock()
     LocalModelsApp().run()
