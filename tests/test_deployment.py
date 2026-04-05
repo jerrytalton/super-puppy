@@ -229,6 +229,29 @@ class TestApplyRepoUpdate:
         assert ok is False
         assert "disk full" in msg
 
+    def test_updates_allowed_signers_before_verify(self):
+        """Key rotation: allowed_signers fetched from tag before verification."""
+        call_order = []
+        def mock_run(cmd, **kw):
+            if "show" in cmd and "allowed_signers" in str(cmd):
+                call_order.append("update_signers")
+                return _mock_run(stdout="user@example.com ssh-ed25519 AAAA\n")
+            if "config" in cmd and "allowedSignersFile" in cmd:
+                return _mock_run()
+            if "checkout" in cmd:
+                return _mock_run()
+            if "clean" in cmd:
+                return _mock_run()
+            return _mock_run()
+        def mock_verify(tag):
+            call_order.append("verify")
+            return True, "ok"
+        with patch("app.menubar.subprocess.run", side_effect=mock_run), \
+             patch("app.menubar.verify_tag_signature", side_effect=mock_verify):
+            ok, _ = menubar.apply_repo_update("v2.0.0")
+        assert ok is True
+        assert call_order == ["update_signers", "verify"]
+
     def test_unsigned_tag_rejected(self):
         with patch("app.menubar.verify_tag_signature",
                    return_value=(False, "tag v99.0.0 is not signed")):
