@@ -294,3 +294,61 @@ class TestComputerUseTask:
         prefixes = SPECIAL_TASKS["computer_use"]["prefixes"]
         assert any("ui-tars" in p for p in prefixes)
         assert any("fara" in p for p in prefixes)
+
+
+class TestValidateNetworkConf:
+    def test_empty_file_gets_defaults(self, tmp_path):
+        from lib import models
+        conf = tmp_path / "network.conf"
+        conf.write_text("")
+        template_dir = tmp_path / "config" / "local-models"
+        template_dir.mkdir(parents=True)
+        (template_dir / "network.conf").write_text("OLLAMA_PORT=11434\n")
+        with patch.object(models, "NETWORK_CONF", conf), \
+             patch.object(models, "CONFIG_DIR", tmp_path):
+            warnings = models.validate_network_conf()
+        assert any("missing or empty" in w for w in warnings)
+        assert conf.stat().st_size > 0
+
+    def test_non_numeric_port_repaired(self, tmp_path):
+        from lib import models
+        conf = tmp_path / "network.conf"
+        conf.write_text("OLLAMA_PORT=11434abc\nMLX_PORT=8000\n")
+        with patch.object(models, "NETWORK_CONF", conf), \
+             patch.object(models, "CONFIG_DIR", tmp_path):
+            warnings = models.validate_network_conf()
+        assert any("non-numeric" in w for w in warnings)
+        repaired = conf.read_text()
+        assert "OLLAMA_PORT=11434" in repaired
+        assert "abc" not in repaired
+
+    def test_ram_with_suffix_repaired(self, tmp_path):
+        from lib import models
+        conf = tmp_path / "network.conf"
+        conf.write_text("SERVER_RAM_GB=512GB\n")
+        with patch.object(models, "NETWORK_CONF", conf), \
+             patch.object(models, "CONFIG_DIR", tmp_path):
+            warnings = models.validate_network_conf()
+        assert any("non-numeric" in w for w in warnings)
+        assert "SERVER_RAM_GB=512" in conf.read_text()
+
+    def test_valid_config_no_warnings(self, tmp_path):
+        from lib import models
+        conf = tmp_path / "network.conf"
+        conf.write_text("OLLAMA_PORT=11434\nMLX_PORT=8000\nSERVER_RAM_GB=512\n")
+        with patch.object(models, "NETWORK_CONF", conf), \
+             patch.object(models, "CONFIG_DIR", tmp_path):
+            warnings = models.validate_network_conf()
+        assert warnings == []
+
+    def test_bad_json_prefs_warned(self, tmp_path):
+        from lib import models
+        conf = tmp_path / "network.conf"
+        conf.write_text("OLLAMA_PORT=11434\n")
+        prefs = tmp_path / "prefs.json"
+        prefs.write_text("{broken json")
+        with patch.object(models, "NETWORK_CONF", conf), \
+             patch.object(models, "CONFIG_DIR", tmp_path), \
+             patch.object(models, "MCP_PREFS_FILE", prefs):
+            warnings = models.validate_network_conf()
+        assert any("not valid JSON" in w for w in warnings)

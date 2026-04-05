@@ -21,6 +21,88 @@ NETWORK_CONF = CONFIG_DIR / "network.conf"
 MLX_SERVER_CONFIG = Path("~/.config/mlx-server/config.yaml").expanduser()
 CLAUDE_CONFIG_FILE = Path("~/.claude.json").expanduser()
 
+# ── Default network config (must match config/local-models/network.conf) ──
+
+_NETWORK_DEFAULTS = {
+    "TAILSCALE_HOSTNAME": "super-puppy",
+    "OLLAMA_PORT": "11434",
+    "MLX_PORT": "8000",
+    "SERVER_RAM_GB": "0",
+    "PROBE_TIMEOUT": "2",
+    "PROFILE_PORT": "8101",
+    "OP_REF": "",
+    "IS_SERVER": "false",
+    "AUTO_UPDATE": "true",
+}
+
+_NUMERIC_KEYS = {"OLLAMA_PORT", "MLX_PORT", "SERVER_RAM_GB", "PROBE_TIMEOUT", "PROFILE_PORT"}
+
+
+def validate_network_conf(logger=None) -> list[str]:
+    """Validate ~/.config/local-models/network.conf. Returns list of warnings.
+
+    Repairs what it can: missing file gets defaults, non-numeric values
+    get stripped to digits. Logs all issues if a logger is provided.
+    """
+    import json
+    import shutil
+
+    warnings: list[str] = []
+
+    def warn(msg: str):
+        warnings.append(msg)
+        if logger:
+            logger.warning("config: %s", msg)
+
+    # 1. network.conf: must exist and not be empty
+    if not NETWORK_CONF.exists() or NETWORK_CONF.stat().st_size == 0:
+        warn(f"{NETWORK_CONF} is missing or empty — writing defaults")
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        template = Path(__file__).parent.parent / "config" / "local-models" / "network.conf"
+        if template.exists():
+            shutil.copy2(template, NETWORK_CONF)
+        else:
+            lines = [f"{k}={v}" for k, v in _NETWORK_DEFAULTS.items()]
+            NETWORK_CONF.write_text("\n".join(lines) + "\n")
+
+    # 2. Parse and validate values
+    conf: dict[str, str] = {}
+    dirty = False
+    raw_lines = NETWORK_CONF.read_text().splitlines()
+    repaired_lines = []
+    for line in raw_lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            repaired_lines.append(line)
+            continue
+        key, _, val = stripped.partition("=")
+        key = key.strip()
+        val = val.strip().strip('"').strip("'")
+
+        if key in _NUMERIC_KEYS:
+            digits = "".join(c for c in val if c.isdigit())
+            if digits != val:
+                warn(f"{key}={val!r} has non-numeric characters — using {digits or '0'}")
+                val = digits or "0"
+                line = f"{key}={val}"
+                dirty = True
+
+        conf[key] = val
+        repaired_lines.append(line)
+
+    if dirty:
+        NETWORK_CONF.write_text("\n".join(repaired_lines) + "\n")
+
+    # 3. mcp_preferences.json: must be valid JSON if it exists
+    if MCP_PREFS_FILE.exists() and MCP_PREFS_FILE.stat().st_size > 0:
+        try:
+            json.loads(MCP_PREFS_FILE.read_text())
+        except (json.JSONDecodeError, ValueError) as e:
+            warn(f"{MCP_PREFS_FILE} is not valid JSON: {e}")
+
+    return warnings
+
+
 # ── MoE active parameter table ───────────────────────────────────────
 # Keyed by Ollama family name → {total_b_rounded: active_b}.
 # For hybrid MoE architectures where auto-detection fails.

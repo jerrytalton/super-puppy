@@ -39,6 +39,7 @@ from lib.models import (
     TASK_FILTERS,
     active_params_b,
     model_matches_filter as _model_matches_filter,
+    validate_network_conf,
 )
 
 logging.basicConfig(
@@ -845,11 +846,35 @@ def _chat_url(backend):
     return f"{OLLAMA_URL}/api/chat"
 
 
+_MISSING_TOOL_HELP = {
+    "mflux-generate": "mflux is not installed. Install with: uv tool install --python 3.12 mflux",
+    "mflux-generate-kontext": "mflux is not installed. Install with: uv tool install --python 3.12 mflux",
+    "ffmpeg": "ffmpeg is not installed. Install with: brew install ffmpeg",
+}
+
+
+def _friendly_error(e, tool_name: str = "") -> str:
+    """Turn common exceptions into actionable messages."""
+    if isinstance(e, FileNotFoundError):
+        cmd = str(e).split("'")[-2] if "'" in str(e) else ""
+        hint = _MISSING_TOOL_HELP.get(cmd, "")
+        return hint or f"{tool_name}: {e}"
+    if isinstance(e, requests.RequestException):
+        return f"{tool_name}: {_requests_error_detail(e)}"
+    return f"{tool_name}: {e}"
+
+
 def _requests_error_detail(e):
     """Extract a useful error message from a requests exception."""
     if isinstance(e, requests.HTTPError) and e.response is not None:
-        body = e.response.text[:500] if e.response.text else "(empty body)"
-        return f"HTTP {e.response.status_code} from {e.response.url} — {body}"
+        body = e.response.text[:500] if e.response.text else ""
+        if e.response.status_code == 404 and "not found" in body.lower():
+            import re
+            model_match = re.search(r"model '([^']+)'", body)
+            model_name = model_match.group(1) if model_match else "the model"
+            return (f"Model {model_name} is not downloaded. "
+                    f"Pull it first: ollama pull {model_name}")
+        return f"HTTP {e.response.status_code} from {e.response.url} — {body or '(empty body)'}"
     if isinstance(e, requests.ConnectionError):
         return f"Cannot connect to backend — is it running? ({e})"
     if isinstance(e, requests.Timeout):
@@ -1215,7 +1240,7 @@ def api_test():
                         "model": model,
                     })
                 except Exception as e:
-                    return jsonify({"error": f"image_edit: {e}"})
+                    return jsonify({"error": _friendly_error(e, "image_edit")})
 
         elif tool == "image_gen":
             model, backend = _pick("image_gen")
@@ -1225,14 +1250,17 @@ def api_test():
             if backend == "mflux":
                 with _track_playground("image_gen", model, backend):
                     steps = "4" if any(k in model.lower() for k in ("schnell", "turbo", "klein")) else "20"
-                    result = subprocess.run(
-                        ["mflux-generate", "--model", model,
-                         "--prompt", body["prompt"],
-                         "--output", out, "--steps", steps],
-                        capture_output=True, text=True, timeout=600,
-                        env={**os.environ,
-                             "PATH": f"/opt/homebrew/bin:{os.environ.get('PATH', '')}"},
-                    )
+                    try:
+                        result = subprocess.run(
+                            ["mflux-generate", "--model", model,
+                             "--prompt", body["prompt"],
+                             "--output", out, "--steps", steps],
+                            capture_output=True, text=True, timeout=600,
+                            env={**os.environ,
+                                 "PATH": f"/opt/homebrew/bin:{os.environ.get('PATH', '')}"},
+                        )
+                    except FileNotFoundError:
+                        return jsonify({"error": _MISSING_TOOL_HELP["mflux-generate"]})
                     if result.returncode != 0:
                         return jsonify({"error": f"image_gen: mflux-generate failed:\n{result.stderr[-300:]}"})
                 if not Path(out).exists():
@@ -1264,9 +1292,12 @@ def api_test():
             # Whisper needs wav/mp3/m4a — convert webm via ffmpeg
             if suffix == "webm":
                 wav_path = audio_path.with_suffix(".wav")
-                subprocess.run(
-                    ["ffmpeg", "-y", "-i", str(audio_path), str(wav_path)],
-                    capture_output=True, timeout=30)
+                try:
+                    subprocess.run(
+                        ["ffmpeg", "-y", "-i", str(audio_path), str(wav_path)],
+                        capture_output=True, timeout=30)
+                except FileNotFoundError:
+                    return jsonify({"error": _MISSING_TOOL_HELP["ffmpeg"]})
                 audio_path = wav_path
                 suffix = "wav"
 
@@ -1534,6 +1565,7 @@ def pwa_assets(filename):
 # ── Main ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    validate_network_conf(logger=logging.getLogger())
     threading.Thread(target=_idle_watcher, daemon=True).start()
 
     import socket
