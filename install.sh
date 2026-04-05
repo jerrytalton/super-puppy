@@ -6,19 +6,94 @@
 # Run from the repo root: ./install.sh
 #   --rotate-token   Force re-reading the MCP auth token from 1Password
 #   --reconfigure    Re-run interactive setup even if network.conf exists
+#   --uninstall      Remove symlinks, LaunchAgents, configs, and MCP registration
 
 set -euo pipefail
 
 FORCE_TOKEN_REFRESH=false
 RECONFIGURE=false
+UNINSTALL=false
 for arg in "$@"; do
     case "$arg" in
         --rotate-token) FORCE_TOKEN_REFRESH=true ;;
         --reconfigure)  RECONFIGURE=true ;;
+        --uninstall)    UNINSTALL=true ;;
     esac
 done
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# ── Uninstall ──────────────────────────────────────────────────────
+if $UNINSTALL; then
+    echo "Uninstalling Super Puppy..."
+    echo ""
+
+    # Stop the app
+    echo "Stopping menu bar app..."
+    launchctl unload ~/Library/LaunchAgents/com.local-models.menubar.plist 2>/dev/null || true
+    launchctl unload ~/Library/LaunchAgents/setenv.OLLAMA_HOST.plist 2>/dev/null || true
+    sleep 1
+
+    # Remove symlinks (only if they point into this repo)
+    echo "Removing symlinks..."
+    for link in \
+        ~/bin/start-local-models \
+        ~/bin/local-models-menubar \
+        ~/bin/local-models-mcp-detect \
+        ~/bin/local-models-mcp-auth \
+        ~/bin/tailscale-status \
+        ~/bin/post-update.sh \
+        ~/.config/mlx-server/config.yaml \
+        ~/.config/mlx-server/config-laptop.yaml \
+        ~/Library/LaunchAgents/com.local-models.menubar.plist \
+        ~/Library/LaunchAgents/setenv.OLLAMA_HOST.plist; do
+        if [ -L "$link" ]; then
+            target=$(readlink "$link" 2>/dev/null || true)
+            if [[ "$target" == "$REPO_DIR"* ]]; then
+                rm "$link"
+                echo "  Removed $link"
+            fi
+        fi
+    done
+
+    # Remove compiled artifacts
+    echo "Removing build artifacts..."
+    rm -f "$REPO_DIR/app/SuperPuppy.app/Contents/MacOS/super-puppy"
+    rm -f "$REPO_DIR/app/SuperPuppy.app/Contents/Resources/AppIcon.icns"
+    rm -f "$REPO_DIR/app/pwa"/icon-*.png 2>/dev/null || true
+
+    # Remove MCP registration from Claude
+    if command -v claude > /dev/null; then
+        echo "Removing MCP registration..."
+        claude mcp remove local-models 2>/dev/null || true
+    fi
+
+    # Remove config files (with confirmation)
+    CONFIG_DIR="$HOME/.config/local-models"
+    if [ -d "$CONFIG_DIR" ]; then
+        echo ""
+        echo "Config directory: $CONFIG_DIR"
+        echo "  Contains: profiles, preferences, auth token, network config."
+        read -rp "  Delete config files? [y/N] " confirm
+        if [[ "${confirm:-n}" =~ ^[Yy] ]]; then
+            rm -rf "$CONFIG_DIR"
+            echo "  Removed $CONFIG_DIR"
+        else
+            echo "  Kept $CONFIG_DIR"
+        fi
+    fi
+
+    # Remove lock file
+    rm -f "$HOME/.config/local-models/menubar.lock" 2>/dev/null || true
+
+    # Clean up git config
+    git -C "$REPO_DIR" config --unset gpg.ssh.allowedSignersFile 2>/dev/null || true
+    rm -f "$HOME/.config/git/allowed_signers"
+
+    echo ""
+    echo "Uninstalled. The repo itself is still at $REPO_DIR — delete it manually if you want."
+    exit 0
+fi
 
 # Write a key=value pair into the user's network.conf
 # Uses grep + temp file instead of sed to avoid delimiter injection.

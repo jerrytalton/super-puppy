@@ -66,6 +66,7 @@ def update_dir(tmp_path):
         "UPDATE_SKIPPED_FILE": str(d / "update_skipped"),
         "UPDATE_PRE_HASH_FILE": str(d / "update_pre_hash"),
         "PRE_UPDATE_HEALTH_FILE": str(d / "pre_update_health.json"),
+        "LAUNCH_ATTEMPTED_FILE": str(d / "launch_attempted"),
     }
     ctx = {}
     for attr, val in patches.items():

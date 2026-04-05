@@ -16,27 +16,21 @@ MCP-first architecture working with 16 tools:
 ## Next Steps
 
 ### Auto-Update: Remaining Items
-- **Key rotation**: `verify_tag_signature` runs before checkout, using old `allowed_signers`. Rotating signing keys breaks all old installs. Need a forward-compatible key update mechanism.
 - **Heavy MCP user**: 10-minute max deferral may interrupt long inference jobs. Consider longer ceiling or smarter detection.
 - **`KeepAlive` policy**: `SuccessfulExit: false` means a clean exit (0) permanently kills the app. Consider `KeepAlive: true` with an intentional-quit marker.
-
-### Profile Server Authentication
-The profile server (Flask) has no authentication. When exposed via Tailscale, anyone on the tailnet has full access to all tools. Add bearer token auth when `PROFILE_HOST` is `0.0.0.0`.
 
 ### MCP Server Improvements
 - Add `/health` endpoint returning service status, model counts, memory pressure
 - Add progress notifications for first-time model loads (30-60s waits with no feedback)
-- Make `pick_model` error messages actionable (show which models were tried and why they didn't match)
 - Add `computer_use` to default `mcp_preferences.json`
 
 ### Operational
 - Add `--status` MCP server check to `start-local-models --status`
 - Add `--help` to all bin/ scripts
-- Add `install.sh --uninstall` to reverse symlinks and unload LaunchAgents
 - Add disk space check before model pulls in install.sh
 - Add log rotation for `/tmp/local-models-*.log` files
 
 ### Testing
-- 194 unit tests passing (52 deployment + 33 core + 46 MCP + 50 profile + 4 playground + 9 remaining)
+- 198 unit tests passing (53 deployment + 33 core + 47 MCP + 56 profile + 4 playground + 5 remaining)
 - `local_computer_use` needs e2e test coverage
 - Laptop-away fallback path needs testing
