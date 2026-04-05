@@ -2,7 +2,9 @@
 
 > **Requires Apple Silicon Mac** (M1 or later) with 64GB+ unified memory. macOS only.
 
-Your Mac has a GPU that can run serious AI models — probably while it's sitting idle. Super Puppy turns it into a managed local model server: LLMs, vision, image generation, transcription, translation, text-to-speech, embeddings. Controlled from the menu bar, accessible over standard APIs, available to any tool on your network.
+Cloud AI providers are tightening what you can do with a subscription. Anthropic just [cut off third-party tool access](https://news.ycombinator.com/item?id=47633396) from Claude subscriptions. OpenAI has rate-limited power users before them. The pattern is clear: if your workflow depends on someone else's capacity, your workflow is at their mercy.
+
+Your Mac has a GPU that can run serious AI models — probably while it's sitting idle. Super Puppy turns it into a managed local model server: LLMs, vision, image generation, transcription, translation, text-to-speech, embeddings. Controlled from the menu bar, accessible over standard APIs, available to any tool on your network. No one can throttle it, reprice it, or take it away.
 
 It works as a **server** or a **client** — and every client is also a server. Install it on a beefy desktop and it serves models over Tailscale. Install it on a laptop and it auto-discovers the desktop, routing requests to the bigger machine's GPU. When the desktop is unreachable — you're on a plane, at a coffee shop, whatever — the same tools keep working against local models on the laptop itself. Your code, your scripts, your Claude Code workflows never have to care which machine is doing the work. They hit the same APIs either way; Super Puppy handles the routing.
 
@@ -218,8 +220,6 @@ The MCP tools work automatically once installed, but Claude Code performs better
 
 ```
 super-puppy/
-├── mcp/
-│   └── local-models-server.py   # MCP server (PEP 723, runs via uv)
 ├── app/
 │   ├── menubar.py               # Menu bar app (PEP 723, rumps)
 │   ├── profile-server.py        # Profiles + Playground web UI
