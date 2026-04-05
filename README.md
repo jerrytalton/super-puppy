@@ -182,8 +182,6 @@ All inference runs locally — model input and output never leave your machine. 
 - **Model downloads**: First use of HuggingFace embedding models (bge-m3, e5-small-v2) downloads from huggingface.co. Subsequent uses are cached locally.
 - **Tailscale**: Remote access uses Tailscale's relay network when direct connections aren't possible.
 
-For air-gapped environments: pre-download all models, set `AUTO_UPDATE=false`, and ensure all Python dependencies are cached.
-
 ## Configuration
 
 All user-writable config lives in `~/.config/local-models/`. The installer sets these up interactively.
