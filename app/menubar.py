@@ -355,7 +355,7 @@ def get_latest_remote_tag():
             return "", ""
         latest = tags[0]
         tag_hash = subprocess.check_output(
-            ["git", "-C", REPO_DIR, "rev-parse", latest],
+            ["git", "-C", REPO_DIR, "rev-parse", f"{latest}^{{commit}}"],
             text=True, timeout=5).strip()
         return latest, tag_hash
     except Exception:
