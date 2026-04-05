@@ -1695,7 +1695,29 @@ class LocalModelsApp(rumps.App):
 
     def _on_webview_message(self, body):
         """Handle messages from the profiles/tools webview."""
+        if isinstance(body, dict) and body.get("action") == "download":
+            self._save_file_from_url(body.get("url", ""), body.get("filename", "download"))
+            return
         self._update_menu()
+
+    def _save_file_from_url(self, url, filename):
+        """Download a URL and present a save dialog."""
+        import urllib.request
+        from AppKit import NSSavePanel, NSApp
+        try:
+            data = urllib.request.urlopen(url, timeout=10).read()
+        except Exception as e:
+            logging.warning("Download failed: %s", e)
+            return
+        panel = NSSavePanel.savePanel()
+        panel.setNameFieldStringValue_(filename)
+        if panel.runModal() == 1:  # NSModalResponseOK
+            try:
+                panel.URL().path().encode()  # validate path
+                with open(panel.URL().path(), "wb") as f:
+                    f.write(data)
+            except Exception as e:
+                logging.warning("Save failed: %s", e)
 
     def _restart_profile_server_and_reload(self):
         """Kill profile server, restart for new mode, reload webview."""
