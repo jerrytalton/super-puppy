@@ -2247,10 +2247,14 @@ class LocalModelsApp(rumps.App):
         self._auto_update(remote_tag)
 
     def _mcp_recently_active(self):
+        """Check if the MCP server has active GPU requests (real inference)."""
         try:
-            mtime = os.path.getmtime(MCP_LOG_FILE)
-            return (time.time() - mtime) < UPDATE_IDLE_SECONDS
-        except OSError:
+            resp = urllib.request.urlopen(
+                "http://127.0.0.1:8100/gpu", timeout=2)
+            data = json.loads(resp.read())
+            return data.get("ollama", {}).get("active", 0) > 0 \
+                or data.get("mlx", {}).get("active", 0) > 0
+        except Exception:
             return False
 
     def _auto_update(self, target_tag):
