@@ -585,20 +585,18 @@ class TestPostUpdateHealthCheck:
 # ---------------------------------------------------------------------------
 
 class TestMcpRecentlyActive:
-    def test_recent_log_returns_true(self, app_instance, tmp_path):
-        log = tmp_path / "mcp.log"
-        log.write_text("some log")
-        with patch.object(menubar, "MCP_LOG_FILE", str(log)):
+    def test_active_gpu_returns_true(self, app_instance):
+        body = json.dumps({"ollama": {"active": 1}, "mlx": {"active": 0}}).encode()
+        mock_resp = type("R", (), {"read": lambda self: body})()
+        with patch("urllib.request.urlopen", return_value=mock_resp):
             assert app_instance._mcp_recently_active() is True
 
-    def test_stale_log_returns_false(self, app_instance, tmp_path):
-        log = tmp_path / "mcp.log"
-        log.write_text("some log")
-        old_time = time.time() - 300
-        os.utime(str(log), (old_time, old_time))
-        with patch.object(menubar, "MCP_LOG_FILE", str(log)):
+    def test_idle_gpu_returns_false(self, app_instance):
+        body = json.dumps({"ollama": {"active": 0}, "mlx": {"active": 0}}).encode()
+        mock_resp = type("R", (), {"read": lambda self: body})()
+        with patch("urllib.request.urlopen", return_value=mock_resp):
             assert app_instance._mcp_recently_active() is False
 
-    def test_missing_log_returns_false(self, app_instance, tmp_path):
-        with patch.object(menubar, "MCP_LOG_FILE", str(tmp_path / "nope.log")):
+    def test_unreachable_returns_false(self, app_instance):
+        with patch("urllib.request.urlopen", side_effect=ConnectionError):
             assert app_instance._mcp_recently_active() is False
