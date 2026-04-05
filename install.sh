@@ -8,7 +8,7 @@
 #
 # Or from a local clone:
 #   ./install.sh
-#   --rotate-token   Force re-reading the MCP auth token from 1Password
+#   --rotate-token   Generate a new MCP auth token and update 1Password
 #   --reconfigure    Re-run interactive setup even if network.conf exists
 #   --uninstall      Remove symlinks, LaunchAgents, configs, and MCP registration
 
@@ -372,36 +372,84 @@ for peer in d.get('Peer', {}).values():
     fi
 
     # 4. Auth token
+    #
+    # Server: generate a token and store it in 1Password (if available).
+    # Client: read the token from 1Password (if the item exists).
+    # Both: cache the token locally in mcp_auth_token.
+    #
+    # The well-known 1Password item name is "Super Puppy MCP Token".
+    # Both machines find it by name — no manual OP_REF exchange needed.
     echo ""
     echo "  The MCP server requires a bearer token for authentication."
-    if command -v op > /dev/null 2>&1; then
-        printf "  Do you use 1Password to store the MCP token? [y/N] "
-        read -r use_op
-        if [[ "$use_op" =~ ^[Yy] ]]; then
-            printf "  1Password item reference (op://vault/item/field): "
-            read -r op_ref
-            if [ -n "$op_ref" ]; then
-                if [[ "$op_ref" =~ ^op://[a-zA-Z0-9._\ -]+/[a-zA-Z0-9._\ -]+/[a-zA-Z0-9._\ -]+$ ]]; then
-                    set_conf "OP_REF" "\"$op_ref\""
-                    echo "  → Token will be read from 1Password"
-                else
-                    echo "  ERROR: Invalid 1Password reference. Expected format: op://vault/item/field" >&2
-                    op_ref=""
-                fi
-            fi
-        fi
-    fi
     TOKEN_CACHE="$HOME/.config/local-models/mcp_auth_token"
-    if [ -z "${op_ref:-}" ] && [ ! -f "$TOKEN_CACHE" ]; then
-        printf "  Paste your MCP auth token (or press Enter to auto-generate one): "
-        read -r manual_token
-        if [ -n "$manual_token" ]; then
-            (umask 077 && echo "$manual_token" > "$TOKEN_CACHE")
-            echo "  → Token saved to $TOKEN_CACHE"
+    OP_ITEM_NAME="Super Puppy MCP Token"
+    OP_VAULT="${OP_VAULT:-Private}"
+
+    if command -v op > /dev/null 2>&1 && op account list &>/dev/null; then
+        OP_AVAILABLE=true
+        echo "  1Password CLI detected."
+
+        # Check if the item already exists
+        OP_EXISTING=$(op item get "$OP_ITEM_NAME" --vault "$OP_VAULT" --fields password 2>/dev/null || true)
+    else
+        OP_AVAILABLE=false
+        OP_EXISTING=""
+    fi
+
+    if $IS_SERVER_MODE; then
+        # Server: generate token and push to 1Password
+        if [ -f "$TOKEN_CACHE" ] && [ -s "$TOKEN_CACHE" ] && ! $FORCE_TOKEN_REFRESH; then
+            echo "  → Token already exists at $TOKEN_CACHE (use --rotate-token to regenerate)"
         else
             auto_token=$(openssl rand -hex 32)
             (umask 077 && echo "$auto_token" > "$TOKEN_CACHE")
-            echo "  → Generated random token and saved to $TOKEN_CACHE"
+            echo "  → Generated new auth token"
+
+            if $OP_AVAILABLE; then
+                if [ -n "$OP_EXISTING" ]; then
+                    op item edit "$OP_ITEM_NAME" --vault "$OP_VAULT" "password=$auto_token" &>/dev/null \
+                        && echo "  → Updated token in 1Password ($OP_VAULT/$OP_ITEM_NAME)" \
+                        || echo "  WARNING: could not update 1Password item"
+                else
+                    op item create --category=password --title="$OP_ITEM_NAME" \
+                        --vault "$OP_VAULT" "password=$auto_token" &>/dev/null \
+                        && echo "  → Saved token to 1Password ($OP_VAULT/$OP_ITEM_NAME)" \
+                        || echo "  WARNING: could not create 1Password item"
+                fi
+                set_conf "OP_REF" "\"op://$OP_VAULT/$OP_ITEM_NAME/password\""
+            fi
+        fi
+    else
+        # Client: read token from 1Password or prompt
+        if $OP_AVAILABLE && [ -n "$OP_EXISTING" ]; then
+            (umask 077 && echo "$OP_EXISTING" > "$TOKEN_CACHE")
+            set_conf "OP_REF" "\"op://$OP_VAULT/$OP_ITEM_NAME/password\""
+            echo "  → Read token from 1Password ($OP_VAULT/$OP_ITEM_NAME)"
+        elif $OP_AVAILABLE; then
+            echo "  No '$OP_ITEM_NAME' item found in 1Password vault '$OP_VAULT'."
+            echo "  Run install.sh on the server first to create it, or paste the token manually."
+            printf "  Paste MCP auth token (or Enter to skip): "
+            read -r manual_token
+            if [ -n "$manual_token" ]; then
+                (umask 077 && echo "$manual_token" > "$TOKEN_CACHE")
+                echo "  → Token saved to $TOKEN_CACHE"
+            else
+                echo "  → Skipping token setup. MCP auth will fail until a token is configured."
+            fi
+        else
+            # No 1Password — manual token entry
+            if [ ! -f "$TOKEN_CACHE" ]; then
+                printf "  Paste MCP auth token (or Enter to auto-generate): "
+                read -r manual_token
+                if [ -n "$manual_token" ]; then
+                    (umask 077 && echo "$manual_token" > "$TOKEN_CACHE")
+                    echo "  → Token saved to $TOKEN_CACHE"
+                else
+                    auto_token=$(openssl rand -hex 32)
+                    (umask 077 && echo "$auto_token" > "$TOKEN_CACHE")
+                    echo "  → Generated random token and saved to $TOKEN_CACHE"
+                fi
+            fi
         fi
     fi
 
@@ -418,10 +466,29 @@ source "$HOME/.config/local-models/network.conf"
 CLAUDE_JSON="$HOME/.claude.json"
 if [ -f "$CLAUDE_JSON" ]; then
     TOKEN_CACHE="$HOME/.config/local-models/mcp_auth_token"
+    OP_ITEM_NAME="Super Puppy MCP Token"
+    OP_VAULT="${OP_VAULT:-Private}"
     MCP_TOKEN=""
-    if $FORCE_TOKEN_REFRESH; then
+    if $FORCE_TOKEN_REFRESH && [ -f "$TOKEN_CACHE" ]; then
+        # Only rotate here if interactive setup didn't already handle it
         rm -f "$TOKEN_CACHE"
-        echo "  Cleared cached token, will read from 1Password"
+        echo "  Rotating MCP auth token..."
+        new_token=$(openssl rand -hex 32)
+        (umask 077 && echo "$new_token" > "$TOKEN_CACHE")
+        # Update 1Password if available
+        if command -v op > /dev/null 2>&1 && op account list &>/dev/null; then
+            if op item get "$OP_ITEM_NAME" --vault "$OP_VAULT" &>/dev/null; then
+                op item edit "$OP_ITEM_NAME" --vault "$OP_VAULT" "password=$new_token" &>/dev/null \
+                    && echo "  → Updated token in 1Password" \
+                    || echo "  WARNING: could not update 1Password item"
+            else
+                op item create --category=password --title="$OP_ITEM_NAME" \
+                    --vault "$OP_VAULT" "password=$new_token" &>/dev/null \
+                    && echo "  → Saved token to 1Password" \
+                    || echo "  WARNING: could not create 1Password item"
+            fi
+        fi
+        echo "  → New token generated. Run install.sh on clients to pick up the new token."
     fi
     if [ -f "$TOKEN_CACHE" ] && [ -s "$TOKEN_CACHE" ]; then
         MCP_TOKEN=$(cat "$TOKEN_CACHE")
