@@ -4,27 +4,183 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-<title>Super Puppy</title>
+<title>Super Puppy — Local AI for Apple Silicon</title>
+<meta name="description" content="Turn your Mac into a managed local model server. LLMs, vision, image generation, transcription, TTS, embeddings — controlled from the menu bar, accessible over standard APIs.">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
+:root { --bg: #000; --fg: #e8e8e8; --dim: #888; --accent: #f0c040; --code-bg: #111; --border: #333; }
 body {
-  background: #000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  line-height: 1.6;
   min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 3rem 1.5rem;
 }
-img {
-  width: 180px;
-  height: 180px;
-  border-radius: 40px;
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.hero {
+  text-align: center;
+  max-width: 640px;
+  margin-bottom: 3rem;
 }
+.hero img {
+  width: 120px; height: 120px;
+  border-radius: 27px;
+  margin-bottom: 1.5rem;
+}
+.hero h1 {
+  font-size: 2rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-bottom: 0.75rem;
+}
+.hero .tagline {
+  font-size: 1.15rem;
+  color: var(--dim);
+  max-width: 520px;
+  margin: 0 auto;
+}
+
+.install {
+  width: 100%;
+  max-width: 600px;
+  margin-bottom: 3rem;
+}
+.install pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.25rem 1.5rem;
+  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  font-size: 0.875rem;
+  line-height: 1.7;
+  overflow-x: auto;
+  position: relative;
+  color: var(--fg);
+}
+.install pre .comment { color: #666; }
+.install .copy-btn {
+  position: absolute;
+  top: 0.75rem; right: 0.75rem;
+  background: var(--border);
+  border: none;
+  color: var(--dim);
+  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.install .copy-btn:hover { color: var(--fg); }
+
+.features {
+  width: 100%;
+  max-width: 640px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1.25rem;
+  margin-bottom: 3rem;
+}
+.feature {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.25rem;
+}
+.feature h3 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin-bottom: 0.35rem;
+}
+.feature p {
+  font-size: 0.875rem;
+  color: var(--dim);
+}
+
+.reqs {
+  text-align: center;
+  color: var(--dim);
+  font-size: 0.8rem;
+  margin-bottom: 1.5rem;
+}
+
+footer {
+  margin-top: auto;
+  padding-top: 2rem;
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--dim);
+}
+
 @media (min-width: 600px) {
-  img { width: 240px; height: 240px; border-radius: 54px; }
+  body { padding: 5rem 2rem; }
+  .hero img { width: 160px; height: 160px; border-radius: 36px; }
+  .hero h1 { font-size: 2.5rem; }
+  .features { grid-template-columns: 1fr 1fr; }
 }
 </style>
 </head>
 <body>
-<img src="/icon.png" alt="Super Puppy">
+
+<div class="hero">
+  <img src="/icon.png" alt="Super Puppy">
+  <h1>Super Puppy</h1>
+  <p class="tagline">Turn your Mac into a managed local AI server. LLMs, vision, image generation, transcription, TTS, embeddings &mdash; controlled from the menu bar.</p>
+</div>
+
+<div class="install">
+  <pre><button class="copy-btn" onclick="copy(this)">Copy</button><span class="comment"># clone and run the interactive installer</span>
+git clone https://github.com/jerrytalton/super-puppy.git ~/super-puppy
+cd ~/super-puppy && ./install.sh</pre>
+</div>
+
+<div class="reqs">
+  Requires Apple Silicon Mac (M1+) with 64 GB+ unified memory. macOS only.
+</div>
+
+<div class="features">
+  <div class="feature">
+    <h3>Menu bar control</h3>
+    <p>Start, stop, and monitor Ollama, MLX, and MCP services. Switch model profiles. See memory usage at a glance.</p>
+  </div>
+  <div class="feature">
+    <h3>Standard APIs</h3>
+    <p>OpenAI-compatible endpoints for every model. Your existing code works without changes.</p>
+  </div>
+  <div class="feature">
+    <h3>MCP tools for Claude Code</h3>
+    <p>16 tools &mdash; generate, review, vision, image gen, transcription, TTS, translation, embeddings, and more &mdash; all running on your hardware.</p>
+  </div>
+  <div class="feature">
+    <h3>Server &amp; client</h3>
+    <p>Install on a desktop to serve models over Tailscale. Install on a laptop to auto-discover the desktop and fall back to local when away.</p>
+  </div>
+  <div class="feature">
+    <h3>Web playground</h3>
+    <p>Test any capability from a browser. Works as a PWA on your phone &mdash; your mobile device becomes a frontend to your desktop GPU.</p>
+  </div>
+  <div class="feature">
+    <h3>Auto-update</h3>
+    <p>Tagged releases are checked every 2 minutes. Updates apply automatically with crash rollback. <code>install.sh&nbsp;--uninstall</code> for clean removal.</p>
+  </div>
+</div>
+
+<footer>
+  <a href="https://github.com/jerrytalton/super-puppy">GitHub</a> &middot; GPLv3
+</footer>
+
+<script>
+function copy(btn) {
+  const pre = btn.parentElement;
+  const text = pre.textContent.replace('Copy', '').trim().replace(/^#.*\n/gm, '').trim();
+  navigator.clipboard.writeText(text).then(() => {
+    btn.textContent = 'Copied';
+    setTimeout(() => btn.textContent = 'Copy', 1500);
+  });
+}
+</script>
 </body>
 </html>
