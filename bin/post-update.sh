@@ -10,7 +10,8 @@
 
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPT="$(readlink -f "$0" 2>/dev/null || readlink "$0" 2>/dev/null || echo "$0")"
+REPO_DIR="$(cd "$(dirname "$SCRIPT")/.." && pwd)"
 LOG_TAG="post-update"
 
 log() { echo "[$LOG_TAG] $*"; }
