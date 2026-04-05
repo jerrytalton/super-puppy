@@ -463,7 +463,7 @@ def is_mcp_configured():
     result = False
     if os.path.exists(MCP_TOOLS_FILE):
         try:
-            with open(MCP_TOOLS_FILE) as f:
+            with open(MCP_TOOLS_FILE, encoding="utf-8") as f:
                 data = json.load(f)
             result = "local-models" in data.get("mcpServers", {})
         except Exception:
@@ -1312,7 +1312,7 @@ class LocalModelsApp(rumps.App):
     def _configure_claude_mcp(self, url):
         """Update ~/.claude.json to point local-models MCP at the given URL."""
         try:
-            with open(MCP_TOOLS_FILE) as f:
+            with open(MCP_TOOLS_FILE, encoding="utf-8") as f:
                 data = json.load(f)
             servers = data.setdefault("mcpServers", {})
             entry = servers.get("local-models", {})
@@ -1323,8 +1323,8 @@ class LocalModelsApp(rumps.App):
             # Preserve existing auth headers
             servers["local-models"] = entry
             tmp = MCP_TOOLS_FILE + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(data, f, indent=2)
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
                 f.write("\n")
             os.replace(tmp, MCP_TOOLS_FILE)
             logging.info("MCP config updated: %s", url)
@@ -1448,7 +1448,7 @@ class LocalModelsApp(rumps.App):
             lines.append(f"Remote access: {self.remote_access_enabled}")
         # Last 5 log lines
         try:
-            with open("/tmp/local-models-menubar.log") as f:
+            with open("/tmp/local-models-menubar.log", encoding="utf-8", errors="replace") as f:
                 log_lines = f.readlines()[-5:]
             lines.append("\nRecent log:")
             lines.extend(l.rstrip() for l in log_lines)
