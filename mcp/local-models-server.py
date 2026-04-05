@@ -436,7 +436,25 @@ def pick_model(task: str, override: str | None = None) -> tuple[str, str]:
         if info["backend"] in ("ollama", "mlx"):
             return name, info["backend"]
 
-    raise ValueError(f"No model available for task '{task}'")
+    # Build actionable error message
+    available = [n for n, m in _models.items() if m["backend"] in ("ollama", "mlx")]
+    parts = [f"No model available for task '{task}'."]
+    if override:
+        parts.append(f"Requested model '{override}' not found.")
+    prefs = load_mcp_prefs()
+    task_prefs = prefs.get(task, [])
+    if task_prefs:
+        if isinstance(task_prefs, str):
+            task_prefs = [task_prefs]
+        parts.append(f"Tried preferences: {', '.join(task_prefs)} — none matched.")
+    if available:
+        shown = available[:5]
+        suffix = f" (+{len(available) - 5} more)" if len(available) > 5 else ""
+        parts.append(f"Available models: {', '.join(shown)}{suffix}.")
+    else:
+        parts.append("No models loaded — is Ollama/MLX running?")
+    parts.append("Check ~/.config/local-models/mcp_preferences.json or pull a model with 'ollama pull'.")
+    raise ValueError(" ".join(parts))
 
 
 def _http_error_detail(e: httpx.HTTPStatusError, action: str) -> str:

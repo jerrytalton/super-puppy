@@ -173,6 +173,21 @@ class TestPickModel:
             with pytest.raises(ValueError, match="No model available"):
                 server.pick_model("code")
 
+    def test_no_models_error_is_actionable(self):
+        """Error message includes what was tried and what's available."""
+        # Only non-LLM backend models — pick_model won't fall back to these
+        server._models.clear()
+        server._models["whisper:v3"] = {"backend": "whisper"}
+        with patch.object(server, "load_mcp_prefs",
+                          return_value={"code": ["nonexistent-model"]}):
+            with pytest.raises(ValueError) as exc_info:
+                server.pick_model("code")
+            msg = str(exc_info.value)
+            assert "code" in msg
+            assert "nonexistent-model" in msg  # shows what was tried
+            assert "No models loaded" in msg  # no ollama/mlx available
+            assert "mcp_preferences.json" in msg  # suggests fix
+
     def test_override_miss_falls_through(self):
         server._models["fallback:7b"] = {"backend": "ollama"}
         with patch.object(server, "load_mcp_prefs", return_value={}):
