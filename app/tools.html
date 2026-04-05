@@ -198,6 +198,21 @@ h2 { font-size: 13px; font-weight: 600; color: var(--text2); text-transform: upp
 <div class="output-box" id="output">Select a tool and click Run.</div>
 
 <script>
+function downloadFile(url, filename) {
+  if (window.webkit?.messageHandlers?.app) {
+    window.webkit.messageHandlers.app.postMessage({action: 'download', url: location.origin + url, filename});
+  } else {
+    fetch(url).then(r => r.blob()).then(blob => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = filename || 'download';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 100);
+    });
+  }
+}
+
 const TOOLS = {
   code:        { label: 'Code', task: 'code', fields: [
     {id:'prompt', label:'Prompt', type:'textarea', placeholder:'Write a Python function that...'},
@@ -744,12 +759,12 @@ async function run() {
           const audioUrl = `/api/test/audio?path=${encodeURIComponent(data.audio_path)}`;
           html = data.result +
             `<audio controls src="${audioUrl}" style="display:block;margin-top:8px;width:100%"></audio>` +
-            `<a href="${audioUrl}" download class="download-btn">Download audio</a>`;
+            `<a href="#" onclick="downloadFile('${audioUrl}','audio.wav');return false" class="download-btn">Download audio</a>`;
         } else if (data.image_path) {
           const imgUrl = `/api/test/image?path=${encodeURIComponent(data.image_path)}`;
           html = data.result +
             `<img src="${imgUrl}">` +
-            `<a href="${imgUrl}" download class="download-btn">Download image</a>`;
+            `<a href="#" onclick="downloadFile('${imgUrl}','image.png');return false" class="download-btn">Download image</a>`;
         } else if (data.embeddings) {
           const dims = data.dimensions || '?', count = data.count || '?';
           html = `${count} embedding(s), ${dims} dimensions\n\n` +
@@ -778,7 +793,8 @@ async function run() {
         audio.src = audioUrl;
         output.appendChild(audio);
         const dl = document.createElement('a');
-        dl.href = audioUrl; dl.download = ''; dl.className = 'download-btn'; dl.textContent = 'Download audio';
+        dl.href = '#'; dl.className = 'download-btn'; dl.textContent = 'Download audio';
+        dl.onclick = (e) => { e.preventDefault(); downloadFile(audioUrl, 'audio.wav'); };
         output.appendChild(dl);
       } else if (data.image_path) {
         output.textContent = data.result;
@@ -787,7 +803,8 @@ async function run() {
         img.src = imgUrl;
         output.appendChild(img);
         const dl = document.createElement('a');
-        dl.href = imgUrl; dl.download = ''; dl.className = 'download-btn'; dl.textContent = 'Download image';
+        dl.href = '#'; dl.className = 'download-btn'; dl.textContent = 'Download image';
+        dl.onclick = (e) => { e.preventDefault(); downloadFile(imgUrl, 'image.png'); };
         output.appendChild(dl);
       } else if (data.embeddings) {
         const dims = data.dimensions || '?';

@@ -455,7 +455,7 @@ def get_eligible_tasks(name, model_info):
 
 # ── Profiles ─────────────────────────────────────────────────────────
 
-PROFILES_VERSION = 16  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 17  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -490,7 +490,7 @@ DEFAULT_PROFILES = {
                 "code": "qwen3.5-fast",
                 "general": "qwen3.5-fast",
                 "reasoning": "qwen3.5-fast",
-                "long_context": "glm-4.7-flash:latest",
+                "long_context": "qwen3.5:9b",
                 "translation": "qwen3.5-fast",
                 "vision": "qwen3.5:9b",
                 "image_gen": "x/flux2-klein:latest",
