@@ -402,18 +402,24 @@ class TestRoutes:
 
     def test_api_test_speak_ref_audio_selects_chatterbox(self, client):
         prefs = {"tts": ["mlx-community/Voxtral-4B-TTS-2603-mlx-bf16"]}
+        mock_gen = MagicMock()
+        mock_module = MagicMock()
+        mock_module.generate_audio = mock_gen
+        import sys
         with patch.object(ps, "get_all_models", return_value=FAKE_MODELS), \
              patch.object(ps, "load_default_prefs", return_value=prefs), \
              patch.object(ps, "_is_safe_test_path", return_value=True), \
-             patch("mlx_audio.tts.generate.generate_audio", create=True) as mock_gen:
+             patch.dict(sys.modules, {"mlx_audio": MagicMock(),
+                                      "mlx_audio.tts": MagicMock(),
+                                      "mlx_audio.tts.generate": mock_module}):
             resp = client.post("/api/test", json={
                 "tool": "speak", "text": "hello",
                 "ref_audio": "/tmp/ref.wav",
             })
-        if mock_gen.called:
-            kwargs = mock_gen.call_args[1]
-            assert "chatterbox" in kwargs.get("model", "")
-            assert kwargs.get("ref_audio") == "/tmp/ref.wav"
+        mock_gen.assert_called_once()
+        kwargs = mock_gen.call_args[1]
+        assert "chatterbox" in kwargs.get("model", "")
+        assert kwargs.get("ref_audio") == "/tmp/ref.wav"
 
     def test_tools_page(self, client):
         resp = client.get("/tools")
