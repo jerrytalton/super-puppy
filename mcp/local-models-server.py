@@ -343,6 +343,32 @@ async def discover_models():
         except Exception as e:
             logging.warning("MLX discovery failed: %s", e)
 
+        # Register on-demand MLX models from config that aren't loaded yet
+        for sn, mp in _mlx_cfg_map.items():
+            if sn not in models:
+                has_vision = False
+                cache_dir = _hf_cache / f"models--{mp.replace('/', '--')}" / "snapshots"
+                if cache_dir.exists():
+                    for snap in sorted(cache_dir.iterdir(), reverse=True):
+                        hf_cfg = snap / "config.json"
+                        if hf_cfg.exists():
+                            try:
+                                hf = json.loads(hf_cfg.read_text())
+                                has_vision = (
+                                    "vision_config" in hf
+                                    or "vision_config" in hf.get("text_config", {})
+                                )
+                            except Exception:
+                                pass
+                            break
+                models[sn] = {
+                    "backend": "mlx",
+                    "total_params_b": 0,
+                    "active_params_b": 0,
+                    "context": 0,
+                    "vision": has_vision,
+                }
+
         # HuggingFace cache: TTS, transcription, image_edit, image_gen
         _TASK_BACKENDS = {
             "tts": "mlx-audio",
