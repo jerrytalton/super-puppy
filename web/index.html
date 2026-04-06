@@ -57,13 +57,15 @@ a:hover { text-decoration: underline; }
 }
 .install pre {
   flex: 1;
+  min-width: 0;
   background: var(--code-bg);
   border: none;
   padding: 0.9rem 1.25rem;
   font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
   font-size: 0.875rem;
   white-space: pre;
-  overflow-x: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--dim);
   margin: 0;
 }
