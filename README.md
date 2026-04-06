@@ -162,7 +162,11 @@ tailscale-status              # check Tailscale connectivity and FQDN
 ollama pull some-new-model
 ```
 
-**MLX**: Add an entry to `~/.config/mlx-server/config.yaml` and restart:
+**MLX**: Find a model on [MLX Community](https://huggingface.co/mlx-community) (pre-quantized MLX weights), download it, add it to your config, and restart:
+```bash
+hf download mlx-community/Some-Model-4bit
+```
+Then add an entry to `~/.config/mlx-server/config.yaml`:
 ```yaml
   - model_path: mlx-community/Some-Model-4bit
     model_type: lm           # lm, multimodal, whisper, image-generation, image-edit
@@ -175,6 +179,8 @@ ollama pull some-new-model
 pkill -f mlx-openai-server
 start-local-models
 ```
+
+You can skip the `hf download` — models with `on_demand: true` download automatically on first use. Pre-downloading avoids the wait.
 
 Your custom models survive auto-updates. When a new release adds default models, they're merged into your config automatically (existing entries are never modified or removed).
 
