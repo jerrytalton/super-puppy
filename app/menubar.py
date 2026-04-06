@@ -374,7 +374,7 @@ def check_repo_update_available():
     """
     try:
         fetch = subprocess.run(
-            ["git", "-C", REPO_DIR, "fetch", "--quiet", "--tags", "--force"],
+            ["git", "-C", REPO_DIR, "fetch", "--quiet", "--tags", "--force", "--prune", "--prune-tags"],
             capture_output=True, text=True, encoding='utf-8', timeout=15)
         if fetch.returncode != 0:
             logging.warning("git fetch failed: %s", fetch.stderr.strip())
