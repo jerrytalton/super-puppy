@@ -75,7 +75,7 @@ The MCP server requires a bearer token (`MCP_AUTH_TOKEN`). The token is stored i
 | Mode override | `~/.config/local-models/mode.conf` |
 | Remote access toggle | `~/.config/local-models/remote_access.conf` |
 | Auth token | `~/.config/local-models/mcp_auth_token` |
-| MLX server config | `~/.config/mlx-server/config.yaml` |
+| MLX server config | `~/.config/mlx-server/config.yaml` (user-writable, survives updates) |
 | Claude MCP config | `~/.claude.json` |
 | Menu bar log | `/tmp/local-models-menubar.log` |
 | Instance lock | `~/.config/local-models/menubar.lock` |
