@@ -162,11 +162,21 @@ tailscale-status              # check Tailscale connectivity and FQDN
 ollama pull some-new-model
 ```
 
-**MLX**: Add an entry to `config/mlx-server/config.yaml` and restart:
+**MLX**: Add an entry to `~/.config/mlx-server/config.yaml` and restart:
+```yaml
+  - model_path: mlx-community/Some-Model-4bit
+    model_type: lm           # lm, multimodal, whisper, image-generation, image-edit
+    served_model_name: my-model
+    context_length: 8192
+    on_demand: true
+    on_demand_idle_timeout: 300
+```
 ```bash
 pkill -f mlx-openai-server
 start-local-models
 ```
+
+Your custom models survive auto-updates. When a new release adds default models, they're merged into your config automatically (existing entries are never modified or removed).
 
 
 ## Optional Dependencies
@@ -213,7 +223,7 @@ The installer picks a profile based on RAM. Change it any time from Model Profil
 
 ### MLX Models
 
-Edit `config/mlx-server/config.yaml` (high-memory) or `config-laptop.yaml` (lightweight). Set `on_demand: true` for models that should only load when requested.
+Edit `~/.config/mlx-server/config.yaml` (high-memory) or `config-laptop.yaml` (lightweight). Set `on_demand: true` for models that should only load when requested. Use `model_type: multimodal` for vision models. Your edits persist across auto-updates.
 
 
 ## CLAUDE.md Setup

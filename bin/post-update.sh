@@ -34,9 +34,56 @@ link bin/local-models-mcp-auth     ~/bin/local-models-mcp-auth
 link bin/tailscale-status          ~/bin/tailscale-status
 link bin/post-update.sh            ~/bin/post-update.sh
 
-# Configs (symlinked — read-only reference)
-link config/mlx-server/config.yaml         ~/.config/mlx-server/config.yaml
-link config/mlx-server/config-laptop.yaml  ~/.config/mlx-server/config-laptop.yaml
+# MLX configs (copied on first install, new models merged on update)
+MLX_DIR="$HOME/.config/mlx-server"
+mkdir -p "$MLX_DIR"
+for conf in config.yaml config-laptop.yaml; do
+    user_conf="$MLX_DIR/$conf"
+    repo_conf="$REPO_DIR/config/mlx-server/$conf"
+    if [ ! -e "$user_conf" ] || [ -L "$user_conf" ]; then
+        # First install or upgrading from old symlink
+        [ -L "$user_conf" ] && rm "$user_conf"
+        cp "$repo_conf" "$user_conf"
+        log "Installed default $user_conf"
+    else
+        # Merge: append model entries from repo that user doesn't have yet
+        python3 - "$repo_conf" "$user_conf" <<'PYEOF'
+import re, sys
+repo_path, user_path = sys.argv[1], sys.argv[2]
+with open(repo_path) as f:
+    repo_text = f.read()
+with open(user_path) as f:
+    user_text = f.read()
+user_models = set(re.findall(r'model_path:\s*(.+)', user_text))
+# Split repo config into model blocks (comment + entry)
+blocks = re.split(r'\n(?=  #[^\n]*\n  - model_path:)', repo_text)
+new_blocks = []
+for block in blocks:
+    m = re.search(r'model_path:\s*(.+)', block)
+    if m and m.group(1).strip() not in user_models:
+        # Extract just this model block (from comment through last indented line)
+        lines = block.strip().split('\n')
+        entry = []
+        capture = False
+        for line in lines:
+            if line.strip().startswith('#') and not capture:
+                capture = True
+                entry.append(line)
+            elif capture or line.strip().startswith('- model_path:'):
+                capture = True
+                entry.append(line)
+        if entry:
+            new_blocks.append('\n'.join(entry))
+if new_blocks:
+    with open(user_path, 'a') as f:
+        for block in new_blocks:
+            f.write('\n' + block + '\n')
+    for block in new_blocks:
+        name = re.search(r'model_path:\s*(.+)', block).group(1).strip()
+        print(f'  Added new MLX model: {name}')
+PYEOF
+    fi
+done
 
 # LaunchAgent
 link config/launchd/com.local-models.menubar.plist \

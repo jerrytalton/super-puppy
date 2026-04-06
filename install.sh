@@ -62,8 +62,6 @@ if $UNINSTALL; then
         ~/bin/local-models-mcp-auth \
         ~/bin/tailscale-status \
         ~/bin/post-update.sh \
-        ~/.config/mlx-server/config.yaml \
-        ~/.config/mlx-server/config-laptop.yaml \
         ~/Library/LaunchAgents/com.local-models.menubar.plist \
         ~/Library/LaunchAgents/setenv.OLLAMA_HOST.plist; do
         if [ -L "$link" ]; then
@@ -74,6 +72,13 @@ if $UNINSTALL; then
             fi
         fi
     done
+
+    # Remove MLX configs (may be real files, not symlinks)
+    MLX_CONF_DIR="$HOME/.config/mlx-server"
+    if [ -d "$MLX_CONF_DIR" ]; then
+        rm -rf "$MLX_CONF_DIR"
+        echo "  Removed $MLX_CONF_DIR"
+    fi
 
     # Remove compiled artifacts
     echo "Removing build artifacts..."
@@ -607,18 +612,20 @@ RAM_GB=$(sysctl -n hw.memsize | awk '{printf "%d", $1 / 1073741824}')
 echo ""
 
 # Pick the profile that best fits this machine's RAM
+# Use the user's MLX config (post-update.sh already copied it from the repo default)
+MLX_CONF_DIR="$HOME/.config/mlx-server"
 if [ "$RAM_GB" -ge 256 ]; then
     SUGGESTED_PROFILE="everyday"
     SUGGESTED_LABEL="Everyday (best balance for 256GB+ machines)"
-    MLX_CONFIG="$REPO_DIR/config/mlx-server/config.yaml"
+    MLX_CONFIG="$MLX_CONF_DIR/config.yaml"
 elif [ "$RAM_GB" -ge 48 ]; then
     SUGGESTED_PROFILE="desktop"
     SUGGESTED_LABEL="Desktop (fits in 64GB)"
-    MLX_CONFIG="$REPO_DIR/config/mlx-server/config.yaml"
+    MLX_CONFIG="$MLX_CONF_DIR/config.yaml"
 else
     SUGGESTED_PROFILE="laptop"
     SUGGESTED_LABEL="Laptop (lightweight models)"
-    MLX_CONFIG="$REPO_DIR/config/mlx-server/config-laptop.yaml"
+    MLX_CONFIG="$MLX_CONF_DIR/config-laptop.yaml"
 fi
 
 echo "This machine has ${RAM_GB}GB RAM."
@@ -637,9 +644,9 @@ else
 
     # Override MLX config for high-memory profiles
     case "$PROFILE_NAME" in
-        everyday|maximum) MLX_CONFIG="$REPO_DIR/config/mlx-server/config.yaml" ;;
-        laptop)           MLX_CONFIG="$REPO_DIR/config/mlx-server/config-laptop.yaml" ;;
-        desktop)          MLX_CONFIG="$REPO_DIR/config/mlx-server/config.yaml" ;;
+        everyday|maximum) MLX_CONFIG="$MLX_CONF_DIR/config.yaml" ;;
+        laptop)           MLX_CONFIG="$MLX_CONF_DIR/config-laptop.yaml" ;;
+        desktop)          MLX_CONFIG="$MLX_CONF_DIR/config.yaml" ;;
     esac
 
     PROFILES_FILE="$HOME/.config/local-models/profiles.json"

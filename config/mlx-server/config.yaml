@@ -55,6 +55,14 @@ models:
     on_demand: true
     on_demand_idle_timeout: 300
 
+  # Computer use — on demand (CACHED, ~40GB)
+  - model_path: mlx-community/UI-TARS-72B-DPO-4bit
+    model_type: multimodal
+    served_model_name: ui-tars-72b
+    context_length: 8192
+    on_demand: true
+    on_demand_idle_timeout: 300
+
   # Speech-to-text — on demand (CACHED)
   - model_path: mlx-community/whisper-large-v3-mlx
     model_type: whisper
