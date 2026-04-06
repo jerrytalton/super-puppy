@@ -206,7 +206,7 @@ def resolve_desktop_tailscale(hostname: str) -> tuple[str, str]:
     try:
         result = subprocess.run(
             ["tailscale", "status", "--json"],
-            capture_output=True, text=True, timeout=5)
+            capture_output=True, text=True, encoding='utf-8', timeout=5)
         if result.returncode == 0:
             data = json.loads(result.stdout)
             if data.get("BackendState") == "Running":
@@ -218,8 +218,8 @@ def resolve_desktop_tailscale(hostname: str) -> tuple[str, str]:
                                 ip = addr
                                 break
                         break
-    except Exception:
-        pass
+    except Exception as e:
+        logging.warning("resolve_desktop_tailscale exception: %s", e)
     _ts_cache["ip"] = ip
     _ts_cache["fqdn"] = fqdn
     _ts_cache["host"] = hostname
@@ -352,7 +352,7 @@ def get_latest_remote_tag():
     try:
         result = subprocess.run(
             ["git", "-C", REPO_DIR, "tag", "--list", "v*", "--sort=-version:refname"],
-            capture_output=True, text=True, timeout=5)
+            capture_output=True, text=True, encoding='utf-8', timeout=5)
         tags = result.stdout.strip().splitlines()
         if not tags:
             return "", ""
@@ -375,7 +375,7 @@ def check_repo_update_available():
     try:
         fetch = subprocess.run(
             ["git", "-C", REPO_DIR, "fetch", "--quiet", "--tags", "--force"],
-            capture_output=True, text=True, timeout=15)
+            capture_output=True, text=True, encoding='utf-8', timeout=15)
         if fetch.returncode != 0:
             logging.warning("git fetch failed: %s", fetch.stderr.strip())
             return 0, "", ""
@@ -409,7 +409,7 @@ def verify_tag_signature(tag):
     """Verify a git tag has a valid GPG/SSH signature. Returns (ok, detail)."""
     result = subprocess.run(
         ["git", "-C", REPO_DIR, "tag", "-v", tag],
-        capture_output=True, text=True, timeout=10)
+        capture_output=True, text=True, encoding='utf-8', timeout=10)
     if result.returncode == 0:
         return True, "signature verified"
     # Check if gpg/ssh-keygen is missing vs. bad signature
@@ -431,7 +431,7 @@ def _update_allowed_signers(target_ref):
         result = subprocess.run(
             ["git", "-C", REPO_DIR, "show",
              f"{target_ref}:config/git/allowed_signers"],
-            capture_output=True, text=True, timeout=5)
+            capture_output=True, text=True, encoding='utf-8', timeout=5)
         if result.returncode != 0 or not result.stdout.strip():
             return
         signers_path = os.path.expanduser("~/.config/git/allowed_signers")
@@ -465,7 +465,7 @@ def apply_repo_update(target_tag):
 
         checkout = subprocess.run(
             ["git", "-C", REPO_DIR, "checkout", "--force", target_tag],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True, encoding='utf-8', timeout=30)
         if checkout.returncode != 0:
             logging.error("git checkout --force %s failed: %s",
                           target_tag, checkout.stderr.strip())
@@ -1378,7 +1378,7 @@ class LocalModelsApp(rumps.App):
         try:
             result = subprocess.run(
                 ["tailscale", "status", "--json"],
-                capture_output=True, text=True, timeout=5)
+                capture_output=True, text=True, encoding='utf-8', timeout=5)
             if result.returncode == 0:
                 data = json.loads(result.stdout)
                 return data.get("Self", {}).get("DNSName", "").rstrip(".")
@@ -1434,7 +1434,7 @@ class LocalModelsApp(rumps.App):
                 result = subprocess.run(
                     ["tailscale", "serve", "--bg", "--https",
                      str(port), f"http://127.0.0.1:{port}"],
-                    capture_output=True, text=True, timeout=10)
+                    capture_output=True, text=True, encoding='utf-8', timeout=10)
                 if result.returncode != 0:
                     logging.warning("tailscale serve %d failed: %s",
                                     port, result.stderr.strip())
@@ -1637,7 +1637,7 @@ class LocalModelsApp(rumps.App):
                 import signal
                 pids = subprocess.run(
                     ["pgrep", "-f", "mlx-openai-server"],
-                    capture_output=True, text=True, timeout=5)
+                    capture_output=True, text=True, encoding='utf-8', timeout=5)
                 for pid in pids.stdout.strip().splitlines():
                     try:
                         os.kill(int(pid), signal.SIGTERM)
@@ -2371,7 +2371,7 @@ class LocalModelsApp(rumps.App):
         if os.path.isfile(post_update):
             try:
                 result = subprocess.run(
-                    [post_update], capture_output=True, text=True, timeout=120)
+                    [post_update], capture_output=True, text=True, encoding='utf-8', timeout=120)
                 if result.returncode != 0:
                     logging.error("post-update.sh failed (rc=%d): %s",
                                   result.returncode, result.stderr.strip())
@@ -2428,7 +2428,7 @@ class LocalModelsApp(rumps.App):
             result = subprocess.run(
                 ["git", "-C", REPO_DIR, "diff", "--name-only",
                  "HEAD", target_ref, "--", "mcp/"],
-                capture_output=True, text=True, timeout=5)
+                capture_output=True, text=True, encoding='utf-8', timeout=5)
             return bool(result.stdout.strip())
         except Exception:
             return True  # assume changed on failure
