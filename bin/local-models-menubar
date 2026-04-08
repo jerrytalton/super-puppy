@@ -60,4 +60,15 @@ if [ -f "$UPDATE_STARTED" ]; then
     fi
 fi
 
-exec "$REPO_DIR/app/SuperPuppy.app/Contents/MacOS/super-puppy"
+QUIT_MARKER="$CONFIG_DIR/user_quit"
+rm -f "$QUIT_MARKER"
+
+"$REPO_DIR/app/SuperPuppy.app/Contents/MacOS/super-puppy"
+
+# If the user explicitly chose Quit, honour it — exit 0 so launchd stops.
+# Otherwise always exit non-zero so KeepAlive.SuccessfulExit=false restarts.
+if [ -f "$QUIT_MARKER" ]; then
+    rm -f "$QUIT_MARKER"
+    exit 0
+fi
+exit 1
