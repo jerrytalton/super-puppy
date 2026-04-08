@@ -27,6 +27,7 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from lib import activity
 from lib.models import MCP_PREFS_FILE, MLX_SERVER_CONFIG, NETWORK_CONF, active_params_b
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
@@ -182,8 +183,12 @@ class _gpu_request:
             _gpu_active_details[self.backend].append(entry)
         return self
 
-    def __exit__(self, exc_type, *exc):
-        elapsed_ms = int((time.time() - self.started) * 1000)
+    def __exit__(self, exc_type, exc_val, _tb):
+        completed_at = time.time()
+        elapsed_ms = int((completed_at - self.started) * 1000)
+        status = "error" if exc_type else "ok"
+        tool = self.description.split(":")[0]
+        model = ":".join(self.description.split(":")[1:])
         with _gpu_lock:
             _gpu_active[self.backend] -= 1
             _gpu_active_details[self.backend] = [
@@ -194,13 +199,18 @@ class _gpu_request:
                 "description": self.description,
                 "backend": self.backend,
                 "duration_ms": elapsed_ms,
-                "completed_at": time.time(),
-                "status": "error" if exc_type else "ok",
+                "completed_at": completed_at,
+                "status": status,
             })
             if len(_request_history) > _REQUEST_HISTORY_MAX:
                 _request_history.pop(0)
-            tool = self.description.split(":")[0]
             _request_stats[tool] = _request_stats.get(tool, 0) + 1
+        activity.log_request(
+            tool=tool, model=model, backend=self.backend, source="mcp",
+            status=status, duration_ms=elapsed_ms,
+            started_at=self.started, completed_at=completed_at,
+            error_msg=str(exc_val) if exc_val else None,
+        )
 
 
 def _gpu_contention_warning(backend: str) -> str:
@@ -1618,6 +1628,7 @@ async def local_collect(job_id: str) -> str:
 
 async def _startup():
     global _models
+    activity.init_db()
     _models = await discover_models()
     ollama_count = sum(1 for v in _models.values() if v["backend"] == "ollama")
     mlx_count = sum(1 for v in _models.values() if v["backend"] == "mlx")
@@ -1662,6 +1673,7 @@ async def _gpu_status(request):
 async def _activity_status(request):
     """Activity dashboard endpoint: current + recent requests + stats."""
     now = time.time()
+    period = int(request.query_params.get("period", 86400))
     with _gpu_lock:
         active = []
         for backend in ("ollama", "mlx"):
@@ -1672,13 +1684,11 @@ async def _activity_status(request):
                     "started": e["started"],
                     "elapsed_ms": int((now - e["started"]) * 1000),
                 })
-        history = list(_request_history[-50:])
-        stats = dict(_request_stats)
+    db_data = activity.query_activity(period)
     return JSONResponse({
         "active": active,
-        "history": history,
-        "stats": stats,
         "server_uptime_s": int(now - _server_start_time),
+        **db_data,
     })
 
 
