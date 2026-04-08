@@ -2657,6 +2657,14 @@ class LocalModelsApp(rumps.App):
                 self.profile_server.wait()
         if self.servers_started and self.mode != "client":
             self.stop_services()
+        # Signal the wrapper that this was an intentional quit (not a crash).
+        # Without this, the wrapper exits non-zero so launchd always restarts.
+        quit_marker = os.path.expanduser("~/.config/local-models/user_quit")
+        try:
+            with open(quit_marker, "w") as f:
+                f.write(str(os.getpid()))
+        except Exception:
+            pass
         rumps.quit_application()
 
 

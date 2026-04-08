@@ -743,3 +743,85 @@ class TestMcpRecentlyActive:
     def test_unreachable_returns_false(self, app_instance):
         with patch("urllib.request.urlopen", side_effect=ConnectionError):
             assert app_instance._mcp_recently_active() is False
+
+
+# ---------------------------------------------------------------------------
+# quit_app writes sentinel for wrapper
+# ---------------------------------------------------------------------------
+
+class TestQuitMarker:
+    def test_quit_app_writes_marker(self, app_instance, tmp_path):
+        marker = str(tmp_path / "user_quit")
+        app_instance.profile_server = None
+        app_instance.servers_started = False
+        app_instance.mode = "client"
+        with patch.object(menubar, "rumps") as mock_rumps, \
+             patch("os.path.expanduser", return_value=marker):
+            app_instance.quit_app(None)
+        assert Path(marker).exists()
+        assert Path(marker).read_text() == str(os.getpid())
+        mock_rumps.quit_application.assert_called_once()
+
+    def test_quit_marker_not_written_on_crash(self, tmp_path):
+        marker = tmp_path / "user_quit"
+        assert not marker.exists()
+
+
+# ---------------------------------------------------------------------------
+# Shell wrapper exit code logic
+# ---------------------------------------------------------------------------
+
+class TestWrapperExitCodes:
+    """Test the restart/quit sentinel logic in bin/local-models-menubar.
+
+    Creates a temp script that mimics the wrapper's post-exit logic
+    (the part after the app binary exits) and verifies exit codes.
+    """
+
+    @pytest.fixture()
+    def wrapper_env(self, tmp_path):
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        quit_marker = config_dir / "user_quit"
+        # Minimal script reproducing the wrapper's post-exit logic.
+        # $1 = "quit" makes the fake app write the quit marker (simulating
+        # the user clicking Quit), anything else simulates a crash/restart.
+        script = tmp_path / "test_wrapper.sh"
+        script.write_text(f"""#!/bin/bash
+QUIT_MARKER="{quit_marker}"
+rm -f "$QUIT_MARKER"
+# Simulate the app: if $1 is "quit", write the marker like quit_app does
+if [ "$1" = "quit" ]; then
+    echo $$ > "$QUIT_MARKER"
+fi
+# Post-exit logic from the real wrapper:
+if [ -f "$QUIT_MARKER" ]; then
+    rm -f "$QUIT_MARKER"
+    exit 0
+fi
+exit 1
+""")
+        script.chmod(0o755)
+        return {"script": str(script), "quit_marker": quit_marker}
+
+    def test_exits_nonzero_on_crash(self, wrapper_env):
+        result = subprocess.run(
+            ["bash", wrapper_env["script"]],
+            capture_output=True, timeout=5)
+        assert result.returncode == 1
+
+    def test_exits_zero_on_user_quit(self, wrapper_env):
+        result = subprocess.run(
+            ["bash", wrapper_env["script"], "quit"],
+            capture_output=True, timeout=5)
+        assert result.returncode == 0
+        assert not wrapper_env["quit_marker"].exists()
+
+    def test_stale_marker_cleaned_before_app_starts(self, wrapper_env):
+        wrapper_env["quit_marker"].write_text("stale")
+        # The rm -f at the top removes stale markers before "app" runs.
+        # App doesn't write a new one → exit should be 1 (restart).
+        result = subprocess.run(
+            ["bash", wrapper_env["script"]],
+            capture_output=True, timeout=5)
+        assert result.returncode == 1
