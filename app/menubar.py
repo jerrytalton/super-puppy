@@ -2719,6 +2719,7 @@ if __name__ == "__main__":
         print(sys.base_prefix)
         print(f"{libdir}/libpython{ldver}.dylib")
         print(site.getsitepackages()[0])
+        sys.stdout.flush()
         os._exit(0)  # Phase 1 child — exit immediately, don't go through C launcher
     # Rotate log on startup (keep last 1000 lines)
     log_path = "/tmp/local-models-menubar.log"
