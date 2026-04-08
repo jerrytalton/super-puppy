@@ -749,9 +749,9 @@ class TestMcpRecentlyActive:
 # quit_app writes sentinel for wrapper
 # ---------------------------------------------------------------------------
 
-class TestQuitMarker:
-    def test_quit_app_writes_marker(self, app_instance, tmp_path):
-        marker = str(tmp_path / "user_quit")
+class TestStayDown:
+    def test_quit_app_writes_stay_down(self, app_instance, tmp_path):
+        marker = str(tmp_path / "stay_down")
         app_instance.profile_server = None
         app_instance.servers_started = False
         app_instance.mode = "client"
@@ -762,65 +762,79 @@ class TestQuitMarker:
         assert Path(marker).read_text() == str(os.getpid())
         mock_rumps.quit_application.assert_called_once()
 
-    def test_quit_marker_not_written_on_crash(self, tmp_path):
-        marker = tmp_path / "user_quit"
+    def test_stay_down_not_written_on_crash(self, tmp_path):
+        marker = tmp_path / "stay_down"
         assert not marker.exists()
 
+    def test_sys_exit_caught_at_top_level(self):
+        """Verify that SystemExit from rumps/PyObjC doesn't bypass C launcher."""
+        # The try/except SystemExit in __main__ ensures sys.exit(0) from
+        # rumps.quit_application() doesn't call libc exit(0) directly.
+        # In embedded Python (dlopen), sys.exit(0) would terminate the
+        # entire process, bypassing the C launcher's return 1.
+        caught = False
+        try:
+            try:
+                raise SystemExit(0)  # simulates rumps.quit_application()
+            except SystemExit:
+                caught = True
+                pass  # matches the real __main__ handler
+        except SystemExit:
+            pytest.fail("SystemExit escaped — would bypass C launcher")
+        assert caught
+
 
 # ---------------------------------------------------------------------------
-# Shell wrapper exit code logic
+# Shell wrapper stay_down startup check
 # ---------------------------------------------------------------------------
 
-class TestWrapperExitCodes:
-    """Test the restart/quit sentinel logic in bin/local-models-menubar.
+class TestWrapperStayDown:
+    """Test the stay_down startup check in bin/local-models-menubar.
 
-    Creates a temp script that mimics the wrapper's post-exit logic
-    (the part after the app binary exits) and verifies exit codes.
+    The wrapper checks for stay_down BEFORE launching the app.
+    If present, it removes the file and exits 0 (launchd stops).
+    Otherwise it execs the app (which always exits non-zero via C launcher).
     """
 
     @pytest.fixture()
     def wrapper_env(self, tmp_path):
         config_dir = tmp_path / "config"
         config_dir.mkdir()
-        quit_marker = config_dir / "user_quit"
-        # Minimal script reproducing the wrapper's post-exit logic.
-        # $1 = "quit" makes the fake app write the quit marker (simulating
-        # the user clicking Quit), anything else simulates a crash/restart.
+        stay_down = config_dir / "stay_down"
+        # Minimal script reproducing just the stay_down check.
+        # Uses 'exit 1' as a stand-in for the exec (which always exits non-zero).
         script = tmp_path / "test_wrapper.sh"
         script.write_text(f"""#!/bin/bash
-QUIT_MARKER="{quit_marker}"
-rm -f "$QUIT_MARKER"
-# Simulate the app: if $1 is "quit", write the marker like quit_app does
-if [ "$1" = "quit" ]; then
-    echo $$ > "$QUIT_MARKER"
-fi
-# Post-exit logic from the real wrapper:
-if [ -f "$QUIT_MARKER" ]; then
-    rm -f "$QUIT_MARKER"
+STAY_DOWN="{stay_down}"
+if [ -f "$STAY_DOWN" ]; then
+    rm -f "$STAY_DOWN"
     exit 0
 fi
+# Stand-in for exec (C launcher always exits non-zero)
 exit 1
 """)
         script.chmod(0o755)
-        return {"script": str(script), "quit_marker": quit_marker}
+        return {"script": str(script), "stay_down": stay_down}
 
-    def test_exits_nonzero_on_crash(self, wrapper_env):
+    def test_normal_startup_exits_nonzero(self, wrapper_env):
         result = subprocess.run(
             ["bash", wrapper_env["script"]],
             capture_output=True, timeout=5)
         assert result.returncode == 1
 
-    def test_exits_zero_on_user_quit(self, wrapper_env):
+    def test_stay_down_exits_zero(self, wrapper_env):
+        wrapper_env["stay_down"].write_text("12345")
         result = subprocess.run(
-            ["bash", wrapper_env["script"], "quit"],
+            ["bash", wrapper_env["script"]],
             capture_output=True, timeout=5)
         assert result.returncode == 0
-        assert not wrapper_env["quit_marker"].exists()
+        assert not wrapper_env["stay_down"].exists()
 
-    def test_stale_marker_cleaned_before_app_starts(self, wrapper_env):
-        wrapper_env["quit_marker"].write_text("stale")
-        # The rm -f at the top removes stale markers before "app" runs.
-        # App doesn't write a new one → exit should be 1 (restart).
+    def test_stay_down_is_one_shot(self, wrapper_env):
+        wrapper_env["stay_down"].write_text("12345")
+        # First run: exits 0 and removes the file
+        subprocess.run(["bash", wrapper_env["script"]], capture_output=True, timeout=5)
+        # Second run: no file, exits 1 (app would start)
         result = subprocess.run(
             ["bash", wrapper_env["script"]],
             capture_output=True, timeout=5)

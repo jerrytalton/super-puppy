@@ -2657,11 +2657,12 @@ class LocalModelsApp(rumps.App):
                 self.profile_server.wait()
         if self.servers_started and self.mode != "client":
             self.stop_services()
-        # Signal the wrapper that this was an intentional quit (not a crash).
-        # Without this, the wrapper exits non-zero so launchd always restarts.
-        quit_marker = os.path.expanduser("~/.config/local-models/user_quit")
+        # Tell the wrapper to stay down on next restart.  The C launcher
+        # always exits non-zero so launchd will restart us — the wrapper
+        # checks for this file BEFORE launching and exits 0 to stop the cycle.
+        stay_down = os.path.expanduser("~/.config/local-models/stay_down")
         try:
-            with open(quit_marker, "w") as f:
+            with open(stay_down, "w") as f:
                 f.write(str(os.getpid()))
         except Exception:
             pass
@@ -2718,7 +2719,7 @@ if __name__ == "__main__":
         print(sys.base_prefix)
         print(f"{libdir}/libpython{ldver}.dylib")
         print(site.getsitepackages()[0])
-        sys.exit(0)
+        os._exit(0)  # Phase 1 child — exit immediately, don't go through C launcher
     # Rotate log on startup (keep last 1000 lines)
     log_path = "/tmp/local-models-menubar.log"
     try:
@@ -2733,5 +2734,22 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%H:%M:%S")
-    acquire_lock()
-    LocalModelsApp().run()
+    # ── Ensure non-zero exit for launchd ──────────────────────────────
+    # The C launcher returns 1, but NSApplication terminate: calls libc
+    # exit(0) directly from Objective-C, bypassing both Python exceptions
+    # and the C launcher's return.  Three defenses:
+    #
+    # 1. SIGTERM handler: intercept before NSApplication's handler fires
+    # 2. atexit: last-resort hook for any libc exit(0) from ObjC
+    # 3. try/except SystemExit: catch Python-level sys.exit(0)
+    #
+    # os._exit() in _auto_update bypasses all of these (intentional).
+    import atexit
+    atexit.register(lambda: os._exit(1))
+    signal.signal(signal.SIGTERM, lambda *_: os._exit(1))
+
+    try:
+        acquire_lock()
+        LocalModelsApp().run()
+    except SystemExit:
+        pass
