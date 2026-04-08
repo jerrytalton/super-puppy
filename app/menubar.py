@@ -1724,19 +1724,25 @@ class LocalModelsApp(rumps.App):
 
     def _on_webview_message(self, body):
         """Handle messages from the profiles/tools webview."""
-        if isinstance(body, dict) and body.get("action") == "download":
-            self._save_file_from_url(body.get("url", ""), body.get("filename", "download"))
+        try:
+            action = body.get("action") if hasattr(body, "get") else None
+        except Exception:
+            action = None
+        if action == "download":
+            self._save_file_from_url(
+                str(body.get("url", "")), str(body.get("filename", "download")))
             return
         self._update_menu()
 
     def _save_file_from_url(self, url, filename):
         """Download a URL and present a save dialog."""
         import urllib.request
-        from AppKit import NSSavePanel, NSApp
+        from AppKit import NSSavePanel
+        logging.info("Download requested: %s -> %s", url, filename)
         try:
             data = urllib.request.urlopen(url, timeout=10).read()
         except Exception as e:
-            logging.warning("Download failed: %s", e)
+            logging.warning("Download fetch failed for %s: %s", url, e)
             return
         panel = NSSavePanel.savePanel()
         panel.setNameFieldStringValue_(filename)
@@ -2113,14 +2119,20 @@ class LocalModelsApp(rumps.App):
             prefs.setValue_forKey_(False, "mediaCaptureRequiresSecureConnection")
         except Exception:
             pass
-        self._msg_handler = _WebViewMessageHandler.alloc().init()
-        self._msg_handler.on_message = self._on_webview_message
+        msg_handler = _WebViewMessageHandler.alloc().init()
+        msg_handler.on_message = self._on_webview_message
         config.userContentController().addScriptMessageHandler_name_(
-            self._msg_handler, "app")
+            msg_handler, "app")
+        # Keep a strong Python reference so the handler (and its on_message
+        # callback) survives even when another webview is opened later.
+        if not hasattr(self, "_msg_handlers"):
+            self._msg_handlers = []
+        self._msg_handlers.append(msg_handler)
         webview = WKWebView.alloc().initWithFrame_configuration_(
             window.contentView().bounds(), config)
-        self._ui_delegate = _WebViewUIDelegate.alloc().init()
-        webview.setUIDelegate_(self._ui_delegate)
+        ui_delegate = _WebViewUIDelegate.alloc().init()
+        webview.setUIDelegate_(ui_delegate)
+        window._ui_delegate = ui_delegate
         webview.setAutoresizingMask_(0x12)
         full_url = f"http://127.0.0.1:{self.profile_port}{path}"
         url = NSURL.URLWithString_(full_url)
