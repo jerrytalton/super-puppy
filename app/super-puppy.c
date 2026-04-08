@@ -144,7 +144,9 @@ int main(int argc, char *argv[]) {
 
     if (py_fin) py_fin();
 
-    /* PyMem_RawFree is the correct way to free Py_DecodeLocale results,
-       but we're about to exit anyway — OS reclaims all process memory. */
-    return ret;
+    /* Always exit non-zero so launchd's KeepAlive.SuccessfulExit=false
+       restarts the app.  The only way to stay down is the wrapper's
+       stay_down marker (written by quit_app, checked before we run). */
+    (void)ret;
+    return 1;
 }

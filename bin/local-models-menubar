@@ -5,6 +5,18 @@
 # for Cmd-Tab and permission attribution.
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0" || echo "$0")")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
+CONFIG_DIR="$HOME/.config/local-models"
+
+# ── User quit check ───────────────────────────────────────────────
+# The C launcher always exits non-zero so launchd restarts us.
+# quit_app writes stay_down to request a permanent stop.  We check
+# it HERE (at startup, before anything runs) so the exit 0 is
+# guaranteed to reach launchd.
+STAY_DOWN="$CONFIG_DIR/stay_down"
+if [ -f "$STAY_DOWN" ]; then
+    rm -f "$STAY_DOWN"
+    exit 0
+fi
 
 # ── Pre-Python rollback check ──────────────────────────────────────
 # Catches import-level crashes that kill Python before the in-app
@@ -17,7 +29,6 @@ REPO_DIR="$(dirname "$SCRIPT_DIR")"
 #   does NOT → create launch_attempted, proceed normally.
 # Second launch (new code crashed): BOTH exist → roll back.
 # App survives 90s: Python clears both markers.
-CONFIG_DIR="$HOME/.config/local-models"
 UPDATE_STARTED="$CONFIG_DIR/update_started"
 UPDATE_PRE_HASH="$CONFIG_DIR/update_pre_hash"
 UPDATE_SKIPPED="$CONFIG_DIR/update_skipped"
@@ -60,15 +71,4 @@ if [ -f "$UPDATE_STARTED" ]; then
     fi
 fi
 
-QUIT_MARKER="$CONFIG_DIR/user_quit"
-rm -f "$QUIT_MARKER"
-
-"$REPO_DIR/app/SuperPuppy.app/Contents/MacOS/super-puppy"
-
-# If the user explicitly chose Quit, honour it — exit 0 so launchd stops.
-# Otherwise always exit non-zero so KeepAlive.SuccessfulExit=false restarts.
-if [ -f "$QUIT_MARKER" ]; then
-    rm -f "$QUIT_MARKER"
-    exit 0
-fi
-exit 1
+exec "$REPO_DIR/app/SuperPuppy.app/Contents/MacOS/super-puppy"
