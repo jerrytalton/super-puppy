@@ -34,14 +34,14 @@ body {
   padding-top: env(safe-area-inset-top, 24px);
 }
 
-/* ── Nav (iOS only) ── */
+/* ── Nav (iOS / standalone) ── */
 nav {
   display: none; gap: 4px; margin-bottom: 24px;
   border-bottom: 1px solid var(--border); padding-bottom: 12px;
 }
-nav ~ .stats { margin-top: 8px; }
-@media (max-width: 600px) { nav { display: flex; } nav ~ .stats { margin-top: 0; } }
-@media (display-mode: standalone) { nav { display: flex; } nav ~ .stats { margin-top: 0; } }
+nav ~ .period-bar { margin-top: 8px; }
+@media (max-width: 600px) { nav { display: flex; } nav ~ .period-bar { margin-top: 0; } }
+@media (display-mode: standalone) { nav { display: flex; } nav ~ .period-bar { margin-top: 0; } }
 nav a {
   padding: 6px 16px; border-radius: 20px; text-decoration: none;
   color: var(--text2); font-size: 13px; font-weight: 500;
@@ -49,6 +49,18 @@ nav a {
 }
 nav a:hover { color: var(--text); background: var(--surface2); }
 nav a.active { color: #fff; background: var(--accent); }
+
+/* ── Period selector ── */
+.period-bar {
+  display: flex; gap: 4px; margin-bottom: 20px;
+}
+.period-btn {
+  padding: 6px 16px; border-radius: 20px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text2); font-size: 13px;
+  font-weight: 500; cursor: pointer; transition: all 0.15s;
+}
+.period-btn:hover { color: var(--text); border-color: var(--text3); }
+.period-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 
 /* ── Stats row ── */
 .stats {
@@ -61,13 +73,16 @@ nav a.active { color: #fff; background: var(--accent); }
 }
 .stat-value { font-size: 28px; font-weight: 700; line-height: 1.1; }
 .stat-label { font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
+.stat-value.has-errors { color: var(--red); }
 
-/* ── Active requests ── */
+/* ── Section titles ── */
 .section-title {
   font-size: 13px; font-weight: 600; color: var(--text2);
   text-transform: uppercase; letter-spacing: 0.5px;
   margin-bottom: 12px;
 }
+
+/* ── Active requests ── */
 .active-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 24px; }
 .active-card {
   background: var(--surface); border: 1px solid var(--border);
@@ -92,25 +107,28 @@ nav a.active { color: #fff; background: var(--accent); }
   border-radius: var(--rs); margin-bottom: 24px;
 }
 
-/* ── History table ── */
-.history-table {
-  width: 100%; border-collapse: collapse;
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--rs); overflow: hidden;
+/* ── Tool breakdown ── */
+.tool-bars { margin-bottom: 24px; }
+.tool-row {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
 }
-.history-table th {
-  text-align: left; padding: 8px 12px; font-size: 11px;
-  color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px;
-  border-bottom: 1px solid var(--border); background: var(--surface2);
+.tool-name { width: 100px; font-size: 12px; color: var(--text2); text-align: right; }
+.tool-bar-wrap {
+  flex: 1; height: 20px; background: var(--surface2);
+  border-radius: 4px; overflow: hidden;
 }
-.history-table td {
-  padding: 8px 12px; font-size: 13px;
-  border-bottom: 1px solid var(--border);
+.tool-bar {
+  height: 100%; background: var(--accent); border-radius: 4px;
+  transition: width 0.4s ease; min-width: 2px;
 }
-.history-table tr:last-child td { border-bottom: none; }
-.history-table .dur { font-variant-numeric: tabular-nums; text-align: right; }
-.history-table .status-ok { color: var(--green); }
-.history-table .status-error { color: var(--red); }
+.tool-meta {
+  width: 160px; font-size: 12px; color: var(--text2);
+  font-variant-numeric: tabular-nums; display: flex; gap: 8px;
+}
+.tool-meta .count { min-width: 50px; }
+.tool-meta .avg { color: var(--text3); }
+
+/* ── Backend tags ── */
 .backend-tag {
   display: inline-block; padding: 2px 8px; border-radius: 10px;
   font-size: 11px; font-weight: 600;
@@ -121,22 +139,59 @@ nav a.active { color: #fff; background: var(--accent); }
   .backend-ollama { background: #1b3a1e; color: #66bb6a; }
   .backend-mlx { background: #0d2744; color: #42a5f5; }
 }
+.source-tag {
+  display: inline-block; padding: 2px 8px; border-radius: 10px;
+  font-size: 11px; font-weight: 600;
+  background: var(--surface2); color: var(--text3);
+}
+.source-mcp { background: #f3e8fd; color: #7c3aed; }
+.source-playground { background: #fef3c7; color: #b45309; }
+@media (prefers-color-scheme: dark) {
+  .source-mcp { background: #2d1b4e; color: #a78bfa; }
+  .source-playground { background: #3d2c0a; color: #fbbf24; }
+}
 
-/* ── Tool breakdown ── */
-.tool-bars { margin-bottom: 24px; }
-.tool-row {
-  display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+/* ── History table ── */
+.history-wrap { overflow-x: auto; margin-bottom: 8px; }
+.history-table {
+  width: 100%; border-collapse: collapse;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--rs); overflow: hidden;
+  table-layout: fixed;
 }
-.tool-name { width: 120px; font-size: 12px; color: var(--text2); text-align: right; }
-.tool-bar-wrap {
-  flex: 1; height: 20px; background: var(--surface2);
-  border-radius: 4px; overflow: hidden;
+.history-table th {
+  text-align: left; padding: 8px 12px; font-size: 11px;
+  color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border); background: var(--surface2);
 }
-.tool-bar {
-  height: 100%; background: var(--accent); border-radius: 4px;
-  transition: width 0.4s ease; min-width: 2px;
+.history-table td {
+  padding: 8px 12px; font-size: 13px;
+  border-bottom: 1px solid var(--border);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.tool-count { width: 40px; font-size: 12px; color: var(--text2); font-variant-numeric: tabular-nums; }
+.history-table tr:last-child td { border-bottom: none; }
+.history-table .dur { font-variant-numeric: tabular-nums; text-align: right; }
+.history-table .status-ok { color: var(--green); }
+.history-table .status-error { color: var(--red); cursor: help; }
+.history-table .col-tool { width: 14%; }
+.history-table .col-model { width: 30%; }
+.history-table .col-backend { width: 16%; }
+.history-table .col-status { width: 8%; }
+.history-table .col-dur { width: 16%; }
+.history-table .col-when { width: 16%; }
+.show-more-btn {
+  display: block; width: 100%; padding: 10px; border: 1px solid var(--border);
+  border-radius: var(--rs); background: var(--surface); color: var(--text2);
+  font-size: 13px; cursor: pointer; text-align: center; transition: all 0.15s;
+}
+.show-more-btn:hover { color: var(--text); border-color: var(--text3); }
+
+@media (max-width: 600px) {
+  body { padding: 16px; }
+  .tool-meta { width: 120px; }
+  .tool-meta .avg { display: none; }
+  .history-table .col-backend { display: none; }
+}
 </style>
 </head>
 <body>
@@ -147,11 +202,17 @@ nav a.active { color: #fff; background: var(--accent); }
   <a href="/activity" class="active">Activity</a>
 </nav>
 
+<div class="period-bar" id="period-bar">
+  <button class="period-btn" data-period="3600">1h</button>
+  <button class="period-btn active" data-period="86400">24h</button>
+  <button class="period-btn" data-period="604800">7d</button>
+  <button class="period-btn" data-period="2592000">30d</button>
+</div>
+
 <div class="stats" id="stats">
-  <div class="stat"><div class="stat-value" id="s-active">0</div><div class="stat-label">Active</div></div>
-  <div class="stat"><div class="stat-value" id="s-total">0</div><div class="stat-label">Total Requests</div></div>
-  <div class="stat"><div class="stat-value" id="s-avg">--</div><div class="stat-label">Avg Duration</div></div>
-  <div class="stat"><div class="stat-value" id="s-uptime">--</div><div class="stat-label">Server Uptime</div></div>
+  <div class="stat"><div class="stat-value" id="s-requests">0</div><div class="stat-label">Requests</div></div>
+  <div class="stat"><div class="stat-value" id="s-errors">0</div><div class="stat-label">Errors</div></div>
+  <div class="stat"><div class="stat-value" id="s-uptime">--</div><div class="stat-label">Uptime</div></div>
 </div>
 
 <div class="section-title">Active Requests</div>
@@ -162,15 +223,24 @@ nav a.active { color: #fff; background: var(--accent); }
 <div class="section-title">Tool Breakdown</div>
 <div class="tool-bars" id="tool-bars"></div>
 
-<div class="section-title">Recent History</div>
+<div class="section-title">Request Log</div>
+<div class="history-wrap">
 <table class="history-table">
-  <thead><tr><th>Tool</th><th>Model</th><th>Backend</th><th>Status</th><th class="dur">Duration</th><th>When</th></tr></thead>
+  <thead><tr>
+    <th class="col-tool">Tool</th><th class="col-model">Model</th><th class="col-backend">Backend</th>
+    <th class="col-status"></th><th class="col-dur dur">Duration</th><th class="col-when">When</th>
+  </tr></thead>
   <tbody id="history-body"><tr><td colspan="6" style="text-align:center;color:var(--text3)">Waiting for data...</td></tr></tbody>
 </table>
+</div>
+<button class="show-more-btn" id="show-more" style="display:none"></button>
 
 <script>
 const POLL_MS = 2000;
+const PAGE_SIZE = 25;
 let lastData = null;
+let currentPeriod = 86400;
+let historyVisible = PAGE_SIZE;
 let _authToken = '';
 
 (function() {
@@ -192,6 +262,17 @@ function _authHeaders(opts = {}) {
   return {...opts, headers: h};
 }
 
+// Period selector
+document.getElementById('period-bar').addEventListener('click', e => {
+  const btn = e.target.closest('.period-btn');
+  if (!btn) return;
+  document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  currentPeriod = parseInt(btn.dataset.period);
+  historyVisible = PAGE_SIZE;
+  poll();
+});
+
 function fmtDuration(ms) {
   if (ms < 1000) return ms + 'ms';
   if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
@@ -210,11 +291,15 @@ function fmtAgo(ts) {
   const ago = (Date.now() / 1000) - ts;
   if (ago < 60) return Math.floor(ago) + 's ago';
   if (ago < 3600) return Math.floor(ago / 60) + 'm ago';
-  return Math.floor(ago / 3600) + 'h ago';
+  if (ago < 86400) return Math.floor(ago / 3600) + 'h ago';
+  return Math.floor(ago / 86400) + 'd ago';
 }
 
-function parseDesc(desc) {
-  const parts = desc.split(':');
+function parseActive(r) {
+  // MCP active requests use "description" field (tool:model format)
+  // Playground active requests use separate tool/model fields
+  if (r.tool) return { tool: r.tool, model: r.model };
+  const parts = (r.description || '').split(':');
   return { tool: parts[0] || '', model: parts.slice(1).join(':') || '' };
 }
 
@@ -222,15 +307,11 @@ function render(data) {
   lastData = data;
 
   // Stats
-  const totalReqs = Object.values(data.stats).reduce((a, b) => a + b, 0);
-  document.getElementById('s-active').textContent = data.active.length;
-  document.getElementById('s-total').textContent = totalReqs;
+  document.getElementById('s-requests').textContent = data.total;
+  const errEl = document.getElementById('s-errors');
+  errEl.textContent = data.errors;
+  errEl.classList.toggle('has-errors', data.errors > 0);
   document.getElementById('s-uptime').textContent = fmtUptime(data.server_uptime_s);
-
-  if (data.history.length > 0) {
-    const avg = data.history.reduce((a, r) => a + r.duration_ms, 0) / data.history.length;
-    document.getElementById('s-avg').textContent = fmtDuration(Math.round(avg));
-  }
 
   // Active requests
   const activeEl = document.getElementById('active-list');
@@ -238,60 +319,85 @@ function render(data) {
     activeEl.innerHTML = '<div class="empty-state">No active requests</div>';
   } else {
     activeEl.innerHTML = data.active.map(r => {
-      const p = parseDesc(r.description);
+      const p = parseActive(r);
       const color = r.backend === 'ollama' ? 'var(--green)' : 'var(--accent)';
+      const src = r.source === 'playground' ? 'playground' : 'mcp';
       return `<div class="active-card">
         <div class="active-dot" style="background:${color}"></div>
         <div class="active-info">
-          <div class="active-desc">${p.tool}</div>
-          <div class="active-meta">${p.model} <span class="backend-tag backend-${r.backend}">${r.backend}</span></div>
+          <div class="active-desc">${esc(p.tool)}</div>
+          <div class="active-meta">${esc(p.model)} <span class="backend-tag backend-${r.backend}">${r.backend}</span> <span class="source-tag source-${src}">${src}</span></div>
         </div>
         <div class="active-elapsed">${fmtDuration(r.elapsed_ms)}</div>
       </div>`;
     }).join('');
   }
 
-  // Tool breakdown bars
+  // Tool breakdown
   const toolBars = document.getElementById('tool-bars');
-  const entries = Object.entries(data.stats).sort((a, b) => b[1] - a[1]);
-  const maxCount = entries.length > 0 ? entries[0][1] : 1;
-  if (entries.length === 0) {
+  const stats = data.tool_stats || [];
+  if (stats.length === 0) {
     toolBars.innerHTML = '<div class="empty-state" style="padding:16px">No requests yet</div>';
   } else {
-    toolBars.innerHTML = entries.map(([tool, count]) => {
-      const pct = (count / maxCount) * 100;
+    const maxCount = stats[0].count;
+    toolBars.innerHTML = stats.map(s => {
+      const pct = (s.count / maxCount) * 100;
       return `<div class="tool-row">
-        <div class="tool-name">${tool}</div>
+        <div class="tool-name">${esc(s.tool)}</div>
         <div class="tool-bar-wrap"><div class="tool-bar" style="width:${pct}%"></div></div>
-        <div class="tool-count">${count}</div>
+        <div class="tool-meta">
+          <span class="count">${s.count} req${s.count !== 1 ? 's' : ''}</span>
+          <span class="avg">avg ${fmtDuration(s.avg_ms)}</span>
+        </div>
       </div>`;
     }).join('');
   }
 
-  // History table (newest first)
+  // History table (paged)
+  renderHistory(data.history);
+}
+
+function renderHistory(history) {
   const tbody = document.getElementById('history-body');
-  if (data.history.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text3)">No completed requests yet</td></tr>';
-  } else {
-    tbody.innerHTML = data.history.slice().reverse().map(r => {
-      const p = parseDesc(r.description);
-      const statusCls = r.status === 'ok' ? 'status-ok' : 'status-error';
-      const statusIcon = r.status === 'ok' ? '\u2713' : '\u2717';
-      return `<tr>
-        <td>${p.tool}</td>
-        <td>${p.model}</td>
-        <td><span class="backend-tag backend-${r.backend}">${r.backend}</span></td>
-        <td class="${statusCls}">${statusIcon}</td>
-        <td class="dur">${fmtDuration(r.duration_ms)}</td>
-        <td>${fmtAgo(r.completed_at)}</td>
-      </tr>`;
-    }).join('');
+  const showMore = document.getElementById('show-more');
+  if (!history || history.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text3)">No requests in this period</td></tr>';
+    showMore.style.display = 'none';
+    return;
   }
+  const visible = history.slice(0, historyVisible);
+  tbody.innerHTML = visible.map(r => {
+    const statusCls = r.status === 'ok' ? 'status-ok' : 'status-error';
+    const statusIcon = r.status === 'ok' ? '\u2713' : '\u2717';
+    const title = r.error_msg ? ` title="${esc(r.error_msg)}"` : '';
+    return `<tr>
+      <td>${esc(r.tool)}</td>
+      <td title="${esc(r.model)}">${esc(r.model)}</td>
+      <td><span class="backend-tag backend-${r.backend}">${r.backend}</span></td>
+      <td class="${statusCls}"${title}>${statusIcon}</td>
+      <td class="dur">${fmtDuration(r.duration_ms)}</td>
+      <td>${fmtAgo(r.completed_at)}</td>
+    </tr>`;
+  }).join('');
+  const remaining = history.length - historyVisible;
+  if (remaining > 0) {
+    showMore.textContent = `Show more (${remaining} remaining)`;
+    showMore.style.display = 'block';
+  } else {
+    showMore.style.display = 'none';
+  }
+}
+
+function esc(s) {
+  if (!s) return '';
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
 }
 
 async function poll() {
   try {
-    const resp = await fetch('/api/activity', _authHeaders());
+    const resp = await fetch(`/api/activity?period=${currentPeriod}`, _authHeaders());
     if (resp.ok) render(await resp.json());
   } catch {}
 }
@@ -307,6 +413,11 @@ setInterval(() => {
     }
   });
 }, 1000);
+
+document.getElementById('show-more').addEventListener('click', () => {
+  historyVisible += PAGE_SIZE;
+  if (lastData) renderHistory(lastData.history || []);
+});
 
 poll();
 setInterval(poll, POLL_MS);

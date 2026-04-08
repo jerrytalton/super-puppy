@@ -18,6 +18,7 @@ PROFILES_FILE = CONFIG_DIR / "profiles.json"
 MCP_PREFS_FILE = CONFIG_DIR / "mcp_preferences.json"
 MODEL_PREFS_FILE = CONFIG_DIR / "model_preferences.json"
 NETWORK_CONF = CONFIG_DIR / "network.conf"
+ACTIVITY_DB = CONFIG_DIR / "activity.db"
 MLX_SERVER_CONFIG = Path("~/.config/mlx-server/config.yaml").expanduser()
 CLAUDE_CONFIG_FILE = Path("~/.claude.json").expanduser()
 

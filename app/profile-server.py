@@ -27,6 +27,7 @@ import yaml
 from flask import (Flask, Response, after_this_request, jsonify, request,
                      send_file, send_from_directory)
 
+from lib import activity
 from lib.models import (
     ALWAYS_EXCLUDE,
     KNOWN_ACTIVE_PARAMS,
@@ -821,14 +822,27 @@ def tools_page():
 def _track_playground(tool, model, backend):
     """Track what the playground is currently doing so /api/gpu can report it."""
     tid = threading.get_ident()
+    started = time.time()
     with _playground_lock:
         _playground_active[tid] = {"tool": tool, "model": model, "backend": backend,
-                                   "started": time.time()}
+                                   "started": started}
+    error = None
     try:
         yield
+    except Exception as e:
+        error = e
+        raise
     finally:
         with _playground_lock:
             _playground_active.pop(tid, None)
+        completed_at = time.time()
+        activity.log_request(
+            tool=tool, model=model, backend=backend, source="playground",
+            status="error" if error else "ok",
+            duration_ms=int((completed_at - started) * 1000),
+            started_at=started, completed_at=completed_at,
+            error_msg=str(error) if error else None,
+        )
 
 
 def _pick_model_for_task(task):
@@ -1482,7 +1496,8 @@ def api_test_image():
     path = request.args.get("path", "")
     if not path or not _is_safe_test_path(path) or not Path(path).exists():
         return "Not found", 404
-    return send_file(path)
+    as_download = "download" in request.args
+    return send_file(path, as_attachment=as_download, download_name=Path(path).name if as_download else None)
 
 
 @app.route("/api/test/audio")
@@ -1490,7 +1505,9 @@ def api_test_audio():
     path = request.args.get("path", "")
     if not path or not _is_safe_test_path(path) or not Path(path).exists():
         return "Not found", 404
-    return send_file(path, mimetype="audio/wav")
+    as_download = "download" in request.args
+    return send_file(path, mimetype="audio/wav", as_attachment=as_download,
+                     download_name=Path(path).name if as_download else None)
 
 
 MCP_PORT = int(os.environ.get("MCP_PORT", "8100"))
@@ -1526,28 +1543,43 @@ def api_gpu():
 
 @app.route("/api/activity")
 def api_activity():
-    """Proxy the MCP server's /activity endpoint for the dashboard."""
+    """Activity dashboard: persistent history + live active requests."""
     proxied = _proxy_to_desktop("/api/activity", method="GET")
     if proxied is not None:
         return proxied
-    try:
-        resp = requests.get(f"http://127.0.0.1:{MCP_PORT}/activity", timeout=3)
-        data = resp.json()
-    except Exception:
-        data = {"active": [], "history": [], "stats": {}, "server_uptime_s": 0}
 
-    # Merge playground activity into active list
+    period = int(request.args.get("period", 86400))
+    db_data = activity.query_activity(period)
+
+    # Live active requests from MCP server
+    active = []
+    server_uptime_s = 0
+    try:
+        resp = requests.get(f"http://127.0.0.1:{MCP_PORT}/activity?period=1", timeout=3)
+        mcp_data = resp.json()
+        active = mcp_data.get("active", [])
+        server_uptime_s = mcp_data.get("server_uptime_s", 0)
+    except Exception:
+        pass
+
+    # Merge playground in-flight requests
     now = time.time()
     with _playground_lock:
         for task in _playground_active.values():
-            data["active"].append({
-                "description": f"playground:{task['tool']}:{task['model']}",
+            active.append({
+                "tool": task["tool"],
+                "model": task["model"],
                 "backend": task["backend"],
                 "started": task["started"],
                 "elapsed_ms": int((now - task["started"]) * 1000),
                 "source": "playground",
             })
-    return jsonify(data)
+
+    return jsonify({
+        "active": active,
+        "server_uptime_s": server_uptime_s,
+        **db_data,
+    })
 
 
 @app.route("/activity")
@@ -1585,6 +1617,7 @@ def pwa_assets(filename):
 
 if __name__ == "__main__":
     validate_network_conf(logger=logging.getLogger())
+    activity.init_db()
     threading.Thread(target=_idle_watcher, daemon=True).start()
 
     import socket
