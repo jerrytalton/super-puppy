@@ -202,14 +202,13 @@ function downloadFile(url, filename) {
   if (window.webkit?.messageHandlers?.app) {
     window.webkit.messageHandlers.app.postMessage({action: 'download', url: location.origin + url, filename});
   } else {
-    fetch(url).then(r => r.blob()).then(blob => {
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = filename || 'download';
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 100);
-    });
+    const dlUrl = url + (url.includes('?') ? '&' : '?') + 'download';
+    const a = document.createElement('a');
+    a.href = dlUrl;
+    a.download = filename || 'download';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
   }
 }
 
