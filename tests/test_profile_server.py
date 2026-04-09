@@ -345,7 +345,7 @@ class TestRoutes:
         resp = client.post("/api/profiles/nonexistent/activate")
         assert resp.status_code == 404
 
-    def test_api_profiles_activate_prunes_stale(self, client, profiles_dir):
+    def test_api_profiles_activate_reports_missing_ollama(self, client, profiles_dir):
         ps.save_profiles({
             "version": ps.PROFILES_VERSION,
             "active": None,
@@ -355,8 +355,8 @@ class TestRoutes:
         with patch.object(ps, "get_all_models", return_value=FAKE_MODELS):
             resp = client.post("/api/profiles/test/activate")
         data = resp.get_json()
-        assert len(data["warnings"]) > 0
-        assert "gone-model" in data["warnings"][0]
+        missing_names = [m["name"] for m in data["missing"]]
+        assert "gone-model:7b" in missing_names
 
     def test_api_test_unknown_tool(self, client):
         resp = client.post("/api/test", json={"tool": "nonexistent"})

@@ -456,7 +456,7 @@ def get_eligible_tasks(name, model_info):
 
 # ── Profiles ─────────────────────────────────────────────────────────
 
-PROFILES_VERSION = 17  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 18  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -468,19 +468,18 @@ DEFAULT_PROFILES = {
             "max_ram_gb": 512,
             "tasks": {
                 "code": "qwen3-coder-next:latest",
-                "general": "qwen3.5-fast",
+                "general": "qwen3.5:35b",
                 "reasoning": "nemotron-super",
                 "long_context": "nemotron-super",
-                "translation": "qwen3.5-fast",
-                "vision": "qwen3.5-large",
-                "image_gen": "x/z-image-turbo:latest",
+                "translation": "qwen3.5:35b",
+                "vision": "qwen3.5:122b",
+                "image_gen": "x/z-image-turbo:bf16",
                 "image_edit": "black-forest-labs/FLUX.1-Kontext-dev",
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
-                "embedding": "all-minilm:latest",
+                "embedding": "mxbai-embed-large:latest",
                 "unfiltered": "dolphin3:8b",
-                "computer_use": "avil/ui-tars:latest",
-
+                "computer_use": "ui-tars-72b",
             },
         },
         "desktop": {
@@ -488,19 +487,18 @@ DEFAULT_PROFILES = {
             "description": "Fits in 64GB",
             "max_ram_gb": 64,
             "tasks": {
-                "code": "qwen3.5-fast",
-                "general": "qwen3.5-fast",
-                "reasoning": "qwen3.5-fast",
-                "long_context": "qwen3.5:9b",
-                "translation": "qwen3.5-fast",
-                "vision": "qwen3.5:9b",
+                "code": "qwen3.5:35b",
+                "general": "qwen3.5:35b",
+                "reasoning": "qwen3.5:35b",
+                "long_context": "qwen3.5:35b",
+                "translation": "qwen3.5:35b",
+                "vision": "qwen3.5:35b",
                 "image_gen": "x/flux2-klein:latest",
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
-                "embedding": "all-minilm:latest",
+                "embedding": "mxbai-embed-large:latest",
                 "unfiltered": "dolphin3:8b",
                 "computer_use": "maternion/fara:7b",
-
             },
         },
         "maximum": {
@@ -520,8 +518,7 @@ DEFAULT_PROFILES = {
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
                 "embedding": "mxbai-embed-large:latest",
                 "unfiltered": "dolphin3:8b",
-                "computer_use": "avil/ui-tars:latest",
-
+                "computer_use": "ui-tars-72b",
             },
         },
         "laptop": {
@@ -529,11 +526,11 @@ DEFAULT_PROFILES = {
             "description": "Fits in 32GB",
             "max_ram_gb": 32,
             "tasks": {
-                "code": "qwen3.5-small",
-                "general": "qwen3.5-small",
-                "reasoning": "qwen3.5-small",
-                "long_context": "qwen3.5-small",
-                "translation": "qwen3.5-small",
+                "code": "qwen3.5:9b",
+                "general": "qwen3.5:9b",
+                "reasoning": "qwen3.5:9b",
+                "long_context": "qwen3.5:9b",
+                "translation": "qwen3.5:9b",
                 "vision": "qwen3.5:9b",
                 "image_gen": "x/flux2-klein:latest",
                 "transcription": "whisper-v3",
@@ -541,7 +538,6 @@ DEFAULT_PROFILES = {
                 "embedding": "all-minilm:latest",
                 "unfiltered": "dolphin3:8b",
                 "computer_use": "maternion/fara:7b",
-
             },
         },
     },
@@ -607,7 +603,7 @@ def _check_auth():
         return
 
     # Static HTML pages don't require auth (they bootstrap the token)
-    if request.path in ("/", "/profiles", "/tools", "/activity", "/manifest.json", "/sw.js") \
+    if request.path in ("/", "/profiles", "/tools", "/activity", "/diagnostics", "/manifest.json", "/sw.js") \
             or request.path.startswith("/pwa/"):
         return
 
@@ -673,7 +669,13 @@ def api_tasks():
 
 @app.route("/api/profiles", methods=["GET"])
 def api_profiles_get():
-    return jsonify(load_profiles())
+    data = load_profiles()
+    # Check all referenced models — profile tasks AND MCP preference fallbacks
+    prefs = load_default_prefs()
+    missing, _ = _check_missing_models(prefs)
+    if missing:
+        data["missing"] = _resolve_model_sizes(missing)
+    return jsonify(data)
 
 
 @app.route("/api/profiles", methods=["POST"])
@@ -708,9 +710,88 @@ def api_profiles_delete(name):
     return jsonify({"ok": True})
 
 
+def _check_missing_models(prefs):
+    """Check prefs for models not available in any backend.
+
+    Returns (missing_ollama, stale_warnings) where missing_ollama is a list
+    of Ollama model names that could be pulled, and stale_warnings is a list
+    of descriptive strings for non-Ollama references that can't be resolved.
+    """
+    models = get_all_models()
+    missing_ollama = []
+    stale_warnings = []
+    if not models:
+        return missing_ollama, stale_warnings
+
+    def _model_exists(name):
+        return name in models or any(n.startswith(name + ":") for n in models)
+
+    seen = set()
+    for task, candidates in prefs.items():
+        if task == "thinking" or not isinstance(candidates, list):
+            continue
+        for c in candidates:
+            if not _model_exists(c) and c not in seen:
+                seen.add(c)
+                if "/" not in c:  # Ollama name (no HF org prefix)
+                    missing_ollama.append(c)
+                else:
+                    stale_warnings.append(f"{task}: {c}")
+    return missing_ollama, stale_warnings
+
+
+def _resolve_model_sizes(model_names):
+    """Get download sizes for Ollama models via local API or registry.
+
+    Returns a list of {name, size_gb} dicts. size_gb is null if unknown.
+    """
+    result = []
+    for name in model_names:
+        size_gb = _get_ollama_model_size(name)
+        result.append({"name": name, "size_gb": size_gb})
+    return result
+
+
+def _get_ollama_model_size(name):
+    """Resolve model size in GB. Tries local API first, then registry."""
+    # Try local /api/show (works for installed models with cached manifests)
+    try:
+        info = ollama_post("/api/show", {"name": name})
+        if info and "size" in info:
+            return round(info["size"] / 1e9, 1)
+    except Exception:
+        pass
+    # Try Ollama registry manifest (works for any published model)
+    try:
+        parts = name.split(":")
+        model = parts[0]
+        tag = parts[1] if len(parts) > 1 else "latest"
+        # Handle namespaced models (e.g. "avil/ui-tars")
+        if "/" in model:
+            org, repo = model.split("/", 1)
+            manifest_url = f"https://registry.ollama.ai/v2/{org}/{repo}/manifests/{tag}"
+        else:
+            manifest_url = f"https://registry.ollama.ai/v2/library/{model}/manifests/{tag}"
+        resp = requests.get(manifest_url,
+                            headers={"Accept": "application/vnd.docker.distribution.manifest.v2+json"},
+                            timeout=5)
+        if resp.ok:
+            data = resp.json()
+            total = sum(layer.get("size", 0) for layer in data.get("layers", []))
+            if total > 0:
+                return round(total / 1e9, 1)
+    except Exception:
+        pass
+    return None
+
+
 @app.route("/api/profiles/<name>/activate", methods=["POST"])
 def api_profiles_activate(name):
-    """Save preferences only. Does not touch running models."""
+    """Save preferences only. Does not touch running models.
+
+    Returns missing Ollama models (pullable) separately from truly stale
+    references so the UI can offer to download them.
+    """
     data = load_profiles()
     profile = data["profiles"].get(name)
     if not profile:
@@ -724,29 +805,55 @@ def api_profiles_activate(name):
     if profile.get("thinking"):
         current.setdefault("thinking", {}).update(profile["thinking"])
 
-    # Prune model references that don't exist in any backend
-    # Skip pruning if no models discovered — backends probably aren't up yet
-    models = get_all_models()
-    stale_warnings = []
-    if models:
-        def _model_exists(name):
-            return name in models or any(n.startswith(name + ":") for n in models)
-
-        for task, candidates in list(current.items()):
-            if task == "thinking" or not isinstance(candidates, list):
-                continue
-            alive = [c for c in candidates if _model_exists(c)]
-            pruned = [c for c in candidates if not _model_exists(c)]
-            if pruned:
-                stale_warnings.append(f"{task}: {', '.join(pruned)}")
-            current[task] = alive
+    missing_ollama, stale_warnings = _check_missing_models(current)
 
     save_mcp_prefs(current)
 
     data["active"] = name
     save_profiles(data)
 
-    return jsonify({"ok": True, "warnings": stale_warnings})
+    return jsonify({
+        "ok": True,
+        "warnings": stale_warnings,
+        "missing": _resolve_model_sizes(missing_ollama),
+    })
+
+
+@app.route("/api/models/pull", methods=["POST"])
+def api_models_pull():
+    """Pull one or more Ollama models, streaming progress as SSE."""
+    body = request.get_json(silent=True) or {}
+    model_names = body.get("models", [])
+    if not model_names:
+        return jsonify({"error": "No models specified"}), 400
+
+    def stream():
+        for i, name in enumerate(model_names):
+            yield f"data: {json.dumps({'model': name, 'index': i, 'total': len(model_names), 'status': 'pulling'})}\n\n"
+            try:
+                resp = requests.post(
+                    f"{OLLAMA_URL}/api/pull",
+                    json={"name": name, "stream": True},
+                    stream=True, timeout=3600)
+                for line in resp.iter_lines():
+                    if not line:
+                        continue
+                    try:
+                        chunk = json.loads(line)
+                        chunk["model"] = name
+                        chunk["index"] = i
+                        chunk["total"] = len(model_names)
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                    except json.JSONDecodeError:
+                        pass
+            except Exception as e:
+                yield f"data: {json.dumps({'model': name, 'index': i, 'total': len(model_names), 'status': 'error', 'error': str(e)})}\n\n"
+        # Refresh model cache after pulling
+        get_all_models(force_refresh=True)
+        yield f"data: {json.dumps({'status': 'done'})}\n\n"
+
+    return Response(stream(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.route("/api/profiles/<name>/warm", methods=["POST"])
@@ -1585,6 +1692,84 @@ def api_activity():
 @app.route("/activity")
 def activity_page():
     return send_file(os.path.join(SCRIPT_DIR, "activity.html"))
+
+
+@app.route("/diagnostics")
+def diagnostics_page():
+    return send_file(os.path.join(SCRIPT_DIR, "diagnostics.html"))
+
+
+@app.route("/api/diagnostics")
+def api_diagnostics():
+    """Return diagnostic info for the diagnostics pane."""
+    info = get_system_info()
+    try:
+        info["chip"] = subprocess.check_output(
+            ["sysctl", "-n", "machdep.cpu.brand_string"], text=True, timeout=2).strip()
+    except Exception:
+        info["chip"] = "unknown"
+    try:
+        info["macos_version"] = subprocess.check_output(
+            ["sw_vers", "-productVersion"], text=True, timeout=2).strip()
+    except Exception:
+        info["macos_version"] = "unknown"
+    models = get_all_models()
+    ollama_models = [n for n, m in models.items() if m.get("backend") == "ollama"]
+    mlx_models = [n for n, m in models.items() if m.get("backend") == "mlx"]
+
+    # Service health
+    ollama_up = bool(ollama_get("/api/tags"))
+    mlx_up = False
+    try:
+        resp = requests.get("http://127.0.0.1:8000/v1/models", timeout=2)
+        mlx_up = resp.ok
+    except Exception:
+        pass
+    mcp_up = False
+    try:
+        resp = requests.get(f"http://127.0.0.1:{MCP_PORT}/activity", timeout=2)
+        mcp_up = resp.ok
+    except Exception:
+        pass
+
+    # Network config
+    from lib.models import NETWORK_CONF
+    net_conf = {}
+    if NETWORK_CONF.exists():
+        for line in NETWORK_CONF.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                net_conf[k.strip()] = v.strip().strip('"')
+
+    # Recent log lines
+    log_lines = []
+    try:
+        with open("/tmp/local-models-menubar.log", encoding="utf-8", errors="replace") as f:
+            log_lines = [l.rstrip() for l in f.readlines()[-30:]]
+    except Exception:
+        pass
+
+    # Active profile
+    profiles = load_profiles()
+
+    return jsonify({
+        "system": info,
+        "services": {
+            "ollama": ollama_up,
+            "mlx": mlx_up,
+            "mcp": mcp_up,
+        },
+        "models": {
+            "ollama": len(ollama_models),
+            "mlx": len(mlx_models),
+            "total": len(models),
+        },
+        "network": net_conf,
+        "profile": profiles.get("active", ""),
+        "version": profiles.get("version", 0),
+        "log": log_lines,
+    })
 
 
 # ── PWA assets ───────────────────────────────────────────────────────

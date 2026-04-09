@@ -229,7 +229,7 @@ class TestActivationPruning:
              patch.object(ps, "MCP_PREFS_FILE", mf):
             yield tmp_path
 
-    def test_prunes_stale_models(self, client, profiles_dir):
+    def test_reports_missing_ollama_models(self, client, profiles_dir):
         ps.save_profiles({
             "version": ps.PROFILES_VERSION,
             "active": None,
@@ -248,15 +248,28 @@ class TestActivationPruning:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["ok"]
-        # Should warn about pruned models
-        warnings = data["warnings"]
-        assert any("nonexistent-model" in w for w in warnings)
-        assert any("gone-image-model" in w for w in warnings)
+        # Ollama-style names (no "/") go into missing, not warnings
+        missing_names = [m["name"] for m in data["missing"]]
+        assert "nonexistent-model" in missing_names
+        assert "gone-image-model" in missing_names
 
-        # Saved prefs should have stale models removed
-        saved = ps.load_default_prefs()
-        assert "nonexistent-model" not in saved.get("code", [])
-        assert saved.get("image_gen") == []
+    def test_reports_stale_hf_models(self, client, profiles_dir):
+        ps.save_profiles({
+            "version": ps.PROFILES_VERSION,
+            "active": None,
+            "profiles": {
+                "test": {"label": "Test", "tasks": {"code": "qwen3.5-fast"}},
+            },
+        })
+        ps.save_mcp_prefs({
+            "code": ["org/nonexistent-hf-model"],
+        })
+
+        with patch.object(ps, "get_all_models", return_value=FAKE_MODELS):
+            resp = client.post("/api/profiles/test/activate")
+
+        data = resp.get_json()
+        assert any("org/nonexistent-hf-model" in w for w in data["warnings"])
 
     def test_skips_pruning_when_no_models(self, client, profiles_dir):
         ps.save_profiles({
