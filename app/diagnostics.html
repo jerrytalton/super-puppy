@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Super Puppy — Diagnostics</title>
+<style>
+:root {
+  --bg: #f5f5f7; --surface: #fff; --surface2: #f0f0f2;
+  --text: #1d1d1f; --text2: #86868b; --text3: #aeaeb2;
+  --border: #d2d2d7; --accent: #007aff;
+  --green: #34c759; --amber: #ff9f0a; --red: #ff3b30;
+  --r: 12px; --rs: 8px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #000; --surface: #1c1c1e; --surface2: #2c2c2e;
+    --text: #f5f5f7; --text2: #98989d; --text3: #636366;
+    --border: #38383a;
+  }
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font: 13px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  background: var(--bg); color: var(--text);
+  padding: 24px 32px; max-width: 640px; margin: 0 auto;
+  -webkit-font-smoothing: antialiased;
+}
+
+.section {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--rs); padding: 16px; margin-bottom: 16px;
+}
+.section-title {
+  font-size: 11px; font-weight: 600; color: var(--text2);
+  text-transform: uppercase; letter-spacing: 0.5px;
+  margin-bottom: 10px;
+}
+.row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 4px 0; border-bottom: 1px solid var(--surface2);
+}
+.row:last-child { border-bottom: none; }
+.row .label { color: var(--text2); }
+.row .value { font-weight: 500; font-variant-numeric: tabular-nums; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.dot-green { background: var(--green); }
+.dot-red { background: var(--red); }
+.log-box {
+  background: var(--surface2); border-radius: 6px; padding: 12px;
+  font: 11px/1.6 "SF Mono", Menlo, monospace;
+  color: var(--text2); max-height: 300px; overflow-y: auto;
+  white-space: pre-wrap; word-break: break-all;
+}
+.actions {
+  display: flex; gap: 8px; margin-bottom: 16px;
+}
+.actions button {
+  padding: 8px 16px; border-radius: 20px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text2); font-size: 12px;
+  font-weight: 500; cursor: pointer; transition: all 0.15s;
+}
+.actions button:hover { color: var(--text); border-color: var(--text3); }
+.actions button:active { background: var(--surface2); }
+.copied { color: var(--green) !important; border-color: var(--green) !important; }
+</style>
+</head>
+<body>
+
+<div class="actions">
+  <button id="copy-btn" onclick="copyAll()">Copy to Clipboard</button>
+  <button onclick="location.reload()">Refresh</button>
+</div>
+
+<div id="content">Loading...</div>
+
+<script>
+let _authToken = '';
+(function() {
+  const params = new URLSearchParams(location.search);
+  if (params.has('token')) {
+    _authToken = params.get('token');
+    sessionStorage.setItem('sp_token', _authToken);
+    params.delete('token');
+    history.replaceState(null, '', location.pathname + (params.toString() ? '?' + params : ''));
+  } else {
+    _authToken = sessionStorage.getItem('sp_token') || '';
+  }
+})();
+
+function _authHeaders(opts = {}) {
+  if (!_authToken) return opts;
+  const h = new Headers(opts.headers || {});
+  h.set('Authorization', 'Bearer ' + _authToken);
+  return {...opts, headers: h};
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function dot(ok) {
+  return `<span class="dot ${ok ? 'dot-green' : 'dot-red'}"></span>${ok ? 'Up' : 'Down'}`;
+}
+
+async function load() {
+  try {
+    const resp = await fetch('/api/diagnostics', _authHeaders());
+    const d = await resp.json();
+    const sys = d.system || {};
+    const svc = d.services || {};
+    const net = d.network || {};
+    const models = d.models || {};
+
+    document.getElementById('content').innerHTML = `
+      <div class="section">
+        <div class="section-title">System</div>
+        <div class="row"><span class="label">RAM</span><span class="value">${sys.total_ram_gb || '?'} GB</span></div>
+        <div class="row"><span class="label">Chip</span><span class="value">${esc(sys.chip || '?')}</span></div>
+        <div class="row"><span class="label">macOS</span><span class="value">${esc(sys.macos_version || '?')}</span></div>
+        <div class="row"><span class="label">Profile</span><span class="value">${esc(d.profile || '?')} (v${d.version})</span></div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">Services</div>
+        <div class="row"><span class="label">Ollama</span><span class="value">${dot(svc.ollama)}</span></div>
+        <div class="row"><span class="label">MLX Server</span><span class="value">${dot(svc.mlx)}</span></div>
+        <div class="row"><span class="label">MCP Server</span><span class="value">${dot(svc.mcp)}</span></div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">Models</div>
+        <div class="row"><span class="label">Ollama</span><span class="value">${models.ollama || 0}</span></div>
+        <div class="row"><span class="label">MLX</span><span class="value">${models.mlx || 0}</span></div>
+        <div class="row"><span class="label">Total</span><span class="value">${models.total || 0}</span></div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">Network</div>
+        ${Object.entries(net).map(([k, v]) =>
+          `<div class="row"><span class="label">${esc(k)}</span><span class="value">${esc(v)}</span></div>`
+        ).join('') || '<div class="row"><span class="label">No config</span><span class="value">-</span></div>'}
+      </div>
+
+      <div class="section">
+        <div class="section-title">Recent Log</div>
+        <div class="log-box">${d.log?.map(l => esc(l)).join('\n') || 'No log entries'}</div>
+      </div>
+    `;
+  } catch (e) {
+    document.getElementById('content').textContent = 'Failed to load: ' + e.message;
+  }
+}
+
+function copyAll() {
+  const text = document.getElementById('content').innerText;
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.getElementById('copy-btn');
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+  });
+}
+
+load();
+</script>
+</body>
+</html>

@@ -1123,18 +1123,19 @@ class LocalModelsApp(rumps.App):
         self.mcp_models = []  # populated on first refresh from MCP server
         self.menu_profiles = rumps.MenuItem("Model Profiles",
                                            callback=self.open_profiles)
-        self.menu_tools = rumps.MenuItem("Playground",
-                                        callback=self.open_tools)
-        self.menu_activity = rumps.MenuItem("Activity",
-                                           callback=self.open_activity)
+        self.menu_playground = rumps.MenuItem("Playground",
+                                             callback=self.open_tools)
         self.menu_remote_access = rumps.MenuItem("Remote Access",
                                                 callback=self._toggle_remote_access)
-        self.menu_share_url = rumps.MenuItem("Copy Playground URL",
-                                             callback=self._copy_playground_url)
+        self.menu_tools_sub = rumps.MenuItem("Tools")
+        self.menu_tools_sub.add(rumps.MenuItem("Activity Log",
+                                              callback=self.open_activity))
+        self.menu_tools_sub.add(rumps.MenuItem("Diagnostics",
+                                              callback=self.open_diagnostics))
+        self.menu_tools_sub.add(None)
+        self.menu_tools_sub.add(rumps.MenuItem("Restart",
+                                              callback=self.restart_app))
         self.menu_version = rumps.MenuItem(self.app_version)
-        self.menu_restart = rumps.MenuItem("Restart", callback=self.restart_app)
-        self.menu_diagnostics = rumps.MenuItem("Copy Diagnostics",
-                                               callback=self._copy_diagnostics)
         self.menu_quit = rumps.MenuItem("Quit", callback=self.quit_app)
 
         self.remote_access_enabled = self._load_remote_access_pref()
@@ -1152,15 +1153,12 @@ class LocalModelsApp(rumps.App):
             self.menu_mcp,
             None,
             self.menu_profiles,
-            self.menu_tools,
-            self.menu_activity,
+            self.menu_playground,
             None,
-            ] + ([self.menu_share_url] if self.desktop else []) + [
-            self.menu_diagnostics,
+            self.menu_tools_sub,
             None,
             self.menu_version,
             None,
-            self.menu_restart,
             self.menu_quit,
         ]
         self.menu = menu_items
@@ -2222,7 +2220,7 @@ class LocalModelsApp(rumps.App):
             return
 
         from AppKit import NSApp, NSApplicationActivationPolicyAccessory
-        window = self._open_webview("Activity", "/activity", size=(720, 600))
+        window = self._open_webview("Activity Log", "/activity", size=(720, 600))
         delegate = _ProfileWindowDelegate.alloc().init()
         delegate.callback = lambda: (
             setattr(self, 'activity_window', None),
@@ -2231,6 +2229,28 @@ class LocalModelsApp(rumps.App):
         self._activity_delegate = delegate
         window.setDelegate_(delegate)
         self.activity_window = window
+
+    def open_diagnostics(self, _):
+        """Open the diagnostics pane."""
+        if hasattr(self, 'diagnostics_window') and self.diagnostics_window is not None:
+            self.diagnostics_window.makeKeyAndOrderFront_(None)
+            if hasattr(self.diagnostics_window, '_webview'):
+                self.diagnostics_window._webview.reload_(None)
+            from AppKit import NSApp
+            NSApp.activateIgnoringOtherApps_(True)
+            return
+
+        from AppKit import NSApp, NSApplicationActivationPolicyAccessory
+        window = self._open_webview("Diagnostics", "/diagnostics", size=(640, 520))
+        delegate = _ProfileWindowDelegate.alloc().init()
+        delegate.callback = lambda: (
+            setattr(self, 'diagnostics_window', None),
+            NSApp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+            if not self.profile_window and not self.tools_window
+            and not self.activity_window else None)
+        self._diagnostics_delegate = delegate
+        window.setDelegate_(delegate)
+        self.diagnostics_window = window
 
     # -------------------------------------------------------------------
     # App update (git)

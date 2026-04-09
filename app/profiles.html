@@ -143,6 +143,44 @@ nav a.active { color: #fff; background: var(--accent); }
 .refresh-btn { background: none; border: 1px solid var(--border); border-radius: 4px;
   padding: 2px 8px; color: var(--text3); cursor: pointer; font-size: 11px; margin-left: 8px; }
 .refresh-btn:hover { border-color: var(--accent); color: var(--text2); }
+
+/* ── Pull modal ── */
+.pull-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 100;
+  display: flex; align-items: center; justify-content: center;
+}
+.pull-modal {
+  background: var(--surface); border-radius: var(--r); padding: 24px;
+  max-width: 480px; width: 90%; box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+}
+.pull-modal h3 { margin-bottom: 12px; font-size: 16px; }
+.pull-modal p { color: var(--text2); font-size: 13px; margin-bottom: 16px; }
+.pull-list { list-style: none; margin-bottom: 16px; }
+.pull-list li {
+  padding: 8px 12px; border-radius: var(--rs); margin-bottom: 4px;
+  background: var(--surface2); font-size: 13px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.pull-list .status { font-size: 12px; color: var(--text3); }
+.pull-list .status.pulling { color: var(--accent); }
+.pull-list .status.done { color: var(--green); }
+.pull-list .status.error { color: var(--red); }
+.pull-progress {
+  height: 4px; background: var(--surface2); border-radius: 2px;
+  margin-top: 4px; overflow: hidden;
+}
+.pull-progress-bar {
+  height: 100%; background: var(--accent); border-radius: 2px;
+  transition: width 0.3s ease; width: 0%;
+}
+.pull-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.pull-actions button {
+  padding: 8px 20px; border-radius: 20px; border: none; cursor: pointer;
+  font-size: 13px; font-weight: 600;
+}
+.pull-actions .pull-go { background: var(--accent); color: #fff; }
+.pull-actions .pull-go:disabled { opacity: 0.5; cursor: default; }
+.pull-actions .pull-skip { background: var(--surface2); color: var(--text2); }
 </style>
 </head>
 <body>
@@ -241,6 +279,10 @@ async function init() {
   fillThinkDefaults();
   fillDefaults();
   render();
+  // Check for missing models (e.g. after a version bump updated defaults)
+  if (profiles.missing?.length) {
+    showPullModal(profiles.missing);
+  }
 }
 
 window.addEventListener('beforeunload', (e) => {
@@ -528,13 +570,118 @@ async function activate(name) {
     S.dirty = false;
     render();
     if (actData.warnings?.length) {
-      const msg = 'Pruned stale models from preferences:\n' + actData.warnings.join('\n');
-      console.warn(msg);
-      if (btn) { btn.textContent = `Activated (${actData.warnings.length} stale)`; btn.disabled = false; return; }
+      console.warn('Stale model references:', actData.warnings);
+    }
+    if (actData.missing?.length) {
+      showPullModal(actData.missing);
     }
     if (window.webkit?.messageHandlers?.app)
       window.webkit.messageHandlers.app.postMessage('profileChanged');
   } catch(e) { alert('Failed: '+e.message); }
+}
+
+function showPullModal(models) {
+  // models: [{name, size_gb}, ...] or ["name", ...] (backwards compat)
+  const items = models.map(m => typeof m === 'string' ? {name: m, size_gb: null} : m);
+  const totalGB = items.reduce((s, m) => s + (m.size_gb || 0), 0);
+  const sizeNote = totalGB > 0 ? ` (~${fmtSize(totalGB)} total)` : '';
+  const overlay = document.createElement('div');
+  overlay.className = 'pull-overlay';
+  overlay.innerHTML = `
+    <div class="pull-modal">
+      <h3>Missing Models</h3>
+      <p>${items.length} model${items.length > 1 ? 's' : ''} not yet installed${sizeNote}:</p>
+      <ul class="pull-list">
+        ${items.map((m, i) => `<li data-idx="${i}">
+          <span class="name">${esc(m.name)}${m.size_gb != null ? ` <small style="color:var(--text3)">${fmtSize(m.size_gb)}</small>` : ''}</span>
+          <span class="status">waiting</span>
+        </li>`).join('')}
+      </ul>
+      <div class="pull-actions">
+        <button class="pull-skip">Skip</button>
+        <button class="pull-go" id="pull-go-btn">Pull All</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('.pull-skip').onclick = () => overlay.remove();
+  const names = items.map(m => m.name);
+  overlay.querySelector('#pull-go-btn').onclick = () => doPull(names, overlay);
+}
+
+async function doPull(models, overlay) {
+  const goBtn = overlay.querySelector('#pull-go-btn');
+  const skipBtn = overlay.querySelector('.pull-skip');
+  goBtn.disabled = true;
+  goBtn.textContent = 'Pulling...';
+  skipBtn.style.display = 'none';
+
+  const items = overlay.querySelectorAll('.pull-list li');
+
+  try {
+    const resp = await fetch('/api/models/pull', _authHeaders({
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({models}),
+    }));
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, {stream: true});
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const d = JSON.parse(line.slice(6));
+          if (d.status === 'done') {
+            goBtn.remove();
+            skipBtn.style.display = '';
+            skipBtn.textContent = 'Close';
+            await refreshModels();
+            return;
+          }
+          if (d.index !== undefined && items[d.index]) {
+            const statusEl = items[d.index].querySelector('.status');
+            if (d.error) {
+              statusEl.className = 'status error';
+              statusEl.textContent = 'failed';
+            } else if (d.status === 'success') {
+              statusEl.className = 'status done';
+              statusEl.textContent = '\u2713';
+            } else if (d.status === 'pulling') {
+              statusEl.className = 'status pulling';
+              statusEl.textContent = 'pulling...';
+            } else if (d.completed !== undefined && d.total) {
+              statusEl.className = 'status pulling';
+              const pct = Math.round((d.completed / d.total) * 100);
+              const gb = (d.total / 1e9).toFixed(1);
+              statusEl.textContent = `${pct}% of ${gb} GB`;
+            }
+          }
+        } catch {}
+      }
+    }
+  } catch (e) {
+    goBtn.textContent = 'Failed';
+    goBtn.disabled = false;
+    skipBtn.style.display = '';
+  }
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function fmtSize(gb) {
+  if (gb < 0.1) return Math.round(gb * 1000) + ' MB';
+  if (gb < 1) return (gb * 1000).toFixed(0) + ' MB';
+  return gb.toFixed(1) + ' GB';
 }
 
 async function warm(name) {
