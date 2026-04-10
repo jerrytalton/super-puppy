@@ -50,6 +50,8 @@ a:hover { text-decoration: underline; }
 .install {
   display: flex;
   align-items: stretch;
+  max-width: 640px;
+  width: 100%;
   margin-bottom: 3rem;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -63,9 +65,8 @@ a:hover { text-decoration: underline; }
   padding: 0.9rem 1.25rem;
   font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
   font-size: 0.875rem;
-  white-space: pre;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: pre-wrap;
+  word-break: break-all;
   color: var(--dim);
   margin: 0;
 }
