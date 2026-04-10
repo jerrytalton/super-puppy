@@ -151,11 +151,12 @@ nav a.active { color: #fff; background: var(--accent); }
 }
 .pull-modal {
   background: var(--surface); border-radius: var(--r); padding: 24px;
-  max-width: 480px; width: 90%; box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+  max-width: 480px; width: 90%; max-height: 80dvh; display: flex; flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.3);
 }
-.pull-modal h3 { margin-bottom: 12px; font-size: 16px; }
-.pull-modal p { color: var(--text2); font-size: 13px; margin-bottom: 16px; }
-.pull-list { list-style: none; margin-bottom: 16px; }
+.pull-modal h3 { margin-bottom: 12px; font-size: 16px; flex-shrink: 0; }
+.pull-modal p { color: var(--text2); font-size: 13px; margin-bottom: 16px; flex-shrink: 0; }
+.pull-list { list-style: none; margin-bottom: 16px; overflow-y: auto; flex: 1; min-height: 0; }
 .pull-list li {
   padding: 8px 12px; border-radius: var(--rs); margin-bottom: 4px;
   background: var(--surface2); font-size: 13px;
@@ -173,7 +174,7 @@ nav a.active { color: #fff; background: var(--accent); }
   height: 100%; background: var(--accent); border-radius: 2px;
   transition: width 0.3s ease; width: 0%;
 }
-.pull-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.pull-actions { display: flex; gap: 8px; justify-content: flex-end; flex-shrink: 0; }
 .pull-actions button {
   padding: 8px 20px; border-radius: 20px; border: none; cursor: pointer;
   font-size: 13px; font-weight: 600;
@@ -280,8 +281,14 @@ async function init() {
   fillDefaults();
   render();
   // Check for missing models (e.g. after a version bump updated defaults)
+  // Skip if profile needs more RAM than this machine has — can't run them locally
   if (profiles.missing?.length) {
-    showPullModal(profiles.missing);
+    const p = S.sel ? S.profiles.profiles[S.sel] : null;
+    const ramGB = S.sys?.total_ram_gb || 0;
+    const profileRAM = p?.max_ram_gb || 0;
+    if (!profileRAM || !ramGB || profileRAM <= ramGB) {
+      showPullModal(profiles.missing);
+    }
   }
 }
 
@@ -573,7 +580,13 @@ async function activate(name) {
       console.warn('Stale model references:', actData.warnings);
     }
     if (actData.missing?.length) {
-      showPullModal(actData.missing);
+      const ramGB = S.sys?.total_ram_gb || 0;
+      const profileRAM = p?.max_ram_gb || 0;
+      if (profileRAM && ramGB && profileRAM > ramGB) {
+        console.warn(`Skipping pull modal: profile needs ${profileRAM}GB, machine has ${ramGB}GB`);
+      } else {
+        showPullModal(actData.missing);
+      }
     }
     if (window.webkit?.messageHandlers?.app)
       window.webkit.messageHandlers.app.postMessage('profileChanged');
