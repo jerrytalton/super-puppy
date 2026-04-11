@@ -385,6 +385,7 @@ async def discover_models():
             "transcription": "mlx",
             "image_edit": "mflux",
             "image_gen": "mflux",
+            "video": "mlx-video",
         }
         from lib.hf_scanner import scan_hf_cache
         for hf_model in scan_hf_cache(_TASK_BACKENDS.keys()):
@@ -1033,6 +1034,112 @@ async def local_image_edit(
 
     size = Path(output_path).stat().st_size
     return f"{warning}[{selected} via {backend}]\n\nEdited image saved to {output_path} ({size} bytes)"
+
+
+@mcp.tool()
+async def local_video(
+    prompt: str,
+    image_path: str | None = None,
+    output_path: str | None = None,
+    model: str | None = None,
+    width: int | None = None,
+    height: int | None = None,
+    num_frames: int | None = None,
+    audio_genre: str | None = None,
+) -> str:
+    """Generate video locally using MLX (Wan2.2, LTX-2).
+
+    Auto-detects mode from parameters:
+    - Text prompt only → text-to-video
+    - image_path provided → image-to-video (animates the image)
+    - audio_genre provided → video with synchronized audio
+
+    Output is an MP4 file saved to disk.
+
+    Args:
+        prompt: Description of the video to generate.
+        image_path: Optional input image for image-to-video mode.
+        output_path: Where to save the video. Defaults to /tmp/local_video_<timestamp>.mp4.
+        model: Optional model override. Defaults to best available video model.
+        width: Output width in pixels (must be divisible by 64). Default: model's native resolution.
+        height: Output height in pixels (must be divisible by 64). Default: model's native resolution.
+        num_frames: Number of frames to generate. Default: 65 (~2.7s at 24fps).
+        audio_genre: Music genre for audio-synced video (e.g. 'electronic', 'jazz', 'ambient').
+            When provided, uses mlx-video-with-audio for synchronized audio generation.
+    """
+    try:
+        selected, backend = pick_model("video", model)
+    except ValueError:
+        return ("Error: no video model available. Install mlx-video or "
+                "mlx-video-with-audio and download a model (e.g. Wan2.2-T2V-14B).")
+
+    if image_path:
+        err = _validate_path(image_path)
+        if err:
+            return f"Error: {err}"
+
+    if not output_path:
+        import time as _time
+        output_path = f"/tmp/local_video_{int(_time.time())}.mp4"
+    err = _validate_path(output_path, must_exist=False)
+    if err:
+        return f"Error: {err}"
+
+    mode = "audio" if audio_genre else ("i2v" if image_path else "t2v")
+    logging.info("generate video %s (%s, %s): %s", selected, backend, mode, prompt[:50])
+
+    with _gpu_request("mlx", f"video:{selected}"):
+        warning = _gpu_contention_warning("mlx")
+        loop = asyncio.get_event_loop()
+
+        if mode == "audio":
+            cmd = [
+                sys.executable, "-m", "mlx_video_with_audio",
+                "--prompt", prompt,
+                "--output", output_path,
+            ]
+            if width:
+                cmd.extend(["--width", str(width)])
+            if height:
+                cmd.extend(["--height", str(height)])
+            if num_frames:
+                cmd.extend(["--num-frames", str(num_frames)])
+            if audio_genre:
+                cmd.extend(["--audio-genre", audio_genre])
+            timeout = 1200
+        else:
+            cmd = [
+                sys.executable, "-m", "mlx_video",
+                "--model", selected,
+                "--prompt", prompt,
+                "--output", output_path,
+            ]
+            if image_path:
+                cmd.extend(["--image", image_path])
+            if width:
+                cmd.extend(["--width", str(width)])
+            if height:
+                cmd.extend(["--height", str(height)])
+            if num_frames:
+                cmd.extend(["--num-frames", str(num_frames)])
+            timeout = 900
+
+        try:
+            proc = await loop.run_in_executor(None, lambda: subprocess.run(
+                cmd, capture_output=True, text=True, timeout=timeout,
+                env={**os.environ, "PATH": f"/opt/homebrew/bin:{os.environ.get('PATH', '')}"},
+            ))
+            if proc.returncode != 0:
+                return f"Error: video generation failed:\n{proc.stderr[-500:]}"
+        except subprocess.TimeoutExpired:
+            return f"Error: video generation timed out after {timeout // 60} minutes."
+
+    if not Path(output_path).exists():
+        return f"Error: output video was not created at {output_path}"
+
+    size = Path(output_path).stat().st_size
+    mb = size / (1024 * 1024)
+    return f"{warning}[{selected} via {backend}]\n\nVideo saved to {output_path} ({mb:.1f} MB)"
 
 
 @mcp.tool()
