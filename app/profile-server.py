@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["flask==3.1.3", "pyyaml==6.0.3", "requests==2.33.1", "mlx-audio[tts] @ git+https://github.com/Blaizzy/mlx-audio.git"]
+# dependencies = ["flask==3.1.3", "pyyaml==6.0.3", "requests==2.33.1", "mlx-audio[tts] @ git+https://github.com/Blaizzy/mlx-audio.git", "mlx-video @ git+https://github.com/Blaizzy/mlx-video.git@9ab4826d20e39286af13a26615c33b403d48be72", "mlx-video-with-audio==0.1.33"]
 # ///
 """
 Model Profile Server for Super Puppy.
@@ -481,7 +481,7 @@ DEFAULT_PROFILES = {
                 "embedding": "mxbai-embed-large:latest",
                 "unfiltered": "dolphin3:8b",
                 "computer_use": "ui-tars-72b",
-                "video": "Wan2.2-T2V-14B",
+                "video": "Wan-AI/Wan2.2-T2V-A14B",
             },
         },
         "desktop": {
@@ -501,7 +501,7 @@ DEFAULT_PROFILES = {
                 "embedding": "mxbai-embed-large:latest",
                 "unfiltered": "dolphin3:8b",
                 "computer_use": "maternion/fara:7b",
-                "video": "Wan2.1-T2V-1.3B",
+                "video": "Wan-AI/Wan2.1-T2V-1.3B",
             },
         },
         "maximum": {
@@ -522,7 +522,7 @@ DEFAULT_PROFILES = {
                 "embedding": "mxbai-embed-large:latest",
                 "unfiltered": "dolphin3:8b",
                 "computer_use": "ui-tars-72b",
-                "video": "Wan2.2-T2V-14B",
+                "video": "Wan-AI/Wan2.2-T2V-A14B",
             },
         },
         "laptop": {
@@ -717,15 +717,16 @@ def api_profiles_delete(name):
 def _check_missing_models(prefs):
     """Check prefs for models not available in any backend.
 
-    Returns (missing_ollama, stale_warnings) where missing_ollama is a list
-    of Ollama model names that could be pulled, and stale_warnings is a list
-    of descriptive strings for non-Ollama references that can't be resolved.
+    Returns (missing_pullable, stale_warnings) where missing_pullable is a list
+    of model names that can be downloaded (Ollama or HuggingFace), and
+    stale_warnings is a list of descriptive strings for references that can't
+    be resolved by any known mechanism.
     """
     models = get_all_models()
-    missing_ollama = []
+    missing_pullable = []
     stale_warnings = []
     if not models:
-        return missing_ollama, stale_warnings
+        return missing_pullable, stale_warnings
 
     def _model_exists(name):
         return name in models or any(n.startswith(name + ":") for n in models)
@@ -737,11 +738,8 @@ def _check_missing_models(prefs):
         for c in candidates:
             if not _model_exists(c) and c not in seen:
                 seen.add(c)
-                if "/" not in c:  # Ollama name (no HF org prefix)
-                    missing_ollama.append(c)
-                else:
-                    stale_warnings.append(f"{task}: {c}")
-    return missing_ollama, stale_warnings
+                missing_pullable.append(c)
+    return missing_pullable, stale_warnings
 
 
 def _resolve_model_sizes(model_names):
@@ -751,9 +749,34 @@ def _resolve_model_sizes(model_names):
     """
     result = []
     for name in model_names:
-        size_gb = _get_ollama_model_size(name)
+        if "/" in name and ":" not in name:
+            size_gb = _get_hf_model_size(name)
+        else:
+            size_gb = _get_ollama_model_size(name)
         result.append({"name": name, "size_gb": size_gb})
     return result
+
+
+def _get_hf_model_size(name):
+    """Resolve HuggingFace model size in GB via the API."""
+    try:
+        resp = requests.get(
+            f"https://huggingface.co/api/models/{name}",
+            timeout=5)
+        if resp.ok:
+            data = resp.json()
+            # safetensors size is most accurate; fall back to total siblings size
+            for sibling_key in ("safetensors", "siblings"):
+                if sibling_key in data:
+                    break
+            total = 0
+            for sib in data.get("siblings", []):
+                total += sib.get("size", 0)
+            if total > 0:
+                return round(total / 1e9, 1)
+    except Exception:
+        pass
+    return None
 
 
 def _get_ollama_model_size(name):
@@ -793,8 +816,8 @@ def _get_ollama_model_size(name):
 def api_profiles_activate(name):
     """Save preferences only. Does not touch running models.
 
-    Returns missing Ollama models (pullable) separately from truly stale
-    references so the UI can offer to download them.
+    Returns missing models (Ollama or HuggingFace, pullable) separately from
+    truly stale references so the UI can offer to download them.
     """
     data = load_profiles()
     profile = data["profiles"].get(name)
@@ -825,33 +848,66 @@ def api_profiles_activate(name):
 
 @app.route("/api/models/pull", methods=["POST"])
 def api_models_pull():
-    """Pull one or more Ollama models, streaming progress as SSE."""
+    """Pull one or more models (Ollama or HuggingFace), streaming progress as SSE."""
     body = request.get_json(silent=True) or {}
     model_names = body.get("models", [])
     if not model_names:
         return jsonify({"error": "No models specified"}), 400
 
+    def _is_hf_model(name):
+        """HuggingFace models contain '/' but no ':' (org/model format)."""
+        return "/" in name and ":" not in name
+
+    def _pull_hf(name, i, total):
+        """Download a HuggingFace model using huggingface-cli."""
+        yield f"data: {json.dumps({'model': name, 'index': i, 'total': total, 'status': 'pulling'})}\n\n"
+        try:
+            result = subprocess.run(
+                ["huggingface-cli", "download", name],
+                capture_output=True, text=True, timeout=3600,
+                env={**os.environ, "PATH": f"/opt/homebrew/bin:{os.environ.get('PATH', '')}"},
+            )
+            if result.returncode == 0:
+                yield f"data: {json.dumps({'model': name, 'index': i, 'total': total, 'status': 'success'})}\n\n"
+            else:
+                err = result.stderr[-200:] if result.stderr else "unknown error"
+                yield f"data: {json.dumps({'model': name, 'index': i, 'total': total, 'status': 'error', 'error': err})}\n\n"
+        except FileNotFoundError:
+            yield f"data: {json.dumps({'model': name, 'index': i, 'total': total, 'status': 'error', 'error': 'huggingface-cli not found. Install with: uv pip install huggingface_hub[cli]'})}\n\n"
+        except subprocess.TimeoutExpired:
+            yield f"data: {json.dumps({'model': name, 'index': i, 'total': total, 'status': 'error', 'error': 'Download timed out after 60 minutes'})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'model': name, 'index': i, 'total': total, 'status': 'error', 'error': str(e)})}\n\n"
+
+    def _pull_ollama(name, i, total):
+        """Pull an Ollama model with streaming progress."""
+        yield f"data: {json.dumps({'model': name, 'index': i, 'total': total, 'status': 'pulling'})}\n\n"
+        try:
+            resp = requests.post(
+                f"{OLLAMA_URL}/api/pull",
+                json={"name": name, "stream": True},
+                stream=True, timeout=3600)
+            for line in resp.iter_lines():
+                if not line:
+                    continue
+                try:
+                    chunk = json.loads(line)
+                    chunk["model"] = name
+                    chunk["index"] = i
+                    chunk["total"] = total
+                    yield f"data: {json.dumps(chunk)}\n\n"
+                except json.JSONDecodeError:
+                    pass
+        except Exception as e:
+            yield f"data: {json.dumps({'model': name, 'index': i, 'total': total, 'status': 'error', 'error': str(e)})}\n\n"
+
     def stream():
+        total = len(model_names)
         for i, name in enumerate(model_names):
-            yield f"data: {json.dumps({'model': name, 'index': i, 'total': len(model_names), 'status': 'pulling'})}\n\n"
-            try:
-                resp = requests.post(
-                    f"{OLLAMA_URL}/api/pull",
-                    json={"name": name, "stream": True},
-                    stream=True, timeout=3600)
-                for line in resp.iter_lines():
-                    if not line:
-                        continue
-                    try:
-                        chunk = json.loads(line)
-                        chunk["model"] = name
-                        chunk["index"] = i
-                        chunk["total"] = len(model_names)
-                        yield f"data: {json.dumps(chunk)}\n\n"
-                    except json.JSONDecodeError:
-                        pass
-            except Exception as e:
-                yield f"data: {json.dumps({'model': name, 'index': i, 'total': len(model_names), 'status': 'error', 'error': str(e)})}\n\n"
+            if _is_hf_model(name):
+                yield from _pull_hf(name, i, total)
+            else:
+                yield from _pull_ollama(name, i, total)
         # Refresh model cache after pulling
         get_all_models(force_refresh=True)
         yield f"data: {json.dumps({'status': 'done'})}\n\n"
@@ -1444,9 +1500,9 @@ def api_test():
                     prompt = body.get("prompt", "")
                     if mode == "audio":
                         cmd = [
-                            sys.executable, "-m", "mlx_video_with_audio",
+                            sys.executable, "-m", "mlx_video.generate_av",
                             "--prompt", prompt,
-                            "--output", out,
+                            "--output-path", out,
                         ]
                         if width_str:
                             cmd.extend(["--width", width_str])
@@ -1454,14 +1510,26 @@ def api_test():
                             cmd.extend(["--height", height_str])
                         if frames_str:
                             cmd.extend(["--num-frames", frames_str])
-                        if audio_genre:
-                            cmd.extend(["--audio-genre", audio_genre])
+                    elif "ltx" in model.lower():
+                        cmd = [
+                            sys.executable, "-m", "mlx_video.ltx_2.generate",
+                            "--prompt", prompt,
+                            "--output-path", out,
+                        ]
+                        if image_path:
+                            cmd.extend(["--image", image_path])
+                        if width_str:
+                            cmd.extend(["--width", width_str])
+                        if height_str:
+                            cmd.extend(["--height", height_str])
+                        if frames_str:
+                            cmd.extend(["-n", frames_str])
                     else:
                         cmd = [
-                            sys.executable, "-m", "mlx_video",
-                            "--model", model,
+                            sys.executable, "-m", "mlx_video.wan_2.generate",
+                            "--model-dir", model,
                             "--prompt", prompt,
-                            "--output", out,
+                            "--output-path", out,
                         ]
                         if image_path:
                             cmd.extend(["--image", image_path])
