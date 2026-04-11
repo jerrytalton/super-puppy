@@ -156,6 +156,10 @@ SPECIAL_TASKS: dict[str, dict[str, Any]] = {
         "label": "Computer Use",
         "prefixes": ["ui-tars", "fara"],
     },
+    "video": {
+        "label": "Video",
+        "prefixes": ["wan2", "ltx"],
+    },
 }
 
 # ── Task filters ──────────────────────────────────────────────────────
@@ -164,6 +168,7 @@ SPECIAL_TASKS: dict[str, dict[str, Any]] = {
 ALWAYS_EXCLUDE: list[str] = [
     "vl", "flux", "z-image", "whisper", "ocr", "embed", "minilm",
     "tinyllama", "goonsai", "nsfw", "dolphin",
+    "wan2", "ltx",
 ]
 
 TASK_FILTERS: dict[str, dict[str, Any]] = {
