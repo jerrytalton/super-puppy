@@ -1,5 +1,7 @@
 """Tests for pure/near-pure functions in app/menubar.py."""
 
+import importlib
+import importlib.util
 import json
 import socket
 import subprocess
@@ -23,7 +25,6 @@ for mod_name in ("rumps", "objc", "AppKit", "WebKit"):
 # objc.typedSelector must return a passthrough decorator
 sys.modules["objc"].typedSelector = lambda sig: lambda fn: fn
 
-import importlib
 import app.menubar as menubar
 
 
@@ -379,22 +380,41 @@ class TestVideoTask:
         assert "wan2" in ALWAYS_EXCLUDE
         assert "ltx" in ALWAYS_EXCLUDE
 
+    @staticmethod
+    def _real_classify_model():
+        """Get the real _classify_model, bypassing any test mock on the module."""
+        # Other test files replace sys.modules["lib.hf_scanner"] with MagicMock.
+        # Force a fresh import from the actual source file.
+        saved = sys.modules.pop("lib.hf_scanner", None)
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "lib.hf_scanner",
+                Path(__file__).resolve().parent.parent / "lib" / "hf_scanner.py",
+            )
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod._classify_model
+        finally:
+            # Restore whatever was there so other tests aren't affected
+            if saved is not None:
+                sys.modules["lib.hf_scanner"] = saved
+
     def test_hf_scanner_classifies_wan_video(self):
-        from lib.hf_scanner import _classify_model
+        classify = self._real_classify_model()
         config = {"_class_name": "WanTransformer3DModel"}
-        assert _classify_model(config, "Wan2.2-T2V-14B") == "video"
+        assert classify(config, "Wan2.2-T2V-14B") == "video"
 
     def test_hf_scanner_classifies_ltx_video(self):
-        from lib.hf_scanner import _classify_model
+        classify = self._real_classify_model()
         config = {"_class_name": "LTXVideoTransformer3DModel"}
-        assert _classify_model(config, "Lightricks/LTX-Video-2") == "video"
+        assert classify(config, "Lightricks/LTX-Video-2") == "video"
 
     def test_hf_scanner_classifies_ltx_by_name(self):
-        from lib.hf_scanner import _classify_model
+        classify = self._real_classify_model()
         config = {}
-        assert _classify_model(config, "ltx-video-2b-v0.9.5") == "video"
+        assert classify(config, "ltx-video-2b-v0.9.5") == "video"
 
     def test_hf_scanner_classifies_wan_by_name(self):
-        from lib.hf_scanner import _classify_model
+        classify = self._real_classify_model()
         config = {}
-        assert _classify_model(config, "Wan2.1-T2V-1.3B") == "video"
+        assert classify(config, "Wan2.1-T2V-1.3B") == "video"
