@@ -27,12 +27,25 @@ link() {
     ln -sfn "$src" "$dst"
 }
 
-link bin/start-local-models        ~/bin/start-local-models
-link bin/local-models-menubar      ~/bin/local-models-menubar
-link bin/local-models-mcp-detect   ~/bin/local-models-mcp-detect
-link bin/local-models-mcp-auth     ~/bin/local-models-mcp-auth
-link bin/tailscale-status          ~/bin/tailscale-status
-link bin/post-update.sh            ~/bin/post-update.sh
+# Clean up old ~/bin symlinks from pre-v1.x installs
+for old in ~/bin/start-local-models ~/bin/local-models-menubar \
+           ~/bin/local-models-mcp-detect ~/bin/local-models-mcp-auth \
+           ~/bin/tailscale-status ~/bin/post-update.sh; do
+    if [ -L "$old" ]; then
+        target=$(readlink "$old" 2>/dev/null || true)
+        if [[ "$target" == "$REPO_DIR"* ]]; then
+            rm "$old"
+        fi
+    fi
+done
+rmdir ~/bin 2>/dev/null || true
+
+link bin/start-local-models        ~/.local/bin/start-local-models
+link bin/local-models-menubar      ~/.local/bin/local-models-menubar
+link bin/local-models-mcp-detect   ~/.local/bin/local-models-mcp-detect
+link bin/local-models-mcp-auth     ~/.local/bin/local-models-mcp-auth
+link bin/tailscale-status          ~/.local/bin/tailscale-status
+link bin/post-update.sh            ~/.local/bin/post-update.sh
 
 # MLX configs (copied on first install, new models merged on update)
 MLX_DIR="$HOME/.config/mlx-server"

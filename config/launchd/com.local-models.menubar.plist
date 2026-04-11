@@ -21,7 +21,7 @@
     <array>
         <string>bash</string>
         <string>-c</string>
-        <string>exec "$HOME/bin/local-models-menubar"</string>
+        <string>exec "$HOME/.local/bin/local-models-menubar"</string>
     </array>
     <key>RunAtLoad</key>
     <true/>

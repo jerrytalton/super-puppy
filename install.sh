@@ -56,6 +56,12 @@ if $UNINSTALL; then
     # Remove symlinks (only if they point into this repo)
     echo "Removing symlinks..."
     for link in \
+        ~/.local/bin/start-local-models \
+        ~/.local/bin/local-models-menubar \
+        ~/.local/bin/local-models-mcp-detect \
+        ~/.local/bin/local-models-mcp-auth \
+        ~/.local/bin/tailscale-status \
+        ~/.local/bin/post-update.sh \
         ~/bin/start-local-models \
         ~/bin/local-models-menubar \
         ~/bin/local-models-mcp-detect \

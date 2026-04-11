@@ -8,7 +8,7 @@ Local AI model infrastructure for Apple Silicon. Menu bar app + standard APIs + 
 - `app/SuperPuppy.app/` — macOS app bundle wrapping the menu bar app. A native C launcher (`super-puppy.c`) embeds Python via dlopen so macOS shows "Super Puppy" in Cmd-Tab and attributes screen recording permission to the app. Built by `install.sh`.
 - `mcp/` — MCP server exposing local models as tools for Claude Code
 - `lib/` — Shared Python library (model discovery, task filters, config paths)
-- `bin/` — Shell scripts symlinked to `~/bin/`
+- `bin/` — Shell scripts symlinked to `~/.local/bin/`
 - `config/` — Config files symlinked to `~/.config/` and `~/Library/LaunchAgents/`
 - `tests/` — pytest unit tests (test_core.py, test_deployment.py) and end-to-end tests (test_e2e.py, test_error_handling.py)
 - `install.sh` — Interactive setup: symlinks scripts, copies configs, walks through configuration

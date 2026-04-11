@@ -41,10 +41,16 @@ for plist in \
     fi
 done
 
-# ── Remove ~/bin symlinks ──────────────────────────────────────────
+# ── Remove bin symlinks ────────────────────────────────────────────
 
 echo "Removing symlinks..."
 for link in \
+    ~/.local/bin/start-local-models \
+    ~/.local/bin/local-models-menubar \
+    ~/.local/bin/local-models-mcp-detect \
+    ~/.local/bin/local-models-mcp-auth \
+    ~/.local/bin/tailscale-status \
+    ~/.local/bin/post-update.sh \
     ~/bin/start-local-models \
     ~/bin/local-models-menubar \
     ~/bin/local-models-mcp-detect \
