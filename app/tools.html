@@ -245,6 +245,17 @@ const TOOLS = {
   image_gen:   { label: 'Image Gen', task: 'image_gen', fields: [
     {id:'prompt', label:'Prompt', type:'textarea', placeholder:'A cat wearing a space helmet...'},
   ]},
+  video:       { label: 'Video', task: 'video', fields: [
+    {id:'prompt', label:'Prompt', type:'textarea', placeholder:'A puppy running through a field of flowers...'},
+    {id:'image_path', label:'Source image (optional)', type:'file', accept:'image/*'},
+    {id:'audio_genre', label:'Audio genre (optional)', type:'select', options: [
+      '', 'ambient', 'classical', 'electronic', 'jazz', 'pop', 'rock',
+      'cinematic', 'lo-fi', 'hip-hop', 'folk', 'reggae', 'blues',
+    ]},
+    {id:'width', label:'Width', type:'text', placeholder:'720'},
+    {id:'height', label:'Height', type:'text', placeholder:'480'},
+    {id:'num_frames', label:'Frames', type:'text', placeholder:'65'},
+  ]},
   image_edit:  { label: 'Image Edit', task: 'image_edit', fields: [
     {id:'image_path', label:'Image', type:'file', accept:'image/*'},
     {id:'prompt', label:'Edit prompt', type:'textarea', placeholder:'Make the background blue...'},
@@ -744,7 +755,7 @@ async function run() {
       }
 
     } else {
-      const SLOW_TOOLS = {image_gen: 'Generating image', image_edit: 'Editing image', speak: 'Generating speech', transcribe: 'Transcribing audio'};
+      const SLOW_TOOLS = {image_gen: 'Generating image', image_edit: 'Editing image', speak: 'Generating speech', transcribe: 'Transcribing audio', video: 'Generating video'};
       log(SLOW_TOOLS[runTool] || `Processing ${runTool}`);
       const resp = await fetch('/api/test', _authHeaders({
         method: 'POST',
@@ -774,6 +785,11 @@ async function run() {
           html = data.result +
             `<img src="${imgUrl}">` +
             `<a href="#" onclick="downloadFile('${imgUrl}','image.png');return false" class="download-btn">Download image</a>`;
+        } else if (data.video_path) {
+          const vidUrl = `/api/test/video?path=${encodeURIComponent(data.video_path)}`;
+          html = data.result +
+            `<video controls src="${vidUrl}" style="display:block;margin-top:8px;width:100%;max-height:400px"></video>` +
+            `<a href="#" onclick="downloadFile('${vidUrl}','video.mp4');return false" class="download-btn">Download video</a>`;
         } else if (data.embeddings) {
           const dims = data.dimensions || '?', count = data.count || '?';
           html = `${count} embedding(s), ${dims} dimensions\n\n` +
@@ -814,6 +830,17 @@ async function run() {
         const dl = document.createElement('a');
         dl.href = '#'; dl.className = 'download-btn'; dl.textContent = 'Download image';
         dl.onclick = (e) => { e.preventDefault(); downloadFile(imgUrl, 'image.png'); };
+        output.appendChild(dl);
+      } else if (data.video_path) {
+        output.textContent = data.result;
+        const vidUrl = '/api/test/video?path=' + encodeURIComponent(data.video_path);
+        const vid = document.createElement('video');
+        vid.controls = true; vid.style.cssText = 'display:block;margin-top:8px;width:100%;max-height:400px';
+        vid.src = vidUrl;
+        output.appendChild(vid);
+        const dl = document.createElement('a');
+        dl.href = '#'; dl.className = 'download-btn'; dl.textContent = 'Download video';
+        dl.onclick = (e) => { e.preventDefault(); downloadFile(vidUrl, 'video.mp4'); };
         output.appendChild(dl);
       } else if (data.embeddings) {
         const dims = data.dimensions || '?';

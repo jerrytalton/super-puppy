@@ -387,6 +387,7 @@ def _fetch_all_models():
         "transcription": "mlx",
         "image_edit": "mflux",
         "image_gen": "mflux",
+        "video": "mlx-video",
     }
     from lib.hf_scanner import scan_hf_cache
     for hf_model in scan_hf_cache(_TASK_BACKENDS.keys()):
@@ -480,6 +481,7 @@ DEFAULT_PROFILES = {
                 "embedding": "mxbai-embed-large:latest",
                 "unfiltered": "dolphin3:8b",
                 "computer_use": "ui-tars-72b",
+                "video": "Wan2.2-T2V-14B",
             },
         },
         "desktop": {
@@ -499,6 +501,7 @@ DEFAULT_PROFILES = {
                 "embedding": "mxbai-embed-large:latest",
                 "unfiltered": "dolphin3:8b",
                 "computer_use": "maternion/fara:7b",
+                "video": "Wan2.1-T2V-1.3B",
             },
         },
         "maximum": {
@@ -519,6 +522,7 @@ DEFAULT_PROFILES = {
                 "embedding": "mxbai-embed-large:latest",
                 "unfiltered": "dolphin3:8b",
                 "computer_use": "ui-tars-72b",
+                "video": "Wan2.2-T2V-14B",
             },
         },
         "laptop": {
@@ -1420,6 +1424,67 @@ def api_test():
                 Path(out).write_bytes(base64.b64decode(image_b64))
                 return jsonify({"result": f"Saved to {out}", "image_path": out, "model": model})
 
+        elif tool == "video":
+            model, backend = _pick("video")
+            image_path = body.get("image_path", "")
+            if image_path and not _is_safe_test_path(image_path):
+                return jsonify({"error": _PLAYGROUND_PATH_ERROR}), 403
+            audio_genre = body.get("audio_genre", "")
+            import time as _time
+            out = f"/tmp/playground_video_{int(_time.time())}.mp4"
+
+            width_str = body.get("width", "")
+            height_str = body.get("height", "")
+            frames_str = body.get("num_frames", "")
+
+            mode = "audio" if audio_genre else ("i2v" if image_path else "t2v")
+
+            with _track_playground("video", model, backend):
+                try:
+                    if mode == "audio":
+                        cmd = [
+                            sys.executable, "-m", "mlx_video_with_audio",
+                            "--prompt", body["prompt"],
+                            "--output", out,
+                        ]
+                        if width_str:
+                            cmd.extend(["--width", width_str])
+                        if height_str:
+                            cmd.extend(["--height", height_str])
+                        if frames_str:
+                            cmd.extend(["--num-frames", frames_str])
+                        if audio_genre:
+                            cmd.extend(["--audio-genre", audio_genre])
+                    else:
+                        cmd = [
+                            sys.executable, "-m", "mlx_video",
+                            "--model", model,
+                            "--prompt", body["prompt"],
+                            "--output", out,
+                        ]
+                        if image_path:
+                            cmd.extend(["--image", image_path])
+                        if width_str:
+                            cmd.extend(["--width", width_str])
+                        if height_str:
+                            cmd.extend(["--height", height_str])
+                        if frames_str:
+                            cmd.extend(["--num-frames", frames_str])
+
+                    result = subprocess.run(
+                        cmd, capture_output=True, text=True, timeout=1200,
+                        env={**os.environ,
+                             "PATH": f"/opt/homebrew/bin:{os.environ.get('PATH', '')}"},
+                    )
+                except FileNotFoundError:
+                    return jsonify({"error": "mlx-video is not installed. Install with: pip install git+https://github.com/Blaizzy/mlx-video.git"})
+                if result.returncode != 0:
+                    return jsonify({"error": f"video: generation failed:\n{result.stderr[-300:]}"})
+
+            if not Path(out).exists():
+                return jsonify({"error": f"video: output was not created at {out}"})
+            return jsonify({"result": f"Saved to {out}", "video_path": out, "model": model})
+
         elif tool == "transcribe":
             model, backend = _pick("transcription")
             if not model:
@@ -1614,6 +1679,16 @@ def api_test_audio():
         return "Not found", 404
     as_download = "download" in request.args
     return send_file(path, mimetype="audio/wav", as_attachment=as_download,
+                     download_name=Path(path).name if as_download else None)
+
+
+@app.route("/api/test/video")
+def api_test_video():
+    path = request.args.get("path", "")
+    if not path or not _is_safe_test_path(path) or not Path(path).exists():
+        return "Not found", 404
+    as_download = "download" in request.args
+    return send_file(path, mimetype="video/mp4", as_attachment=as_download,
                      download_name=Path(path).name if as_download else None)
 
 
