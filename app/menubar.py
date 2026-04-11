@@ -1260,7 +1260,7 @@ class LocalModelsApp(rumps.App):
                 env["PATH"] = f"/opt/homebrew/bin:{env.get('PATH', '')}"
             self._startup_log = open("/tmp/local-models-startup.log", "w")
             subprocess.Popen(
-                [os.path.expanduser("~/bin/start-local-models")],
+                [os.path.expanduser("~/.local/bin/start-local-models")],
                 env=env,
                 stdout=self._startup_log,
                 stderr=self._startup_log,
@@ -1328,7 +1328,7 @@ class LocalModelsApp(rumps.App):
                 env["MCP_ALLOWED_HOSTS"] = f"{ts_fqdn}:*"
         self._mcp_log = open("/tmp/local-models-mcp.log", "w")
         self._mcp_proc = subprocess.Popen(
-            [os.path.expanduser("~/bin/local-models-mcp-detect")],
+            [os.path.expanduser("~/.local/bin/local-models-mcp-detect")],
             env=env,
             stdout=self._mcp_log,
             stderr=self._mcp_log,
@@ -1579,7 +1579,7 @@ class LocalModelsApp(rumps.App):
         """Stop local servers."""
         try:
             subprocess.run(
-                [os.path.expanduser("~/bin/start-local-models"), "--stop"],
+                [os.path.expanduser("~/.local/bin/start-local-models"), "--stop"],
                 capture_output=True, timeout=10,
             )
             self.servers_started = False
