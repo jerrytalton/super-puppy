@@ -253,7 +253,7 @@ class TestActivationPruning:
         assert "nonexistent-model" in missing_names
         assert "gone-image-model" in missing_names
 
-    def test_reports_stale_hf_models(self, client, profiles_dir):
+    def test_reports_missing_hf_models_as_pullable(self, client, profiles_dir):
         ps.save_profiles({
             "version": ps.PROFILES_VERSION,
             "active": None,
@@ -269,7 +269,7 @@ class TestActivationPruning:
             resp = client.post("/api/profiles/test/activate")
 
         data = resp.get_json()
-        assert any("org/nonexistent-hf-model" in w for w in data["warnings"])
+        assert any(m["name"] == "org/nonexistent-hf-model" for m in data["missing"])
 
     def test_skips_pruning_when_no_models(self, client, profiles_dir):
         ps.save_profiles({

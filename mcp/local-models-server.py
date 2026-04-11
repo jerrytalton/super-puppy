@@ -1093,10 +1093,11 @@ async def local_video(
         loop = asyncio.get_event_loop()
 
         if mode == "audio":
+            # mlx-video-with-audio: LTX-2 with synchronized audio
             cmd = [
-                sys.executable, "-m", "mlx_video_with_audio",
+                sys.executable, "-m", "mlx_video.generate_av",
                 "--prompt", prompt,
-                "--output", output_path,
+                "--output-path", output_path,
             ]
             if width:
                 cmd.extend(["--width", str(width)])
@@ -1104,15 +1105,30 @@ async def local_video(
                 cmd.extend(["--height", str(height)])
             if num_frames:
                 cmd.extend(["--num-frames", str(num_frames)])
-            if audio_genre:
-                cmd.extend(["--audio-genre", audio_genre])
             timeout = 1200
-        else:
+        elif "ltx" in selected.lower():
+            # LTX-2 via mlx-video
             cmd = [
-                sys.executable, "-m", "mlx_video",
-                "--model", selected,
+                sys.executable, "-m", "mlx_video.ltx_2.generate",
                 "--prompt", prompt,
-                "--output", output_path,
+                "--output-path", output_path,
+            ]
+            if image_path:
+                cmd.extend(["--image", image_path])
+            if width:
+                cmd.extend(["--width", str(width)])
+            if height:
+                cmd.extend(["--height", str(height)])
+            if num_frames:
+                cmd.extend(["-n", str(num_frames)])
+            timeout = 900
+        else:
+            # Wan2.x via mlx-video
+            cmd = [
+                sys.executable, "-m", "mlx_video.wan_2.generate",
+                "--model-dir", selected,
+                "--prompt", prompt,
+                "--output-path", output_path,
             ]
             if image_path:
                 cmd.extend(["--image", image_path])
