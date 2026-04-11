@@ -378,3 +378,23 @@ class TestVideoTask:
         from lib.models import ALWAYS_EXCLUDE
         assert "wan2" in ALWAYS_EXCLUDE
         assert "ltx" in ALWAYS_EXCLUDE
+
+    def test_hf_scanner_classifies_wan_video(self):
+        from lib.hf_scanner import _classify_model
+        config = {"_class_name": "WanTransformer3DModel"}
+        assert _classify_model(config, "Wan2.2-T2V-14B") == "video"
+
+    def test_hf_scanner_classifies_ltx_video(self):
+        from lib.hf_scanner import _classify_model
+        config = {"_class_name": "LTXVideoTransformer3DModel"}
+        assert _classify_model(config, "Lightricks/LTX-Video-2") == "video"
+
+    def test_hf_scanner_classifies_ltx_by_name(self):
+        from lib.hf_scanner import _classify_model
+        config = {}
+        assert _classify_model(config, "ltx-video-2b-v0.9.5") == "video"
+
+    def test_hf_scanner_classifies_wan_by_name(self):
+        from lib.hf_scanner import _classify_model
+        config = {}
+        assert _classify_model(config, "Wan2.1-T2V-1.3B") == "video"
