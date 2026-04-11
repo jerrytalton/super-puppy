@@ -22,12 +22,18 @@ _MODEL_TYPE_TASKS = {
 _DIFFUSERS_CLASS_TASKS = {
     "FluxTransformer2DModel": "image_gen",
     "Flux2Transformer2DModel": "image_gen",
+    "WanTransformer3DModel": "video",
+    "LTXVideoTransformer3DModel": "video",
 }
 
 # HF model ID substrings that refine task classification
 _NAME_TASK_OVERRIDES = {
     "Kontext": "image_edit",
     "Fill": "image_edit",
+    "ltx-video": "video",
+    "ltx2": "video",
+    "wan2": "video",
+    "Wan2": "video",
 }
 
 # Bytes per element for each dtype
@@ -156,10 +162,7 @@ def _classify_model(config: dict, hf_id: str) -> str | None:
     if not task and "istftnet" in config and "plbert" in config:
         task = "tts"
 
-    if not task:
-        return None
-
-    # Refine by model name (e.g. Flux Kontext → image_edit, not image_gen)
+    # Refine or assign by model name (e.g. Flux Kontext → image_edit, not image_gen)
     for substring, override_task in _NAME_TASK_OVERRIDES.items():
         if substring.lower() in hf_id.lower():
             task = override_task
