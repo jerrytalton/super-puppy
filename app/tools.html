@@ -524,7 +524,8 @@ function renderModelPicker(task, defaultModel, profileModel) {
   body.innerHTML = '';
 
   const eligible = allModels.filter(m => m.eligible_tasks?.includes(task));
-  const models = eligible.length ? eligible : allModels;
+  const specialTasks = new Set(['vision','image_gen','image_edit','video','transcription','tts','embedding','unfiltered','computer_use']);
+  const models = eligible.length ? eligible : (specialTasks.has(task) ? [] : allModels);
 
   const selLabel = document.getElementById('model-picker-selected');
   const selInfo = selectedModel ? allModels.find(m => m.name === selectedModel) : null;
@@ -537,6 +538,12 @@ function renderModelPicker(task, defaultModel, profileModel) {
   const thinkEl = document.getElementById('think-toggle');
   thinkEl.className = 'think-toggle' + (thinkEnabled ? ' on' : '');
 
+  if (!models.length) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'padding:16px;color:var(--text3);font-size:13px;text-align:center';
+    empty.textContent = 'No models available for this task. Pull one from Model Profiles.';
+    body.appendChild(empty);
+  }
   for (const m of models) {
     const card = document.createElement('div');
     const isSelected = m.name === selectedModel;
