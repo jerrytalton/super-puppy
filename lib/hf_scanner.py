@@ -33,7 +33,6 @@ _NAME_TASK_OVERRIDES = {
     "ltx-video": "video",
     "ltx2": "video",
     "wan2": "video",
-    "Wan2": "video",
 }
 
 # Bytes per element for each dtype

@@ -1441,10 +1441,11 @@ def api_test():
 
             with _track_playground("video", model, backend):
                 try:
+                    prompt = body.get("prompt", "")
                     if mode == "audio":
                         cmd = [
                             sys.executable, "-m", "mlx_video_with_audio",
-                            "--prompt", body["prompt"],
+                            "--prompt", prompt,
                             "--output", out,
                         ]
                         if width_str:
@@ -1459,7 +1460,7 @@ def api_test():
                         cmd = [
                             sys.executable, "-m", "mlx_video",
                             "--model", model,
-                            "--prompt", body["prompt"],
+                            "--prompt", prompt,
                             "--output", out,
                         ]
                         if image_path:
@@ -1477,7 +1478,9 @@ def api_test():
                              "PATH": f"/opt/homebrew/bin:{os.environ.get('PATH', '')}"},
                     )
                 except FileNotFoundError:
-                    return jsonify({"error": "mlx-video is not installed. Install with: pip install git+https://github.com/Blaizzy/mlx-video.git"})
+                    return jsonify({"error": "mlx-video is not installed. Install with: pip install git+https://github.com/Blaizzy/mlx-video.git"}), 500
+                except subprocess.TimeoutExpired:
+                    return jsonify({"error": "video: generation timed out after 20 minutes."})
                 if result.returncode != 0:
                     return jsonify({"error": f"video: generation failed:\n{result.stderr[-300:]}"})
 
