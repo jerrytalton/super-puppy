@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["flask==3.1.3", "pyyaml==6.0.3", "requests==2.33.1", "mlx-audio[tts] @ git+https://github.com/Blaizzy/mlx-audio.git", "mlx-video @ git+https://github.com/Blaizzy/mlx-video.git@9ab4826d20e39286af13a26615c33b403d48be72", "mlx-video-with-audio==0.1.33"]
+# dependencies = ["flask==3.1.3", "pyyaml==6.0.3", "requests==2.33.1", "mlx-audio[tts] @ git+https://github.com/Blaizzy/mlx-audio.git"]
 # ///
 """
 Model Profile Server for Super Puppy.
