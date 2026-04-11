@@ -84,7 +84,7 @@ The MCP server requires a bearer token (`MCP_AUTH_TOKEN`). The token is stored i
 
 Profiles map these task types to models. Defined in `lib/models.py`:
 - **Standard tasks:** `code`, `general`, `reasoning`, `long_context`, `translation`
-- **Special tasks** (matched by model capability): `vision`, `computer_use`, `image_gen`, `image_edit`, `transcription`, `tts`, `embedding`, `unfiltered`
+- **Special tasks** (matched by model capability): `vision`, `computer_use`, `image_gen`, `image_edit`, `video`, `transcription`, `tts`, `embedding`, `unfiltered`
 
 Task filters (`TASK_FILTERS`) and the `model_matches_filter()` function are shared across all three Python consumers via `lib/models.py`.
 

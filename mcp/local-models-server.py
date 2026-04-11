@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["mcp[cli]==1.26.0", "httpx==0.28.1", "sentence-transformers==5.3.0", "torch==2.11.0", "pyyaml==6.0.3", "mlx-audio[tts] @ git+https://github.com/Blaizzy/mlx-audio.git@e42e1431fcf89af313375296c46d03a0153c4aa7"]
+# dependencies = ["mcp[cli]==1.26.0", "httpx==0.28.1", "sentence-transformers==5.3.0", "torch==2.11.0", "pyyaml==6.0.3", "mlx-audio[tts] @ git+https://github.com/Blaizzy/mlx-audio.git@e42e1431fcf89af313375296c46d03a0153c4aa7", "mlx-video @ git+https://github.com/Blaizzy/mlx-video.git", "mlx-video-with-audio"]
 # ///
 """
 Local Models MCP Server for Super Puppy.
