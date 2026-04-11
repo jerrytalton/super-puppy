@@ -352,3 +352,29 @@ class TestValidateNetworkConf:
              patch.object(models, "MCP_PREFS_FILE", prefs):
             warnings = models.validate_network_conf()
         assert any("not valid JSON" in w for w in warnings)
+
+
+class TestVideoTask:
+    def test_video_in_special_tasks(self):
+        from lib.models import SPECIAL_TASKS
+        assert "video" in SPECIAL_TASKS
+
+    def test_video_has_prefixes(self):
+        from lib.models import SPECIAL_TASKS
+        task = SPECIAL_TASKS["video"]
+        assert "label" in task
+        assert "prefixes" in task
+        assert len(task["prefixes"]) > 0
+
+    def test_video_prefixes_match_known_models(self):
+        from lib.models import SPECIAL_TASKS
+        prefixes = SPECIAL_TASKS["video"]["prefixes"]
+        test_names = ["wan2.2-i2v", "ltx-video-2b", "Wan2.1-T2V"]
+        for name in test_names:
+            assert any(name.lower().startswith(p.lower()) for p in prefixes), (
+                f"{name} should match a video prefix")
+
+    def test_video_models_excluded_from_general_tasks(self):
+        from lib.models import ALWAYS_EXCLUDE
+        assert "wan2" in ALWAYS_EXCLUDE
+        assert "ltx" in ALWAYS_EXCLUDE
