@@ -1424,8 +1424,8 @@ class LocalModelsApp(rumps.App):
             subprocess.run(
                 ["tailscale", "serve", "reset"],
                 capture_output=True, timeout=10)
-        except Exception:
-            pass
+        except Exception as e:
+            logging.warning("tailscale serve reset failed: %s", e)
         for port in (8100, self._profile_fixed_port,
                      int(self.ollama_port), int(self.mlx_port)):
             try:

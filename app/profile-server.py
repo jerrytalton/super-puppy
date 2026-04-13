@@ -177,8 +177,8 @@ def _referenced_hf_models() -> set[str]:
             for v in (prof.get("tasks") or {}).values():
                 if isinstance(v, str) and _is_hf_repo_id(v):
                     names.add(v)
-    except Exception:
-        pass
+    except Exception as e:
+        logging.debug("_referenced_hf_models: profile scan failed: %s", e)
     try:
         prefs = load_default_prefs()
         for v in prefs.values():
@@ -186,8 +186,8 @@ def _referenced_hf_models() -> set[str]:
                 for item in v:
                     if isinstance(item, str) and _is_hf_repo_id(item):
                         names.add(item)
-    except Exception:
-        pass
+    except Exception as e:
+        logging.debug("_referenced_hf_models: prefs scan failed: %s", e)
     for prof in DEFAULT_PROFILES["profiles"].values():
         for v in (prof.get("tasks") or {}).values():
             if isinstance(v, str) and _is_hf_repo_id(v):
@@ -241,8 +241,8 @@ def _scan_orphan_partials():
                 gb = _get_hf_model_size(name)
                 if gb:
                     total = int(gb * 1e9)
-            except Exception:
-                pass
+            except Exception as e:
+                logging.debug("HF size lookup for %s failed: %s", name, e)
             # Absence of .incomplete blobs is the strongest "done" signal
             # we have: if huggingface_hub finished materializing every
             # blob, it atomically renamed the .incomplete file to its
@@ -441,8 +441,8 @@ def _pull_worker_hf(name: str, total_bytes: int | None):
         gb = _get_hf_model_size(name)
         if gb:
             total_bytes = int(gb * 1e9)
-    except Exception:
-        pass
+    except Exception as e:
+        logging.debug("HF size re-query for %s failed, using cached total: %s", name, e)
 
     def _snapshot(status="running", extra=None):
         evt = {"completed": _hf_cache_bytes(name), "status": status}
@@ -538,8 +538,8 @@ def _pull_worker_hf(name: str, total_bytes: int | None):
         if proc.stderr:
             try:
                 last_err_tail = proc.stderr.read().decode(errors="replace")[-400:]
-            except Exception:
-                pass
+            except Exception as e:
+                logging.warning("pull worker %s: failed to read stderr tail: %s", name, e)
 
         # Clean success.  Trust the filesystem over the flaky HF size oracle:
         # if `hf` exited 0 and no .incomplete blobs remain, the download is
@@ -750,14 +750,16 @@ def _idle_watcher():
 def ollama_get(path, timeout=10):
     try:
         return requests.get(f"{OLLAMA_URL}{path}", timeout=timeout).json()
-    except Exception:
+    except Exception as e:
+        logging.warning("ollama_get %s failed: %s: %s", path, type(e).__name__, e)
         return None
 
 
 def ollama_post(path, body, timeout=10):
     try:
         return requests.post(f"{OLLAMA_URL}{path}", json=body, timeout=timeout).json()
-    except Exception:
+    except Exception as e:
+        logging.warning("ollama_post %s failed: %s: %s", path, type(e).__name__, e)
         return None
 
 
@@ -1822,8 +1824,8 @@ def api_profiles_warm(name):
                           json={"model": model, "prompt": "", "keep_alive": "5m"},
                           timeout=300)
             loaded.append(model)
-        except Exception:
-            pass
+        except Exception as e:
+            logging.warning("warm: failed to preload ollama %s: %s", model, e)
 
     # MLX on-demand models: a tiny completion request triggers loading.
     # They persist in memory for their idle_timeout (120-300s).
@@ -1834,8 +1836,8 @@ def api_profiles_warm(name):
                                 "messages": [{"role": "user", "content": "hi"}]},
                           timeout=120)
             loaded.append(model)
-        except Exception:
-            pass
+        except Exception as e:
+            logging.warning("warm: failed to preload mlx %s: %s", model, e)
 
     _model_cache["data"] = None
     return jsonify({"ok": True, "loaded": loaded})
