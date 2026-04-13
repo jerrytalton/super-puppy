@@ -2094,6 +2094,8 @@ class LocalModelsApp(rumps.App):
         """Open a native WKWebView window at the given server path."""
         from AppKit import (NSRect, NSBackingStoreBuffered,
                             NSWindowStyleMaskTitled, NSWindowStyleMaskClosable,
+                            NSWindowStyleMaskMiniaturizable,
+                            NSWindowStyleMaskResizable,
                             NSApplicationActivationPolicyRegular,
                             NSApplicationActivationPolicyAccessory,
                             NSApp, NSImage)
@@ -2103,7 +2105,8 @@ class LocalModelsApp(rumps.App):
         self._ensure_profile_server()
 
         frame = NSRect((200, 200), size)
-        style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+        style = (NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+                 | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable)
         window = _ProfileWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             frame, style, NSBackingStoreBuffered, False)
         window.setTitle_(title)
