@@ -1402,7 +1402,10 @@ def api_tasks():
 def api_profiles_get():
     data = load_profiles()
     # Surface models that the active profile references but aren't installed,
-    # so the UI can prompt the user to pull them.
+    # so the UI can prompt the user to pull them.  Respect the pulls
+    # registry's `dismissed` list — if the user explicitly dismissed a repo
+    # from the Downloads panel, they don't want to be re-prompted on every
+    # page load.
     active = data.get("active")
     profile = data.get("profiles", {}).get(active, {}) if active else {}
     tasks = profile.get("tasks") or {}
@@ -1413,6 +1416,12 @@ def api_profiles_get():
             existing = current.get(task, [])
             merged[task] = [pick] + [m for m in existing if m != pick]
         missing, _ = _check_missing_models(merged)
+        try:
+            with _pulls_lock():
+                dismissed = set(_pulls_read().get("dismissed", []))
+        except Exception:
+            dismissed = set()
+        missing = [m for m in missing if m not in dismissed]
         if missing:
             data["missing"] = _resolve_model_sizes(missing)
     return jsonify(data)
