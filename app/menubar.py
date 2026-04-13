@@ -1121,7 +1121,7 @@ class LocalModelsApp(rumps.App):
             "Restart MCP", callback=self._restart_mcp)
         self.menu_mcp.add(self.menu_mcp_restart)
         self.mcp_models = []  # populated on first refresh from MCP server
-        self.menu_profiles = rumps.MenuItem("Model Profiles",
+        self.menu_profiles = rumps.MenuItem("Models",
                                            callback=self.open_profiles)
         self.menu_playground = rumps.MenuItem("Playground",
                                              callback=self.open_tools)
@@ -1957,7 +1957,7 @@ class LocalModelsApp(rumps.App):
                 self.menu_remote_access.title = "\u274c Remote Access"
                 self.menu_share_url.set_callback(None)
 
-        self._styled_menu(self.menu_profiles, "", "Model Profiles", profile)
+        self._styled_menu(self.menu_profiles, "", "Models", profile)
 
         # ── Per-service status lines ──
         ollama_loading = getattr(self, 'ollama_loading', False)
@@ -2371,7 +2371,7 @@ class LocalModelsApp(rumps.App):
             return
 
         from AppKit import NSApp, NSApplicationActivationPolicyAccessory
-        window = self._open_webview("Model Profiles", "/")
+        window = self._open_webview("Models", "/")
         delegate = _ProfileWindowDelegate.alloc().init()
         delegate.callback = lambda: (
             setattr(self, 'profile_window', None),

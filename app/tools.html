@@ -171,7 +171,7 @@ h2 { font-size: 13px; font-weight: 600; color: var(--text2); text-transform: upp
 <body>
 
 <nav>
-  <a href="/profiles">Profiles</a>
+  <a href="/profiles">Models</a>
   <a href="/tools" class="active">Playground</a>
   <a href="/activity">Activity</a>
   <a href="#" id="share-link" onclick="copyPageUrl();return false" style="margin-left:auto" title="Copy URL to clipboard">Share</a>
@@ -542,7 +542,7 @@ function renderModelPicker(task, defaultModel, profileModel) {
   if (!models.length) {
     const empty = document.createElement('div');
     empty.style.cssText = 'padding:16px;color:var(--text3);font-size:13px;text-align:center';
-    empty.textContent = 'No models available for this task. Pull one from Model Profiles.';
+    empty.textContent = 'No models available for this task. Pull one from the Models page.';
     body.appendChild(empty);
   }
   for (const m of models) {
