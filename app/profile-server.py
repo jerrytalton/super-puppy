@@ -9,10 +9,15 @@ Web-based preference pane for managing which models are loaded
 and which back each MCP tool task. Launched from the menu bar app.
 """
 
+import argparse
+import errno
+import fcntl
 import json
 import logging
 import os
 import re
+import shlex
+import signal
 import subprocess
 import sys
 import threading
@@ -58,6 +63,464 @@ HTML_FILE = Path(__file__).parent / "profiles.html"
 TOOLS_HTML = Path(__file__).parent / "tools.html"
 
 IDLE_TIMEOUT = int(os.environ.get("PROFILE_IDLE_TIMEOUT", "600"))
+
+HF_CACHE = Path.home() / ".cache" / "huggingface" / "hub"
+
+# ── Model pull registry ──────────────────────────────────────────────
+#
+# Downloads run in detached subprocesses (new session, decoupled from the
+# profile server lifecycle) so they survive server restarts.  The registry
+# below is the authoritative record of in-flight and recently-finished pulls,
+# stored as JSON under the user's config dir and guarded by an advisory lock
+# so concurrent readers/writers don't race.
+#
+# Each worker periodically writes progress snapshots to its own file under
+# PULLS_DIR; the GET endpoint merges those snapshots with registry metadata.
+
+PULLS_DIR = Path.home() / ".config" / "local-models" / "pulls"
+PULLS_FILE = PULLS_DIR / "registry.json"
+PULLS_LOCK = PULLS_DIR / "registry.lock"
+
+
+def _pulls_prepare_dir():
+    PULLS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+@contextmanager
+def _pulls_lock():
+    _pulls_prepare_dir()
+    fd = os.open(str(PULLS_LOCK), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _pulls_read() -> dict:
+    try:
+        return json.loads(PULLS_FILE.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {"pulls": {}}
+
+
+def _pulls_write(data: dict):
+    _pulls_prepare_dir()
+    tmp = PULLS_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    tmp.replace(PULLS_FILE)
+
+
+def _sanitize_name(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", name)
+
+
+def _progress_path(name: str) -> Path:
+    return PULLS_DIR / f"{_sanitize_name(name)}.progress.json"
+
+
+def _log_path(name: str) -> Path:
+    return PULLS_DIR / f"{_sanitize_name(name)}.log"
+
+
+def _pid_alive(pid: int) -> bool:
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError as e:
+        return e.errno == errno.EPERM  # EPERM = exists but not ours
+
+
+def _hf_cache_bytes(name: str) -> int:
+    """Sum of real file bytes under the HF cache dir for a repo id.  Counts
+    blobs and in-progress .incomplete partials; skips symlink snapshots."""
+    root = HF_CACHE / f"models--{name.replace('/', '--')}"
+    if not root.exists():
+        return 0
+    total = 0
+    for p in root.rglob("*"):
+        try:
+            if p.is_file() and not p.is_symlink():
+                total += p.stat().st_size
+        except OSError:
+            pass
+    return total
+
+
+def _read_progress_file(name: str) -> dict:
+    try:
+        return json.loads(_progress_path(name).read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _write_progress_file(name: str, data: dict):
+    _pulls_prepare_dir()
+    p = _progress_path(name)
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data))
+    tmp.replace(p)
+
+
+def _referenced_hf_models() -> set[str]:
+    """Union of HF repo ids referenced by profiles, MCP prefs, and default
+    presets.  Used to look for orphaned partial downloads."""
+    names = set()
+    try:
+        data = _pulls_read_profiles_safe()
+        for prof in (data.get("profiles") or {}).values():
+            for v in (prof.get("tasks") or {}).values():
+                if isinstance(v, str) and _is_hf_repo_id(v):
+                    names.add(v)
+    except Exception:
+        pass
+    try:
+        prefs = load_default_prefs()
+        for v in prefs.values():
+            if isinstance(v, list):
+                for item in v:
+                    if isinstance(item, str) and _is_hf_repo_id(item):
+                        names.add(item)
+    except Exception:
+        pass
+    for prof in DEFAULT_PROFILES["profiles"].values():
+        for v in (prof.get("tasks") or {}).values():
+            if isinstance(v, str) and _is_hf_repo_id(v):
+                names.add(v)
+    return names
+
+
+def _pulls_read_profiles_safe() -> dict:
+    try:
+        return json.loads(PROFILES_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def _scan_orphan_partials():
+    """Surface partial HF downloads that have no registry entry.  The UI then
+    shows them as 'interrupted' with a Resume button so the user isn't left
+    wondering why `du` says 15 GB but nothing is happening."""
+    with _pulls_lock():
+        data = _pulls_read()
+        pulls = data.setdefault("pulls", {})
+        dismissed = set(data.get("dismissed", []))
+        existing_live = {n for n, e in pulls.items() if _pid_alive(e.get("pid", 0))}
+        changed = False
+        for name in _referenced_hf_models():
+            if name in existing_live or name in dismissed:
+                continue
+            bytes_on_disk = _hf_cache_bytes(name)
+            if bytes_on_disk <= 0:
+                continue
+            total = 0
+            try:
+                gb = _get_hf_model_size(name)
+                if gb:
+                    total = int(gb * 1e9)
+            except Exception:
+                pass
+            # Fully cached already → the model is installed; no need to
+            # register it (get_all_models will pick it up).
+            if total and bytes_on_disk >= int(total * 0.99):
+                if name in pulls:
+                    del pulls[name]
+                    changed = True
+                continue
+            entry = pulls.get(name, {})
+            entry.update({
+                "kind": "hf",
+                "pid": entry.get("pid", 0),
+                "total_bytes": total or entry.get("total_bytes"),
+                "started_at": entry.get("started_at") or time.time(),
+                "status": "interrupted",
+                "completed": bytes_on_disk,
+            })
+            pulls[name] = entry
+            _write_progress_file(name, {"completed": bytes_on_disk,
+                                        "total": total or None,
+                                        "status": "interrupted"})
+            changed = True
+        if changed:
+            _pulls_write(data)
+
+
+def _reconcile_pulls() -> dict:
+    """Walk the registry, drop entries whose worker is gone and whose work is
+    finished (or was never started), and return the current state.  Called on
+    server startup and on every GET /api/models/pulls."""
+    with _pulls_lock():
+        data = _pulls_read()
+        changed = False
+        for name in list(data.get("pulls", {}).keys()):
+            entry = data["pulls"][name]
+            pid = entry.get("pid", 0)
+            if _pid_alive(pid):
+                entry["status"] = "running"
+                continue
+            prog = _read_progress_file(name)
+            total = entry.get("total_bytes") or prog.get("total") or 0
+            completed = prog.get("completed", 0)
+            # Worker exited: decide final status.
+            if prog.get("status") == "success":
+                entry["status"] = "success"
+                entry["completed"] = total or completed
+                entry["total_bytes"] = total or completed
+            elif total and completed >= int(total * 0.99):
+                entry["status"] = "success"
+                entry["completed"] = total
+                entry["total_bytes"] = total
+            elif prog.get("status") == "error":
+                entry["status"] = "error"
+                entry["error"] = prog.get("error", "download failed")
+                entry["completed"] = completed
+            else:
+                entry["status"] = "interrupted"
+                entry["completed"] = completed
+            changed = True
+        if changed:
+            _pulls_write(data)
+        return data
+
+
+def _start_pull_worker(name: str, kind: str, total_bytes: int | None) -> int:
+    """Spawn a detached worker process that pulls the model and writes progress
+    snapshots.  Returns the child's PID.  The worker is its own session leader
+    so SIGTERM on the profile server does not propagate."""
+    _pulls_prepare_dir()
+    # Seed the progress file so the UI has something to read immediately.
+    seed = {"completed": _hf_cache_bytes(name) if kind == "hf" else 0,
+            "status": "starting"}
+    if total_bytes:
+        seed["total"] = int(total_bytes)
+    _write_progress_file(name, seed)
+
+    log = _log_path(name).open("ab", buffering=0)
+    cmd = [sys.executable, str(Path(__file__).resolve()),
+           "--pull-worker",
+           "--kind", kind,
+           "--name", name]
+    if total_bytes:
+        cmd.extend(["--total", str(int(total_bytes))])
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=log, stderr=log,
+        start_new_session=True,
+        close_fds=True,
+        env={**os.environ, "PATH": f"/opt/homebrew/bin:{os.environ.get('PATH', '')}"},
+    )
+    return proc.pid
+
+
+def _cancel_pull_entry(name: str) -> bool:
+    """Send SIGTERM to the worker's process group.  Returns True if something
+    was killed, False if the entry wasn't running."""
+    with _pulls_lock():
+        data = _pulls_read()
+        entry = data.get("pulls", {}).get(name)
+        if not entry:
+            return False
+        pid = entry.get("pid", 0)
+    killed = False
+    if _pid_alive(pid):
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+            killed = True
+        except (ProcessLookupError, PermissionError):
+            pass
+    return killed
+
+
+def _kill_stray_hf_downloads(name: str):
+    """Kill any `hf download <name>` processes we don't own.  The old SSE
+    pull handler spawned `hf` as a child of Flask request threads without
+    `start_new_session`, so on profile-server restart they were reparented
+    to init and kept holding file locks on `.incomplete` blobs.  A new
+    worker's `hf` then blocks forever waiting on those locks."""
+    try:
+        out = subprocess.check_output(
+            ["ps", "-axo", "pid=,command="], text=True, timeout=5)
+    except Exception:
+        return
+    needle = f"hf download {name}"
+    for line in out.splitlines():
+        line = line.strip()
+        if needle not in line:
+            continue
+        pid_str, _, _cmd = line.partition(" ")
+        try:
+            pid = int(pid_str)
+        except ValueError:
+            continue
+        if pid == os.getpid():
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+def _pull_worker_hf(name: str, total_bytes: int | None):
+    """HF pull worker body.  Runs `hf download` and periodically snapshots
+    the cache size into the progress file."""
+    _kill_stray_hf_downloads(name)
+    # Give the dying strays a moment to release their file locks so `hf`'s
+    # atomic-rename step doesn't race them.
+    time.sleep(0.5)
+
+    try:
+        proc = subprocess.Popen(
+            ["hf", "download", name],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            env={**os.environ, "PATH": f"/opt/homebrew/bin:{os.environ.get('PATH', '')}"},
+        )
+    except FileNotFoundError:
+        _write_progress_file(name, {"status": "error",
+                                    "error": "hf CLI not found (brew install huggingface-cli)"})
+        return 2
+
+    def _snapshot(status="running"):
+        evt = {"completed": _hf_cache_bytes(name), "status": status}
+        if total_bytes:
+            evt["total"] = int(total_bytes)
+        _write_progress_file(name, evt)
+
+    _snapshot()
+    while proc.poll() is None:
+        time.sleep(0.5)
+        _snapshot()
+
+    rc = proc.wait()
+    cache_now = _hf_cache_bytes(name)
+    # `hf download` sometimes exits 0 without finishing (e.g. transient
+    # errors that leave partials on disk).  Only declare success if the
+    # cache actually reflects a complete download.
+    if rc == 0 and total_bytes and cache_now >= int(total_bytes * 0.99):
+        _write_progress_file(name, {"completed": total_bytes,
+                                    "total": total_bytes,
+                                    "status": "success"})
+        return 0
+    if rc == 0 and not total_bytes:
+        # No size oracle available — trust hf's exit code.
+        _write_progress_file(name, {"completed": cache_now, "status": "success"})
+        return 0
+    err_tail = ""
+    if proc.stderr:
+        try:
+            err_tail = proc.stderr.read().decode(errors="replace")[-400:]
+        except Exception:
+            pass
+    status = "error" if rc != 0 else "interrupted"
+    payload = {"completed": cache_now, "status": status}
+    if total_bytes:
+        payload["total"] = int(total_bytes)
+    if status == "error":
+        payload["error"] = err_tail or f"hf exited with code {rc}"
+    elif err_tail:
+        payload["error"] = err_tail
+    _write_progress_file(name, payload)
+    return rc
+
+
+_OLLAMA_PULL_RE = re.compile(
+    r"(\d+)%.*?([\d.]+)\s*([KMGT]?B)/\s*([\d.]+)\s*([KMGT]?B)")
+
+
+def _parse_ollama_units(value: float, unit: str) -> int:
+    mul = {"B": 1, "KB": 1e3, "MB": 1e6, "GB": 1e9, "TB": 1e12}
+    return int(value * mul.get(unit.upper(), 1))
+
+
+def _pull_worker_ollama(name: str):
+    """Ollama pull worker body.  Uses the HTTP streaming API (JSON per line)
+    so progress is structured rather than ANSI-tqdm."""
+    try:
+        resp = requests.post(f"{OLLAMA_URL}/api/pull",
+                             json={"name": name, "stream": True},
+                             stream=True, timeout=None)
+    except Exception as e:
+        _write_progress_file(name, {"status": "error", "error": f"ollama unreachable: {e}"})
+        return 2
+
+    completed = 0
+    total = 0
+    last_snap = 0.0
+    error = None
+    last_line_status = ""
+
+    def _snapshot(status="running"):
+        evt = {"completed": completed, "status": status}
+        if total:
+            evt["total"] = total
+        if last_line_status:
+            evt["message"] = last_line_status
+        _write_progress_file(name, evt)
+
+    _snapshot()
+    try:
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            try:
+                chunk = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if "error" in chunk:
+                error = chunk["error"]
+                break
+            if "completed" in chunk:
+                completed = int(chunk["completed"])
+            if "total" in chunk:
+                total = int(chunk["total"])
+            status_msg = chunk.get("status", "")
+            if status_msg:
+                last_line_status = status_msg
+            now = time.time()
+            if now - last_snap >= 0.5:
+                last_snap = now
+                _snapshot()
+            if status_msg == "success":
+                _write_progress_file(name, {"completed": total or completed,
+                                            "total": total or completed,
+                                            "status": "success",
+                                            "message": status_msg})
+                return 0
+    except Exception as e:
+        error = str(e)
+
+    _write_progress_file(name, {"completed": completed, "total": total or None,
+                                "status": "error",
+                                "error": error or "pull stream closed unexpectedly"})
+    return 1
+
+
+def _run_pull_worker(kind: str, name: str, total_bytes: int | None):
+    """Entry point for --pull-worker subprocesses.  Ignore SIGINT (Ctrl-C on
+    the parent terminal); only an explicit cancel (SIGTERM to our pgroup)
+    should stop us."""
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    if kind == "hf":
+        return _pull_worker_hf(name, total_bytes)
+    return _pull_worker_ollama(name)
+
+
+def resolve_hf_snapshot(repo_id: str) -> Path | None:
+    """Return the newest local snapshot directory for an HF repo id, or None
+    if the repo isn't downloaded. CLI tools like mlx_video.generate_wan want a
+    filesystem path for --model-dir, not the repo id."""
+    cache_dir = HF_CACHE / f"models--{repo_id.replace('/', '--')}" / "snapshots"
+    if not cache_dir.exists():
+        return None
+    snaps = sorted(cache_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+    return snaps[0] if snaps else None
 
 # Playground request tracking — keyed by thread ID so overlapping requests don't clobber
 _playground_lock = threading.Lock()
@@ -302,12 +765,16 @@ def _fetch_all_models():
             models[name]["vram_bytes"] = m.get("size_vram", m.get("size", 0))
             models[name]["expires_at"] = m.get("expires_at")
 
-    # MLX models
+    # MLX models — config-driven discovery with download verification.
+    # The YAML config is the source of truth for what SHOULD be installed.
+    # The HF cache confirms what IS downloaded.  The MLX server response
+    # is supplementary (marks which models are currently loaded).
+    mlx_loaded = set()
     try:
         resp = requests.get(f"{MLX_URL}/v1/models", timeout=5)
-        mlx_models = resp.json().get("data", [])
+        mlx_loaded = {m["id"] for m in resp.json().get("data", [])}
     except Exception:
-        mlx_models = []
+        pass
 
     mlx_config = {}
     if MLX_SERVER_CONFIG.exists():
@@ -321,14 +788,38 @@ def _fetch_all_models():
 
     hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
 
-    for m in mlx_models:
-        mid = m["id"]
-        cfg = mlx_config.get(mid, {})
-        on_demand = cfg.get("on_demand", False)
+    def _hf_model_downloaded(model_path):
+        """Check if a HuggingFace model has been downloaded (snapshot exists with model files)."""
+        if not model_path:
+            return False
+        cache_dir = hf_cache / f"models--{model_path.replace('/', '--')}" / "snapshots"
+        if not cache_dir.exists():
+            return False
+        for snap in sorted(cache_dir.iterdir(), reverse=True):
+            # A real download has model weights (safetensors, npz, bin, pth)
+            # or at minimum a config file
+            for ext in ("*.safetensors", "*.npz", "*.bin", "*.pth", "config.json"):
+                if list(snap.glob(ext)):
+                    return True
+            # Check subdirectories (e.g. transformer/)
+            for sub in snap.iterdir():
+                if sub.is_dir():
+                    for ext in ("*.safetensors", "*.npz", "*.bin", "*.pth"):
+                        if list(sub.glob(ext)):
+                            return True
+        return False
+
+    for mid, cfg in mlx_config.items():
+        if mid in models:
+            continue  # already discovered via Ollama
         model_path = cfg.get("model_path", "")
+        on_demand = cfg.get("on_demand", False)
+
+        # Only include models that are actually downloaded
+        if not _hf_model_downloaded(model_path):
+            continue
 
         # Parse params from model path (e.g. "Qwen3.5-397B-A17B-4bit")
-        # Known models whose names don't contain a param count
         _KNOWN_MLX_PARAMS = {
             "whisper": 1.5,  # whisper-large-v3 is ~1.5B
         }
@@ -347,7 +838,6 @@ def _fetch_all_models():
         if not active_b:
             active_b = total_b
 
-        # Estimate VRAM: ~0.5 bytes per param at 4-bit quant
         est_bytes = int(total_b * 1e9 * 0.5) if total_b else 0
 
         # Detect vision: check HuggingFace config.json for vision_config
@@ -376,7 +866,7 @@ def _fetch_all_models():
             "has_vision": has_vision,
             "family": "mlx",
             "quant": "4bit" if "4bit" in model_path else "",
-            "is_loaded": not on_demand,  # always-on models are loaded
+            "is_loaded": mid in mlx_loaded,
             "expires_at": None,
             "on_demand": on_demand,
         }
@@ -457,7 +947,7 @@ def get_eligible_tasks(name, model_info):
 
 # ── Profiles ─────────────────────────────────────────────────────────
 
-PROFILES_VERSION = 18  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 19  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -478,10 +968,10 @@ DEFAULT_PROFILES = {
                 "image_edit": "black-forest-labs/FLUX.1-Kontext-dev",
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
-                "embedding": "mxbai-embed-large:latest",
+                "embedding": "qwen3-embedding:8b",
                 "unfiltered": "dolphin3:8b",
                 "computer_use": "ui-tars-72b",
-                "video": "Wan-AI/Wan2.2-T2V-A14B",
+                "video": "AITRADER/Wan2.2-T2V-A14B-mlx-bf16",
             },
         },
         "desktop": {
@@ -498,10 +988,9 @@ DEFAULT_PROFILES = {
                 "image_gen": "x/flux2-klein:latest",
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
-                "embedding": "mxbai-embed-large:latest",
+                "embedding": "qwen3-embedding:8b",
                 "unfiltered": "dolphin3:8b",
                 "computer_use": "maternion/fara:7b",
-                "video": "Wan-AI/Wan2.1-T2V-1.3B",
             },
         },
         "maximum": {
@@ -519,10 +1008,10 @@ DEFAULT_PROFILES = {
                 "image_edit": "black-forest-labs/FLUX.1-Kontext-dev",
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
-                "embedding": "mxbai-embed-large:latest",
+                "embedding": "qwen3-embedding:8b",
                 "unfiltered": "dolphin3:8b",
                 "computer_use": "ui-tars-72b",
-                "video": "Wan-AI/Wan2.2-T2V-A14B",
+                "video": "AITRADER/Wan2.2-T2V-A14B-mlx-bf16",
             },
         },
         "laptop": {
@@ -539,7 +1028,7 @@ DEFAULT_PROFILES = {
                 "image_gen": "x/flux2-klein:latest",
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/Kokoro-82M-bf16",
-                "embedding": "all-minilm:latest",
+                "embedding": "nomic-embed-text:latest",
                 "unfiltered": "dolphin3:8b",
                 "computer_use": "maternion/fara:7b",
             },
@@ -674,11 +1163,20 @@ def api_tasks():
 @app.route("/api/profiles", methods=["GET"])
 def api_profiles_get():
     data = load_profiles()
-    # Check all referenced models — profile tasks AND MCP preference fallbacks
-    prefs = load_default_prefs()
-    missing, _ = _check_missing_models(prefs)
-    if missing:
-        data["missing"] = _resolve_model_sizes(missing)
+    # Surface models that the active profile references but aren't installed,
+    # so the UI can prompt the user to pull them.
+    active = data.get("active")
+    profile = data.get("profiles", {}).get(active, {}) if active else {}
+    tasks = profile.get("tasks") or {}
+    if tasks:
+        current = load_default_prefs()
+        merged = {**current}
+        for task, pick in tasks.items():
+            existing = current.get(task, [])
+            merged[task] = [pick] + [m for m in existing if m != pick]
+        missing, _ = _check_missing_models(merged)
+        if missing:
+            data["missing"] = _resolve_model_sizes(missing)
     return jsonify(data)
 
 
@@ -758,22 +1256,38 @@ def _resolve_model_sizes(model_names):
 
 
 def _get_hf_model_size(name):
-    """Resolve HuggingFace model size in GB via the API."""
+    """Resolve HuggingFace model size in GB via the API.  Tries, in order:
+    safetensors.total, siblings[].size (rarely populated), the root
+    usedStorage field (bytes), and finally the /tree endpoint (authoritative,
+    sums every file)."""
     try:
         resp = requests.get(
             f"https://huggingface.co/api/models/{name}",
             timeout=5)
         if resp.ok:
             data = resp.json()
-            # safetensors size is most accurate; fall back to total siblings size
-            for sibling_key in ("safetensors", "siblings"):
-                if sibling_key in data:
-                    break
-            total = 0
-            for sib in data.get("siblings", []):
-                total += sib.get("size", 0)
-            if total > 0:
-                return round(total / 1e9, 1)
+            safet = data.get("safetensors")
+            if isinstance(safet, dict) and safet.get("total"):
+                return round(int(safet["total"]) / 1e9, 1)
+            sibs_total = sum((s.get("size") or 0) for s in data.get("siblings", []))
+            if sibs_total > 0:
+                return round(sibs_total / 1e9, 1)
+            used = data.get("usedStorage")
+            if used:
+                return round(int(used) / 1e9, 1)
+    except Exception:
+        pass
+    # Per-file fallback — slower but always works.
+    try:
+        resp = requests.get(
+            f"https://huggingface.co/api/models/{name}/tree/main",
+            timeout=10)
+        if resp.ok:
+            tree = resp.json()
+            if isinstance(tree, list):
+                total = sum((f.get("size") or 0) for f in tree)
+                if total > 0:
+                    return round(total / 1e9, 1)
     except Exception:
         pass
     return None
@@ -846,74 +1360,128 @@ def api_profiles_activate(name):
     })
 
 
+def _is_hf_repo_id(name: str) -> bool:
+    """HuggingFace models are org/name; Ollama tags are name[:tag]."""
+    return "/" in name and ":" not in name
+
+
+def _refuse_if_client():
+    """Downloads must happen on the machine that actually serves the model —
+    reject pull calls on a laptop pointed at a desktop Tailscale server."""
+    if _is_remote_ollama():
+        return jsonify({
+            "error": "Pulls are only allowed on the machine that hosts the models. "
+                     "Run this on the server (desktop) directly."
+        }), 403
+    return None
+
+
 @app.route("/api/models/pull", methods=["POST"])
 def api_models_pull():
-    """Pull one or more models (Ollama or HuggingFace), streaming progress as SSE."""
+    """Kick off one or more detached model pulls.  Returns immediately with
+    the list of names that were accepted; progress is observed via
+    GET /api/models/pulls, which is persistent across server restarts."""
+    err = _refuse_if_client()
+    if err is not None:
+        return err
     body = request.get_json(silent=True) or {}
     model_names = body.get("models", [])
     if not model_names:
         return jsonify({"error": "No models specified"}), 400
 
-    def _is_hf_model(name):
-        """HuggingFace models contain '/' but no ':' (org/model format)."""
-        return "/" in name and ":" not in name
-
-    def _pull_hf(name, i, total):
-        """Download a HuggingFace model using huggingface-cli."""
-        yield f"data: {json.dumps({'model': name, 'index': i, 'total': total, 'status': 'pulling'})}\n\n"
-        try:
-            result = subprocess.run(
-                ["huggingface-cli", "download", name],
-                capture_output=True, text=True, timeout=3600,
-                env={**os.environ, "PATH": f"/opt/homebrew/bin:{os.environ.get('PATH', '')}"},
-            )
-            if result.returncode == 0:
-                yield f"data: {json.dumps({'model': name, 'index': i, 'total': total, 'status': 'success'})}\n\n"
-            else:
-                err = result.stderr[-200:] if result.stderr else "unknown error"
-                yield f"data: {json.dumps({'model': name, 'index': i, 'total': total, 'status': 'error', 'error': err})}\n\n"
-        except FileNotFoundError:
-            yield f"data: {json.dumps({'model': name, 'index': i, 'total': total, 'status': 'error', 'error': 'huggingface-cli not found. Install with: uv pip install huggingface_hub[cli]'})}\n\n"
-        except subprocess.TimeoutExpired:
-            yield f"data: {json.dumps({'model': name, 'index': i, 'total': total, 'status': 'error', 'error': 'Download timed out after 60 minutes'})}\n\n"
-        except Exception as e:
-            yield f"data: {json.dumps({'model': name, 'index': i, 'total': total, 'status': 'error', 'error': str(e)})}\n\n"
-
-    def _pull_ollama(name, i, total):
-        """Pull an Ollama model with streaming progress."""
-        yield f"data: {json.dumps({'model': name, 'index': i, 'total': total, 'status': 'pulling'})}\n\n"
-        try:
-            resp = requests.post(
-                f"{OLLAMA_URL}/api/pull",
-                json={"name": name, "stream": True},
-                stream=True, timeout=3600)
-            for line in resp.iter_lines():
-                if not line:
-                    continue
+    started, skipped = [], []
+    with _pulls_lock():
+        data = _pulls_read()
+        pulls = data.setdefault("pulls", {})
+        dismissed = set(data.get("dismissed", []))
+        # Explicit resume overrides a previous dismissal.
+        if dismissed & set(model_names):
+            data["dismissed"] = sorted(dismissed - set(model_names))
+        for name in model_names:
+            entry = pulls.get(name)
+            if entry and _pid_alive(entry.get("pid", 0)):
+                skipped.append(name)
+                continue
+            kind = "hf" if _is_hf_repo_id(name) else "ollama"
+            total_bytes = None
+            if kind == "hf":
                 try:
-                    chunk = json.loads(line)
-                    chunk["model"] = name
-                    chunk["index"] = i
-                    chunk["total"] = total
-                    yield f"data: {json.dumps(chunk)}\n\n"
-                except json.JSONDecodeError:
+                    size_gb = _get_hf_model_size(name)
+                    if size_gb:
+                        total_bytes = int(size_gb * 1e9)
+                except Exception:
                     pass
-        except Exception as e:
-            yield f"data: {json.dumps({'model': name, 'index': i, 'total': total, 'status': 'error', 'error': str(e)})}\n\n"
+            pid = _start_pull_worker(name, kind, total_bytes)
+            pulls[name] = {
+                "kind": kind,
+                "pid": pid,
+                "total_bytes": total_bytes,
+                "started_at": time.time(),
+                "status": "running",
+            }
+            started.append(name)
+        _pulls_write(data)
 
-    def stream():
-        total = len(model_names)
-        for i, name in enumerate(model_names):
-            if _is_hf_model(name):
-                yield from _pull_hf(name, i, total)
-            else:
-                yield from _pull_ollama(name, i, total)
-        # Refresh model cache after pulling
-        get_all_models(force_refresh=True)
-        yield f"data: {json.dumps({'status': 'done'})}\n\n"
+    return jsonify({"started": started, "skipped": skipped}), 202
 
-    return Response(stream(), mimetype="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+@app.route("/api/models/pulls", methods=["GET"])
+def api_models_pulls():
+    """Return all known pulls with live byte counts merged in from the
+    per-repo progress files."""
+    err = _refuse_if_client()
+    if err is not None:
+        return err
+    _scan_orphan_partials()
+    data = _reconcile_pulls()
+    out = []
+    for name, entry in data.get("pulls", {}).items():
+        prog = _read_progress_file(name)
+        completed = prog.get("completed", entry.get("completed", 0))
+        total = prog.get("total") or entry.get("total_bytes") or 0
+        out.append({
+            "name": name,
+            "kind": entry.get("kind"),
+            "status": entry.get("status", "running"),
+            "completed": int(completed or 0),
+            "total": int(total or 0),
+            "started_at": entry.get("started_at"),
+            "error": entry.get("error") or prog.get("error"),
+            "message": prog.get("message"),
+            "pid": entry.get("pid"),
+            "alive": _pid_alive(entry.get("pid", 0)),
+        })
+    out.sort(key=lambda e: e.get("started_at") or 0, reverse=True)
+    return jsonify({"pulls": out})
+
+
+@app.route("/api/models/pulls/<path:name>", methods=["DELETE"])
+def api_models_pull_cancel(name):
+    """Cancel (SIGTERM) a running pull or forget an interrupted/error/done one.
+
+    `?dismiss=1` also adds the repo to a persistent ignore list, so the
+    orphan-partial scanner won't re-surface it on the next GET.  The cache
+    bytes are left on disk either way — only the registry state is touched.
+    """
+    err = _refuse_if_client()
+    if err is not None:
+        return err
+    dismiss = request.args.get("dismiss") == "1"
+    _cancel_pull_entry(name)
+    with _pulls_lock():
+        data = _pulls_read()
+        if name in data.get("pulls", {}):
+            del data["pulls"][name]
+        if dismiss:
+            dismissed = set(data.get("dismissed", []))
+            dismissed.add(name)
+            data["dismissed"] = sorted(dismissed)
+        _pulls_write(data)
+    try:
+        _progress_path(name).unlink()
+    except FileNotFoundError:
+        pass
+    return jsonify({"ok": True})
 
 
 @app.route("/api/profiles/<name>/warm", methods=["POST"])
@@ -1494,13 +2062,15 @@ def api_test():
             frames_str = body.get("num_frames", "")
 
             mode = "audio" if audio_genre else ("i2v" if image_path else "t2v")
+            video_runner = Path(__file__).parent / "mlx-video-run.py"
+            runner_prefix = ["uv", "run", "--python", "3.12", "--script", str(video_runner)]
 
             with _track_playground("video", model, backend):
                 try:
                     prompt = body.get("prompt", "")
                     if mode == "audio":
-                        cmd = [
-                            sys.executable, "-m", "mlx_video.generate_av",
+                        cmd = runner_prefix + [
+                            "mlx_video.generate_av",
                             "--prompt", prompt,
                             "--output-path", out,
                         ]
@@ -1511,8 +2081,8 @@ def api_test():
                         if frames_str:
                             cmd.extend(["--num-frames", frames_str])
                     elif "ltx" in model.lower():
-                        cmd = [
-                            sys.executable, "-m", "mlx_video.ltx_2.generate",
+                        cmd = runner_prefix + [
+                            "mlx_video.generate",
                             "--prompt", prompt,
                             "--output-path", out,
                         ]
@@ -1523,11 +2093,14 @@ def api_test():
                         if height_str:
                             cmd.extend(["--height", height_str])
                         if frames_str:
-                            cmd.extend(["-n", frames_str])
+                            cmd.extend(["--num-frames", frames_str])
                     else:
-                        cmd = [
-                            sys.executable, "-m", "mlx_video.wan_2.generate",
-                            "--model-dir", model,
+                        snapshot = resolve_hf_snapshot(model)
+                        if snapshot is None:
+                            return jsonify({"error": f"video: model {model} is not downloaded — pull it from the profiles page first."}), 400
+                        cmd = runner_prefix + [
+                            "mlx_video.generate_wan",
+                            "--model-dir", str(snapshot),
                             "--prompt", prompt,
                             "--output-path", out,
                         ]
@@ -1649,7 +2222,7 @@ def api_test():
         elif tool == "embed":
             model, backend = _pick("embedding")
             if not model:
-                model, backend = "mxbai-embed-large", "ollama"
+                model, backend = "qwen3-embedding:8b", "ollama"
             with _track_playground("embed", model, backend):
                 if backend == "mlx":
                     resp = requests.post(f"{MLX_URL}/v1/embeddings", json={
@@ -1947,8 +2520,27 @@ def pwa_assets(filename):
 # ── Main ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    _worker_parser = argparse.ArgumentParser(add_help=False)
+    _worker_parser.add_argument("--pull-worker", action="store_true")
+    _worker_parser.add_argument("--kind", choices=("hf", "ollama"))
+    _worker_parser.add_argument("--name")
+    _worker_parser.add_argument("--total", type=int, default=0)
+    _worker_args, _ = _worker_parser.parse_known_args()
+    if _worker_args.pull_worker:
+        sys.exit(_run_pull_worker(
+            _worker_args.kind, _worker_args.name,
+            _worker_args.total or None))
+
     validate_network_conf(logger=logging.getLogger())
     activity.init_db()
+    # Reconcile any pulls that were running (or stranded) from a previous run
+    # before we start serving requests, so the UI never sees stale "running"
+    # entries pointing at dead PIDs.
+    try:
+        _scan_orphan_partials()
+        _reconcile_pulls()
+    except Exception:
+        logging.exception("pull registry reconcile failed")
     threading.Thread(target=_idle_watcher, daemon=True).start()
 
     import socket

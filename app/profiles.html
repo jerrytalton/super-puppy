@@ -92,6 +92,35 @@ nav a.active { color: #fff; background: var(--accent); }
 .mem-legend-item { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text2); }
 .mem-dot { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
 
+/* Active downloads panel — mirrors mem-box for visual continuity */
+.pulls-box {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--r);
+  padding: 16px 20px; margin-bottom: 24px;
+}
+.pulls-box h2 { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
+.pull-row {
+  display: grid; grid-template-columns: 1fr auto; gap: 4px 12px;
+  padding: 8px 0; border-top: 1px solid var(--border);
+}
+.pull-row:first-of-type { border-top: none; }
+.pull-name { font-size: 13px; font-weight: 500; word-break: break-all; }
+.pull-status { font-size: 12px; color: var(--text2); text-align: right; white-space: nowrap; }
+.pull-status.error { color: var(--red); }
+.pull-status.done { color: var(--green); }
+.pull-bar {
+  grid-column: 1 / -1; height: 6px; background: var(--surface2);
+  border-radius: 3px; overflow: hidden;
+}
+.pull-bar-fill { height: 100%; background: var(--accent); transition: width 0.4s ease; }
+.pull-bar-fill.error { background: var(--red); }
+.pull-bar-fill.done { background: var(--green); }
+.pull-actions-row { grid-column: 1 / -1; display: flex; gap: 8px; margin-top: 4px; }
+.pull-actions-row button {
+  background: none; border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text2); font-size: 11px; padding: 2px 10px; cursor: pointer;
+}
+.pull-actions-row button:hover { color: var(--text); border-color: var(--text2); }
+
 /* Task rows (collapsible) */
 .task-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 24px; }
 .task-row {
@@ -196,6 +225,7 @@ nav a.active { color: #fff; background: var(--accent); }
   <p id="subtitle">Loading...</p>
 </div>
 <div class="profiles" id="profiles"></div>
+<div class="pulls-box" id="pulls-box" style="display:none"></div>
 <div class="mem-box">
   <div class="mem-top"><h2>Memory</h2><span id="mem-usage"></span></div>
   <div class="mem-bar" id="mem-bar"></div>
@@ -280,9 +310,11 @@ async function init() {
   fillThinkDefaults();
   fillDefaults();
   render();
+  pollPulls();  // picks up anything already running / stranded in the registry
   // Check for missing models (e.g. after a version bump updated defaults)
-  // Skip if profile needs more RAM than this machine has — can't run them locally
-  if (profiles.missing?.length) {
+  // Skip if profile needs more RAM than this machine has — can't run them locally.
+  // Also skip on clients: downloads are server-only.
+  if (profiles.missing?.length && S.sys?.mode !== 'client') {
     const p = S.sel ? S.profiles.profiles[S.sel] : null;
     const ramGB = S.sys?.total_ram_gb || 0;
     const profileRAM = p?.max_ram_gb || 0;
@@ -304,6 +336,208 @@ async function refreshModels() {
   S.sys = sys;
   S.models = models;
   render();
+}
+
+// ── Active downloads panel ──────────────────────────────────────────
+let _pullsTimer = null;
+let _pullsLastAnyActive = false;
+// Names the user has just dismissed locally — filter the server response
+// through this so an in-flight poll that races the DELETE can't resurrect
+// the row.  Entries self-expire once the server confirms them gone.
+const _dismissedLocal = new Set();
+// Names with an action in flight (dismiss/cancel/resume).  Rows with a
+// pending dismiss/cancel are hidden optimistically; resume shows a "starting"
+// placeholder until the server reports running.
+const _pendingAction = new Map();  // name → {action, until}
+let _lastPullsSignature = '';
+
+async function pollPulls() {
+  if (S.sys?.mode === 'client') {
+    document.getElementById('pulls-box').style.display = 'none';
+    return;
+  }
+  try {
+    const resp = await fetch('/api/models/pulls', _authHeaders());
+    if (!resp.ok) return;
+    const data = await resp.json();
+    let pulls = (data.pulls || []).filter(p => !_dismissedLocal.has(p.name));
+    // If the server confirms a dismissed entry really is gone, drop the
+    // local override so a later Resume can re-add it.
+    const serverNames = new Set((data.pulls || []).map(p => p.name));
+    for (const n of [..._dismissedLocal]) {
+      if (!serverNames.has(n)) _dismissedLocal.delete(n);
+    }
+    // Apply pending-action overlays.
+    for (const [name, info] of [..._pendingAction]) {
+      if (Date.now() > info.until) { _pendingAction.delete(name); continue; }
+      if (info.action === 'dismiss' || info.action === 'cancel') {
+        pulls = pulls.filter(p => p.name !== name);
+      } else if (info.action === 'resume') {
+        const existing = pulls.find(p => p.name === name);
+        if (existing) {
+          existing.status = existing.status === 'interrupted' ? 'running' : existing.status;
+          if (existing.status === 'running') _pendingAction.delete(name);
+        }
+      }
+    }
+    renderPulls(pulls);
+    const anyActive = pulls.some(p => p.status === 'running');
+    if (_pullsLastAnyActive && !anyActive && !_pendingAction.size) {
+      refreshModels();
+    }
+    _pullsLastAnyActive = anyActive;
+    clearTimeout(_pullsTimer);
+    const delay = (anyActive || _pendingAction.size) ? 750 : 5000;
+    _pullsTimer = setTimeout(pollPulls, delay);
+  } catch {
+    clearTimeout(_pullsTimer);
+    _pullsTimer = setTimeout(pollPulls, 5000);
+  }
+}
+
+function _fmtBytesFine(bytes) {
+  // Fractional-GB display so the user sees the counter tick at multi-GB
+  // download sizes instead of waiting ~30s per whole percent.
+  if (bytes == null) return '?';
+  if (bytes >= 1e9) return (bytes / 1e9).toFixed(2) + ' GB';
+  if (bytes >= 1e6) return (bytes / 1e6).toFixed(1) + ' MB';
+  if (bytes >= 1e3) return (bytes / 1e3).toFixed(0) + ' KB';
+  return bytes + ' B';
+}
+
+function _rowKey(name) { return 'pull-row-' + name.replace(/[^a-z0-9]/gi, '_'); }
+
+function renderPulls(pulls) {
+  const box = document.getElementById('pulls-box');
+  if (!pulls.length) {
+    box.style.display = 'none';
+    box.innerHTML = '';
+    _lastPullsSignature = '';
+    return;
+  }
+  box.style.display = '';
+  // Only rebuild the row set if the *set of rows* changed; otherwise patch
+  // existing rows in place so button click targets don't get torn out from
+  // under the user.
+  const sig = pulls.map(p => p.name).join('\x1e');
+  if (sig !== _lastPullsSignature) {
+    box.innerHTML = '<h2>Downloads</h2>' +
+      pulls.map(p => `<div class="pull-row" id="${_rowKey(p.name)}" data-name="${esc(p.name)}">
+        <div class="pull-name">${esc(p.name)}</div>
+        <div class="pull-status"></div>
+        <div class="pull-bar"><div class="pull-bar-fill"></div></div>
+        <div class="pull-actions-row"></div>
+      </div>`).join('');
+    _lastPullsSignature = sig;
+  }
+  for (const p of pulls) _patchPullRow(p);
+}
+
+function _patchPullRow(p) {
+  const row = document.getElementById(_rowKey(p.name));
+  if (!row) return;
+  const pctFloat = p.total ? Math.min(100, (p.completed / p.total) * 100) : 0;
+  const pctStr = pctFloat >= 10 ? pctFloat.toFixed(1) : pctFloat.toFixed(2);
+  const totalStr = _fmtBytesFine(p.total || 0);
+  const doneStr = _fmtBytesFine(p.completed || 0);
+  let statusCls = '', statusText = '', barCls = '';
+  if (p.status === 'success') {
+    statusCls = 'done'; barCls = 'done';
+    statusText = `✓ ${totalStr}`;
+  } else if (p.status === 'error') {
+    statusCls = 'error'; barCls = 'error';
+    statusText = (p.error || 'error').slice(-80);
+  } else if (p.status === 'interrupted') {
+    statusText = `interrupted · ${doneStr} of ${totalStr}`;
+  } else {
+    statusText = p.total ? `${pctStr}% · ${doneStr} of ${totalStr}`
+                         : `${doneStr} downloaded`;
+    if (p.message && p.kind === 'ollama') statusText += ` · ${esc(p.message)}`;
+  }
+  const statusEl = row.querySelector('.pull-status');
+  statusEl.className = 'pull-status ' + statusCls;
+  statusEl.textContent = statusText;
+  const fill = row.querySelector('.pull-bar-fill');
+  fill.className = 'pull-bar-fill ' + barCls;
+  fill.style.width = (p.status === 'success' ? 100 : pctFloat).toFixed(3) + '%';
+  // Only rebuild the action row when the set of visible buttons changes,
+  // otherwise an in-flight click on one of them gets clobbered.
+  const showCancel = p.status === 'running';
+  const showResume = p.status === 'interrupted' || p.status === 'error';
+  const showDismiss = p.status === 'success' || p.status === 'error' || p.status === 'interrupted';
+  const wantedBtns = [showResume && 'resume', showCancel && 'cancel', showDismiss && 'dismiss']
+    .filter(Boolean).join(',');
+  const actions = row.querySelector('.pull-actions-row');
+  if (actions.dataset.btns !== wantedBtns) {
+    actions.dataset.btns = wantedBtns;
+    actions.innerHTML = [
+      showResume ? `<button data-act="resume">Resume</button>` : '',
+      showCancel ? `<button data-act="cancel">Cancel</button>` : '',
+      showDismiss ? `<button data-act="dismiss">Dismiss</button>` : '',
+    ].join('');
+    for (const btn of actions.querySelectorAll('button')) {
+      btn.onclick = (ev) => {
+        ev.preventDefault();
+        const name = row.dataset.name;
+        if (btn.dataset.act === 'resume') resumePull(name);
+        else if (btn.dataset.act === 'cancel') cancelPull(name);
+        else if (btn.dataset.act === 'dismiss') dismissPull(name);
+      };
+    }
+  }
+}
+
+function _optimisticRemove(name) {
+  // Yank the row from the DOM immediately so the user sees feedback before
+  // the server has even finished processing the request.
+  const row = document.getElementById(_rowKey(name));
+  if (row) row.remove();
+  const box = document.getElementById('pulls-box');
+  if (box && !box.querySelector('.pull-row')) {
+    box.style.display = 'none';
+    box.innerHTML = '';
+    _lastPullsSignature = '';
+  }
+}
+
+async function cancelPull(name) {
+  _pendingAction.set(name, {action: 'cancel', until: Date.now() + 10000});
+  _optimisticRemove(name);
+  try {
+    await fetch(`/api/models/pulls/${encodeURIComponent(name)}`,
+                _authHeaders({method: 'DELETE'}));
+  } finally {
+    pollPulls();
+  }
+}
+
+async function dismissPull(name) {
+  // Mark dismissed both in the local override set (filters incoming polls)
+  // and in the pending map (back-stops against stale polls in flight), then
+  // rip the row out of the DOM so there's zero perceived lag.
+  _dismissedLocal.add(name);
+  _pendingAction.set(name, {action: 'dismiss', until: Date.now() + 10000});
+  _optimisticRemove(name);
+  try {
+    await fetch(`/api/models/pulls/${encodeURIComponent(name)}?dismiss=1`,
+                _authHeaders({method: 'DELETE'}));
+  } finally {
+    pollPulls();
+  }
+}
+
+async function resumePull(name) {
+  _dismissedLocal.delete(name);
+  _pendingAction.set(name, {action: 'resume', until: Date.now() + 30000});
+  try {
+    await fetch('/api/models/pull', _authHeaders({
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({models: [name]}),
+    }));
+  } finally {
+    pollPulls();
+  }
 }
 
 function switchToCustom() {
@@ -622,67 +856,27 @@ function showPullModal(models) {
 }
 
 async function doPull(models, overlay) {
-  const goBtn = overlay.querySelector('#pull-go-btn');
-  const skipBtn = overlay.querySelector('.pull-skip');
-  goBtn.disabled = true;
-  goBtn.textContent = 'Pulling...';
-  skipBtn.style.display = 'none';
-
-  const items = overlay.querySelectorAll('.pull-list li');
-
+  // Kick off all pulls as detached workers and close the modal.  The active
+  // downloads panel on the main page is the single source of truth for
+  // progress — that way, restarting the server or reloading the page never
+  // loses the view.
   try {
     const resp = await fetch('/api/models/pull', _authHeaders({
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({models}),
     }));
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = '';
-
-    while (true) {
-      const {done, value} = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, {stream: true});
-      const lines = buf.split('\n');
-      buf = lines.pop();
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        try {
-          const d = JSON.parse(line.slice(6));
-          if (d.status === 'done') {
-            goBtn.remove();
-            skipBtn.style.display = '';
-            skipBtn.textContent = 'Close';
-            await refreshModels();
-            return;
-          }
-          if (d.index !== undefined && items[d.index]) {
-            const statusEl = items[d.index].querySelector('.status');
-            if (d.error) {
-              statusEl.className = 'status error';
-              statusEl.textContent = 'failed';
-            } else if (d.status === 'success') {
-              statusEl.className = 'status done';
-              statusEl.textContent = '\u2713';
-            } else if (d.status === 'pulling') {
-              statusEl.className = 'status pulling';
-              statusEl.textContent = 'pulling...';
-            } else if (d.completed !== undefined && d.total) {
-              statusEl.className = 'status pulling';
-              const pct = Math.round((d.completed / d.total) * 100);
-              const gb = (d.total / 1e9).toFixed(1);
-              statusEl.textContent = `${pct}% of ${gb} GB`;
-            }
-          }
-        } catch {}
-      }
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert(err.error || `Failed to start pull (${resp.status})`);
+      return;
     }
   } catch (e) {
-    goBtn.textContent = 'Failed';
-    goBtn.disabled = false;
-    skipBtn.style.display = '';
+    alert('Failed to start pull: ' + e.message);
+    return;
   }
+  overlay.remove();
+  pollPulls(true);
 }
 
 function esc(s) {

@@ -489,7 +489,8 @@ function selectTool(key) {
   const task = TOOLS[key].task;
   const defaultModel = taskDefaults[task] || '';
   const profileModel = profilePicks[task] || '';
-  selectedModel = saved?.model ?? (profileModel || defaultModel || null);
+  const firstEligible = allModels.find(m => m.eligible_tasks?.includes(task))?.name || null;
+  selectedModel = saved?.model ?? (profileModel || defaultModel || firstEligible || null);
   thinkEnabled = saved?.think ?? (taskThinkDefaults[task] !== false);
   pickerOpen = false;
   renderModelPicker(task, defaultModel, profileModel);
