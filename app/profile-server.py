@@ -1269,6 +1269,52 @@ def api_system():
     return jsonify(get_system_info())
 
 
+# Identity token + pidfile so the menu-bar app can tell which profile-server
+# process is actually answering on our port.  Without this, a restart race
+# (previous server orphaned to init, new menubar fails to bind 8101, readiness
+# probe gets a 200 from the orphan) silently leaves the UI pointing at stale
+# code for the rest of the session.
+PROFILE_SERVER_PIDFILE = Path.home() / ".config" / "local-models" / "profile-server.pid"
+PROFILE_SERVER_TOKEN = os.environ.get("PROFILE_SERVER_TOKEN", "")
+_profile_server_started_at = time.time()
+
+
+@app.route("/api/identity")
+def api_identity():
+    """Return this process's pid + the token it was spawned with.  The menu
+    bar readiness probe compares the token to what it passed via the env, and
+    only considers the server healthy when they match — guaranteeing it's
+    talking to the process it just spawned, not an orphan from the previous
+    session that happens to be bound to the same port."""
+    return jsonify({
+        "pid": os.getpid(),
+        "token": PROFILE_SERVER_TOKEN,
+        "started_at": _profile_server_started_at,
+    })
+
+
+def _write_profile_pidfile():
+    try:
+        PROFILE_SERVER_PIDFILE.parent.mkdir(parents=True, exist_ok=True)
+        PROFILE_SERVER_PIDFILE.write_text(json.dumps({
+            "pid": os.getpid(),
+            "port": PORT,
+            "token": PROFILE_SERVER_TOKEN,
+            "started_at": _profile_server_started_at,
+        }))
+    except OSError:
+        logging.exception("failed to write profile-server pidfile")
+
+
+def _remove_profile_pidfile():
+    try:
+        data = json.loads(PROFILE_SERVER_PIDFILE.read_text())
+        if data.get("pid") == os.getpid():
+            PROFILE_SERVER_PIDFILE.unlink()
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+
+
 @app.route("/api/models")
 def api_models():
     force = request.args.get("refresh") == "1"
@@ -2692,9 +2738,18 @@ if __name__ == "__main__":
         PORT = s.getsockname()[1]
         s.close()
 
-    # HTTPS only when binding to all interfaces (remote access).
-    # Tailscale certs are issued for the FQDN, not 127.0.0.1, so TLS
-    # on localhost would fail with a hostname mismatch.
+    _write_profile_pidfile()
+    import atexit
+    atexit.register(_remove_profile_pidfile)
+    # SIGTERM is the default signal sent by `subprocess.terminate()`, which is
+    # how the menu bar app asks us to stop.  Flask doesn't install its own
+    # handler, so without this we'd only exit cleanly on Ctrl-C / SIGINT and
+    # the pidfile would be left behind after launchd stops the menu bar.
+    def _sig_shutdown(*_):
+        _remove_profile_pidfile()
+        os._exit(0)
+    signal.signal(signal.SIGTERM, _sig_shutdown)
+
     # Plain HTTP always. Tailscale encrypts the WireGuard tunnel for remote
     # access. HTTPS would break the local webview (cert is for the Tailscale
     # FQDN, not 127.0.0.1).
