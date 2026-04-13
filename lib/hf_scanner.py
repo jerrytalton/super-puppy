@@ -181,8 +181,17 @@ def scan_hf_model(model_dir: Path) -> dict | None:
     """Scan a single HuggingFace cache directory and return model metadata.
 
     Returns dict with: name, task, model_type, total_params, total_params_b,
-    dtypes, quant_bits, disk_bytes, vram_bytes. Returns None if unclassifiable.
-    """
+    dtypes, quant_bits, disk_bytes, vram_bytes. Returns None if unclassifiable
+    or still downloading (any .incomplete blob means some snapshot symlinks
+    are unresolved — treating the repo as installed would mark a partially-
+    downloaded model as 'active' in the UI and let the task-dispatch layer
+    pick a model that can't actually run)."""
+    blobs_dir = model_dir / "blobs"
+    if blobs_dir.exists():
+        for b in blobs_dir.iterdir():
+            if b.name.endswith(".incomplete"):
+                return None
+
     snap = _latest_snapshot(model_dir)
     if not snap:
         return None
