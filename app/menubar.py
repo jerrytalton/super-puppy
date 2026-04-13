@@ -2959,11 +2959,20 @@ if __name__ == "__main__":
     #
     # os._exit() in _auto_update bypasses all of these (intentional).
     import atexit
-    atexit.register(lambda: os._exit(1))
-    signal.signal(signal.SIGTERM, lambda *_: os._exit(1))
+
+    def _exit_defense_atexit():
+        logging.warning("exit-defense: atexit fired → os._exit(1)")
+        os._exit(1)
+
+    def _exit_defense_sigterm(*_):
+        logging.warning("exit-defense: SIGTERM handler fired → os._exit(1)")
+        os._exit(1)
+
+    atexit.register(_exit_defense_atexit)
+    signal.signal(signal.SIGTERM, _exit_defense_sigterm)
 
     try:
         acquire_lock()
         LocalModelsApp().run()
-    except SystemExit:
-        pass
+    except SystemExit as e:
+        logging.warning("exit-defense: SystemExit caught (code=%r) → falling through to atexit", e.code)
