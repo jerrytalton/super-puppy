@@ -386,6 +386,19 @@ async function pollPulls() {
       refreshModels();
     }
     _pullsLastAnyActive = anyActive;
+    // Auto-dismiss rows that just hit success so the user sees the
+    // ✓ flash and the panel then clears itself.  Server-side DELETE
+    // removes the registry entry; _dismissedLocal prevents the next
+    // poll from resurrecting it while the request is in flight.
+    for (const p of pulls) {
+      if (p.status !== 'success') continue;
+      if (_dismissedLocal.has(p.name)) continue;
+      setTimeout(() => {
+        _dismissedLocal.add(p.name);
+        fetch(`/api/models/pulls/${encodeURIComponent(p.name)}`,
+              _authHeaders({method: 'DELETE'})).finally(pollPulls);
+      }, 2500);
+    }
     clearTimeout(_pullsTimer);
     const delay = (anyActive || _pendingAction.size) ? 750 : 5000;
     _pullsTimer = setTimeout(pollPulls, delay);
@@ -443,7 +456,7 @@ function _patchPullRow(p) {
   let statusCls = '', statusText = '', barCls = '';
   if (p.status === 'success') {
     statusCls = 'done'; barCls = 'done';
-    statusText = `✓ ${totalStr}`;
+    statusText = totalStr && totalStr !== '?' ? `\u2713 Done · ${totalStr}` : '\u2713 Done';
   } else if (p.status === 'error') {
     statusCls = 'error'; barCls = 'error';
     statusText = (p.error || 'error').slice(-80);
