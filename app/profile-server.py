@@ -202,10 +202,28 @@ def _pulls_read_profiles_safe() -> dict:
         return {}
 
 
+def _hf_has_incomplete_blobs(name: str) -> bool:
+    blobs = HF_CACHE / f"models--{name.replace('/', '--')}" / "blobs"
+    if not blobs.exists():
+        return False
+    try:
+        for b in blobs.iterdir():
+            if b.name.endswith(".incomplete"):
+                return True
+    except OSError:
+        pass
+    return False
+
+
 def _scan_orphan_partials():
     """Surface partial HF downloads that have no registry entry.  The UI then
     shows them as 'interrupted' with a Resume button so the user isn't left
-    wondering why `du` says 15 GB but nothing is happening."""
+    wondering why `du` says 15 GB but nothing is happening.
+
+    Also cleans up registry entries for repos that are actually done (no
+    .incomplete blobs on disk) but got stuck as 'interrupted' because
+    /api/models/<id>/tree/main returned no total and the size-based
+    completion check couldn't fire."""
     with _pulls_lock():
         data = _pulls_read()
         pulls = data.setdefault("pulls", {})
@@ -225,13 +243,25 @@ def _scan_orphan_partials():
                     total = int(gb * 1e9)
             except Exception:
                 pass
-            # Fully cached already → the model is installed; no need to
-            # register it (get_all_models will pick it up).  Use a generous
-            # slack on the completion threshold because HF's per-file sum
-            # and our bytes-on-disk walk can drift by a few MB of metadata.
+            # Absence of .incomplete blobs is the strongest "done" signal
+            # we have: if huggingface_hub finished materializing every
+            # blob, it atomically renamed the .incomplete file to its
+            # content hash.  This check doesn't need a network size oracle
+            # and covers the case where the HF API is unreachable or
+            # temporarily rate-limiting us.
+            fully_cached = not _hf_has_incomplete_blobs(name)
+            if fully_cached:
+                if name in pulls:
+                    del pulls[name]
+                    _remove_progress_file(name)
+                    changed = True
+                continue
+            # Size-based fallback for the edge case where .incomplete is
+            # still there but bytes are effectively done (rare).
             if total and bytes_on_disk >= int(total * 0.995):
                 if name in pulls:
                     del pulls[name]
+                    _remove_progress_file(name)
                     changed = True
                 continue
             entry = pulls.get(name, {})
@@ -252,6 +282,13 @@ def _scan_orphan_partials():
             _pulls_write(data)
 
 
+def _remove_progress_file(name: str):
+    try:
+        _progress_path(name).unlink()
+    except FileNotFoundError:
+        pass
+
+
 def _reconcile_pulls() -> dict:
     """Walk the registry, drop entries whose worker is gone and whose work is
     finished (or was never started), and return the current state.  Called on
@@ -262,25 +299,39 @@ def _reconcile_pulls() -> dict:
         for name in list(data.get("pulls", {}).keys()):
             entry = data["pulls"][name]
             pid = entry.get("pid", 0)
-            if _pid_alive(pid):
-                entry["status"] = "running"
-                continue
             prog = _read_progress_file(name)
+            prog_status = prog.get("status")
             total = entry.get("total_bytes") or prog.get("total") or 0
             completed = prog.get("completed", 0)
-            # Worker exited: decide final status.
-            if prog.get("status") == "success":
+            # The worker writes status=success *before* its python process
+            # actually exits, so a live PID + success progress file means
+            # "just finished, about to exit" — we should respect the terminal
+            # state rather than clobbering it back to 'running'.  Same for
+            # error.  Absence of .incomplete blobs is another reliable done
+            # signal when the in-process flag hasn't been written yet.
+            fully_cached = (entry.get("kind") == "hf"
+                            and completed > 0
+                            and not _hf_has_incomplete_blobs(name))
+            if prog_status == "success" or fully_cached:
                 entry["status"] = "success"
                 entry["completed"] = total or completed
                 entry["total_bytes"] = total or completed
-            elif total and completed >= int(total * 0.99):
-                entry["status"] = "success"
-                entry["completed"] = total
-                entry["total_bytes"] = total
-            elif prog.get("status") == "error":
+                changed = True
+                continue
+            if prog_status == "error":
                 entry["status"] = "error"
                 entry["error"] = prog.get("error", "download failed")
                 entry["completed"] = completed
+                changed = True
+                continue
+            if _pid_alive(pid):
+                entry["status"] = "running"
+                continue
+            # Worker exited without a terminal progress marker.
+            if total and completed >= int(total * 0.99):
+                entry["status"] = "success"
+                entry["completed"] = total
+                entry["total_bytes"] = total
             else:
                 entry["status"] = "interrupted"
                 entry["completed"] = completed
@@ -490,14 +541,22 @@ def _pull_worker_hf(name: str, total_bytes: int | None):
             except Exception:
                 pass
 
-        # Clean success.
+        # Clean success.  Trust the filesystem over the flaky HF size oracle:
+        # if `hf` exited 0 and no .incomplete blobs remain, the download is
+        # done regardless of whether cache_now matches our total_bytes
+        # estimate (which can be off when the repo has been re-uploaded or
+        # the tree/main endpoint times out).
+        no_incomplete = not _hf_has_incomplete_blobs(name)
+        if rc == 0 and no_incomplete:
+            final_total = total_bytes or cache_now
+            _write_progress_file(name, {"completed": final_total,
+                                        "total": final_total,
+                                        "status": "success"})
+            return 0
         if rc == 0 and total_bytes and cache_now >= int(total_bytes * 0.99):
             _write_progress_file(name, {"completed": total_bytes,
                                         "total": total_bytes,
                                         "status": "success"})
-            return 0
-        if rc == 0 and not total_bytes:
-            _write_progress_file(name, {"completed": cache_now, "status": "success"})
             return 0
 
         # Stall or hf exited short — back off and retry with a fresh process.
@@ -1621,10 +1680,20 @@ def api_models_pulls():
         prog = _read_progress_file(name)
         completed = prog.get("completed", entry.get("completed", 0))
         total = prog.get("total") or entry.get("total_bytes") or 0
+        # Terminal state from the progress file wins over the registry's
+        # best guess — the worker writes `success`/`error` immediately before
+        # exiting, and the registry doesn't see that until the next reconcile.
+        prog_status = prog.get("status")
+        status = entry.get("status", "running")
+        if prog_status in ("success", "error"):
+            status = prog_status
+        # Normalize the numbers so the UI's bar hits exactly 100% on done.
+        if status == "success" and total:
+            completed = total
         out.append({
             "name": name,
             "kind": entry.get("kind"),
-            "status": entry.get("status", "running"),
+            "status": status,
             "completed": int(completed or 0),
             "total": int(total or 0),
             "started_at": entry.get("started_at"),
