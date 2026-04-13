@@ -1135,6 +1135,21 @@ async def local_video(
             if snapshot is None:
                 return (f"Error: video model {selected} is not downloaded locally. "
                         f"Pull it with `hf download {selected}` or from the profiles page.")
+            # HF only materializes snapshot symlinks after each blob is fully
+            # downloaded, so a partial pull leaves a snapshot dir that's
+            # missing the weight files mlx_video expects.  Verify before we
+            # hand it to the subprocess or it'll die with a cryptic
+            # load_safetensors error.
+            required = ("config.json", "t5_encoder.safetensors", "vae.safetensors")
+            missing = [f for f in required if not (snapshot / f).exists()]
+            layouts = (("model.safetensors",),
+                       ("high_noise_model.safetensors", "low_noise_model.safetensors"))
+            has_model = any(all((snapshot / f).exists() for f in l) for l in layouts)
+            if missing or not has_model:
+                detail = ", ".join(missing) if missing else "model weights"
+                return (f"Error: video model {selected} is still downloading "
+                        f"(missing {detail}). Wait for the Downloads panel to hit "
+                        f"100% and try again.")
             cmd = [
                 sys.executable, "-m", "mlx_video.generate_wan",
                 "--model-dir", str(snapshot),

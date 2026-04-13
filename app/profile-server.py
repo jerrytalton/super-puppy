@@ -226,8 +226,10 @@ def _scan_orphan_partials():
             except Exception:
                 pass
             # Fully cached already → the model is installed; no need to
-            # register it (get_all_models will pick it up).
-            if total and bytes_on_disk >= int(total * 0.99):
+            # register it (get_all_models will pick it up).  Use a generous
+            # slack on the completion threshold because HF's per-file sum
+            # and our bytes-on-disk walk can drift by a few MB of metadata.
+            if total and bytes_on_disk >= int(total * 0.995):
                 if name in pulls:
                     del pulls[name]
                     changed = True
@@ -366,68 +368,164 @@ def _kill_stray_hf_downloads(name: str):
             pass
 
 
+_HF_STALL_SECONDS = 180         # bytes must grow at least once per 3 minutes
+_HF_MAX_RETRIES = 10            # bounded restart attempts per worker lifetime
+_HF_RETRY_BASE_DELAY = 5        # exponential back-off base (seconds)
+
+
 def _pull_worker_hf(name: str, total_bytes: int | None):
-    """HF pull worker body.  Runs `hf download` and periodically snapshots
-    the cache size into the progress file."""
+    """HF pull worker body.  Runs `hf download` in a retry loop with a stall
+    watchdog that restarts the subprocess when the HF CDN half-closes the
+    TCP connection (huggingface_hub's requests call has no socket-level
+    timeout, so without this the hf child sits in CLOSE_WAIT forever while
+    the worker happily reports 'running')."""
     _kill_stray_hf_downloads(name)
-    # Give the dying strays a moment to release their file locks so `hf`'s
-    # atomic-rename step doesn't race them.
     time.sleep(0.5)
 
+    # The registry's total_bytes was captured at pull-start time and may be
+    # wrong (e.g. an earlier version used usedStorage, which overestimates).
+    # Re-query the authoritative per-file total now so the completion check
+    # below doesn't loop forever on an already-finished repo.
     try:
-        proc = subprocess.Popen(
-            ["hf", "download", name],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            env={**os.environ, "PATH": f"/opt/homebrew/bin:{os.environ.get('PATH', '')}"},
-        )
-    except FileNotFoundError:
-        _write_progress_file(name, {"status": "error",
-                                    "error": "hf CLI not found (brew install huggingface-cli)"})
-        return 2
+        gb = _get_hf_model_size(name)
+        if gb:
+            total_bytes = int(gb * 1e9)
+    except Exception:
+        pass
 
-    def _snapshot(status="running"):
+    def _snapshot(status="running", extra=None):
         evt = {"completed": _hf_cache_bytes(name), "status": status}
         if total_bytes:
             evt["total"] = int(total_bytes)
+        if extra:
+            evt.update(extra)
         _write_progress_file(name, evt)
 
-    _snapshot()
-    while proc.poll() is None:
-        time.sleep(0.5)
-        _snapshot()
+    def _done():
+        cache_now = _hf_cache_bytes(name)
+        return total_bytes and cache_now >= int(total_bytes * 0.99)
 
-    rc = proc.wait()
-    cache_now = _hf_cache_bytes(name)
-    # `hf download` sometimes exits 0 without finishing (e.g. transient
-    # errors that leave partials on disk).  Only declare success if the
-    # cache actually reflects a complete download.
-    if rc == 0 and total_bytes and cache_now >= int(total_bytes * 0.99):
-        _write_progress_file(name, {"completed": total_bytes,
-                                    "total": total_bytes,
-                                    "status": "success"})
-        return 0
-    if rc == 0 and not total_bytes:
-        # No size oracle available — trust hf's exit code.
-        _write_progress_file(name, {"completed": cache_now, "status": "success"})
-        return 0
-    err_tail = ""
-    if proc.stderr:
+    last_err_tail = ""
+    for attempt in range(_HF_MAX_RETRIES):
+        if _done():
+            _write_progress_file(name, {"completed": total_bytes,
+                                        "total": total_bytes,
+                                        "status": "success"})
+            return 0
+
+        # Force the legacy LFS download path in huggingface_hub.  hf_xet
+        # (the Rust-based Xet client that newer HF repos ship through by
+        # default) doesn't preserve partial-file state across subprocess
+        # restarts — killing it truncates and starts from zero — whereas
+        # the non-Xet `http_get` path opens .incomplete files in append
+        # mode and issues `Range: bytes={size}-` requests, which gives us
+        # real byte-level resume.  Our kill/respawn loop is worthless
+        # without this.
+        #
+        # HF_HUB_DOWNLOAD_TIMEOUT / _ETAG_TIMEOUT keep the stdlib requests
+        # layer from sitting in CLOSE_WAIT forever when the CDN hangs up.
+        env = {**os.environ,
+               "PATH": f"/opt/homebrew/bin:{os.environ.get('PATH', '')}",
+               "HF_HUB_DISABLE_XET": "1",
+               "HF_HUB_DOWNLOAD_TIMEOUT": "30",
+               "HF_HUB_ETAG_TIMEOUT": "15"}
+        # Authenticated downloads get much higher rate limits on HF.
+        # huggingface_hub normally picks this up from ~/.cache/huggingface/token,
+        # but we set it explicitly to make the downstream CLI stop
+        # printing the "unauthenticated requests" warning.
+        token_file = Path.home() / ".cache" / "huggingface" / "token"
+        if "HF_TOKEN" not in env and token_file.exists():
+            try:
+                tok = token_file.read_text().strip()
+                if tok:
+                    env["HF_TOKEN"] = tok
+            except OSError:
+                pass
         try:
-            err_tail = proc.stderr.read().decode(errors="replace")[-400:]
-        except Exception:
-            pass
-    status = "error" if rc != 0 else "interrupted"
-    payload = {"completed": cache_now, "status": status}
-    if total_bytes:
-        payload["total"] = int(total_bytes)
-    if status == "error":
-        payload["error"] = err_tail or f"hf exited with code {rc}"
-    elif err_tail:
-        payload["error"] = err_tail
-    _write_progress_file(name, payload)
-    return rc
+            proc = subprocess.Popen(
+                ["hf", "download", name],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+        except FileNotFoundError:
+            _write_progress_file(name, {"status": "error",
+                                        "error": "hf CLI not found (brew install huggingface-cli)"})
+            return 2
+
+        _snapshot(extra={"attempt": attempt + 1})
+        last_bytes = _hf_cache_bytes(name)
+        last_growth = time.time()
+        stalled = False
+        while proc.poll() is None:
+            time.sleep(0.5)
+            now_bytes = _hf_cache_bytes(name)
+            if now_bytes > last_bytes:
+                last_bytes = now_bytes
+                last_growth = time.time()
+            _snapshot(extra={"attempt": attempt + 1})
+            if time.time() - last_growth > _HF_STALL_SECONDS:
+                stalled = True
+                try:
+                    proc.terminate()
+                except ProcessLookupError:
+                    pass
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
+                    proc.wait()
+                break
+
+        rc = proc.poll() if proc.poll() is not None else proc.wait()
+        cache_now = _hf_cache_bytes(name)
+
+        if proc.stderr:
+            try:
+                last_err_tail = proc.stderr.read().decode(errors="replace")[-400:]
+            except Exception:
+                pass
+
+        # Clean success.
+        if rc == 0 and total_bytes and cache_now >= int(total_bytes * 0.99):
+            _write_progress_file(name, {"completed": total_bytes,
+                                        "total": total_bytes,
+                                        "status": "success"})
+            return 0
+        if rc == 0 and not total_bytes:
+            _write_progress_file(name, {"completed": cache_now, "status": "success"})
+            return 0
+
+        # Stall or hf exited short — back off and retry with a fresh process.
+        # If we're not making any forward progress at all between attempts,
+        # don't spin uselessly.
+        if attempt < _HF_MAX_RETRIES - 1:
+            delay = _HF_RETRY_BASE_DELAY * (2 ** attempt)
+            reason = "stalled" if stalled else f"exited with {rc}"
+            _snapshot(extra={"attempt": attempt + 1,
+                             "note": f"{reason}; retrying in {delay}s"})
+            time.sleep(delay)
+            continue
+
+        # Out of retries.
+        status = "error" if rc != 0 and not stalled else "interrupted"
+        payload = {"completed": cache_now, "status": status}
+        if total_bytes:
+            payload["total"] = int(total_bytes)
+        if status == "error":
+            payload["error"] = (last_err_tail
+                                or f"hf exited with code {rc} after {_HF_MAX_RETRIES} attempts")
+        else:
+            payload["error"] = (f"{name}: stalled after {_HF_MAX_RETRIES} retries"
+                                if stalled else last_err_tail or "interrupted")
+        _write_progress_file(name, payload)
+        return rc if rc else 1
+
+    return 0
 
 
 _OLLAMA_PULL_RE = re.compile(
@@ -521,6 +619,41 @@ def resolve_hf_snapshot(repo_id: str) -> Path | None:
         return None
     snaps = sorted(cache_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
     return snaps[0] if snaps else None
+
+
+_WAN_REQUIRED_FILES = (
+    "config.json",
+    "t5_encoder.safetensors",
+    "vae.safetensors",
+)
+_WAN_MODEL_FILES = (
+    # Either a single-model layout or a dual-expert MoE layout.
+    ("model.safetensors",),
+    ("high_noise_model.safetensors", "low_noise_model.safetensors"),
+)
+
+
+def check_wan_snapshot_ready(snapshot: Path) -> str | None:
+    """Verify a Wan MLX snapshot actually has every weight file resolved (HF
+    only materializes snapshot symlinks when the underlying blob finishes
+    downloading, so an in-progress pull leaves a snapshot with missing or
+    dangling entries).  Returns None if ready, otherwise an error string."""
+    missing = []
+    for name in _WAN_REQUIRED_FILES:
+        p = snapshot / name
+        if not p.exists():
+            missing.append(name)
+    # At least one of the model-file layouts must be fully present.
+    has_complete_layout = any(
+        all((snapshot / f).exists() for f in layout)
+        for layout in _WAN_MODEL_FILES
+    )
+    if not has_complete_layout:
+        missing.append("model weights (model.safetensors or "
+                       "high_noise_model.safetensors + low_noise_model.safetensors)")
+    if missing:
+        return "missing " + ", ".join(missing)
+    return None
 
 # Playground request tracking — keyed by thread ID so overlapping requests don't clobber
 _playground_lock = threading.Lock()
@@ -1256,28 +1389,14 @@ def _resolve_model_sizes(model_names):
 
 
 def _get_hf_model_size(name):
-    """Resolve HuggingFace model size in GB via the API.  Tries, in order:
-    safetensors.total, siblings[].size (rarely populated), the root
-    usedStorage field (bytes), and finally the /tree endpoint (authoritative,
-    sums every file)."""
-    try:
-        resp = requests.get(
-            f"https://huggingface.co/api/models/{name}",
-            timeout=5)
-        if resp.ok:
-            data = resp.json()
-            safet = data.get("safetensors")
-            if isinstance(safet, dict) and safet.get("total"):
-                return round(int(safet["total"]) / 1e9, 1)
-            sibs_total = sum((s.get("size") or 0) for s in data.get("siblings", []))
-            if sibs_total > 0:
-                return round(sibs_total / 1e9, 1)
-            used = data.get("usedStorage")
-            if used:
-                return round(int(used) / 1e9, 1)
-    except Exception:
-        pass
-    # Per-file fallback — slower but always works.
+    """Resolve a HuggingFace model's on-disk size in GB.
+
+    The /tree/main endpoint is authoritative — it sums the exact files that
+    `hf download` will write.  The /api/models/{id} endpoint's `usedStorage`
+    field is HF's *storage-side* metric and includes historical revisions
+    and LFS dedup accounting, so for something like Voxtral-bf16 it reports
+    19.5GB when the main-branch files total 8.0GB.  Prefer tree; fall back
+    to the weaker signals only if the tree API is unreachable."""
     try:
         resp = requests.get(
             f"https://huggingface.co/api/models/{name}/tree/main",
@@ -1287,7 +1406,24 @@ def _get_hf_model_size(name):
             if isinstance(tree, list):
                 total = sum((f.get("size") or 0) for f in tree)
                 if total > 0:
-                    return round(total / 1e9, 1)
+                    return round(total / 1e9, 2)
+    except Exception:
+        pass
+    try:
+        resp = requests.get(
+            f"https://huggingface.co/api/models/{name}",
+            timeout=5)
+        if resp.ok:
+            data = resp.json()
+            safet = data.get("safetensors")
+            if isinstance(safet, dict) and safet.get("total"):
+                return round(int(safet["total"]) / 1e9, 2)
+            sibs_total = sum((s.get("size") or 0) for s in data.get("siblings", []))
+            if sibs_total > 0:
+                return round(sibs_total / 1e9, 2)
+            used = data.get("usedStorage")
+            if used:
+                return round(int(used) / 1e9, 2)
     except Exception:
         pass
     return None
@@ -2098,6 +2234,12 @@ def api_test():
                         snapshot = resolve_hf_snapshot(model)
                         if snapshot is None:
                             return jsonify({"error": f"video: model {model} is not downloaded — pull it from the profiles page first."}), 400
+                        not_ready = check_wan_snapshot_ready(snapshot)
+                        if not_ready:
+                            return jsonify({"error":
+                                f"video: {model} is still downloading ({not_ready}). "
+                                f"Wait for the Downloads panel to hit 100% and try again."
+                            }), 409
                         cmd = runner_prefix + [
                             "mlx_video.generate_wan",
                             "--model-dir", str(snapshot),
