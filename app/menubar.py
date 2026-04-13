@@ -2026,7 +2026,17 @@ class LocalModelsApp(rumps.App):
     # -------------------------------------------------------------------
 
     def _ensure_profile_server(self):
-        """Start (or restart) the Flask profile server."""
+        """Start (or restart) the Flask profile server.
+
+        Handles the restart race where a prior profile-server process was
+        orphaned to init (via app crash, force-quit, or anything that
+        skipped our clean quit path).  In that case a naive Popen would
+        silently fail to bind our port and the readiness probe would get a
+        200 back from the orphan — leaving the UI pointed at stale code for
+        the rest of the session.  Reconcile against the pidfile + port
+        before spawning, and verify the readiness probe is answered by the
+        process *we* launched via an identity token.
+        """
         alive = (self.profile_server is not None
                  and self.profile_server.poll() is None
                  and self.profile_port is not None)
@@ -2055,9 +2065,22 @@ class LocalModelsApp(rumps.App):
             s.close()
         profile_host = "127.0.0.1"
 
+        # Evict any orphaned profile-server from a previous session before
+        # trying to bind our port.  If we skip this the new Popen loses the
+        # bind race, crashes, and the readiness probe below happily hits
+        # the orphan and returns as if everything was fine.
+        self._kill_orphan_profile_servers(self.profile_port)
+
+        # Identity token so the readiness probe can prove the responder on
+        # our port is the child we just launched, not a stale orphan that
+        # happens to be bound to the same address.
+        import secrets
+        expected_token = secrets.token_hex(16)
+
         env = os.environ.copy()
         env["PROFILE_SERVER_PORT"] = str(self.profile_port)
         env["PROFILE_HOST"] = profile_host
+        env["PROFILE_SERVER_TOKEN"] = expected_token
         env["OLLAMA_URL"] = (
             self.ollama_remote if self.mode == "client" else OLLAMA_LOCAL)
         env["MLX_URL"] = (
@@ -2078,17 +2101,142 @@ class LocalModelsApp(rumps.App):
             env=env, stdout=subprocess.DEVNULL, stderr=self._profile_log)
         self.profile_server_mode = self.mode
 
-        # Brief wait for server to become ready (runs on main thread,
-        # so keep it short — the webview will retry on load failure)
-        import urllib.request
+        # Wait for OUR process to answer on /api/identity with the matching
+        # token.  A 200 from a different token means we're talking to an
+        # orphan — try to evict it again and keep polling.
+        import urllib.request, json as _json
         base = f"{self._profile_scheme}://127.0.0.1:{self.profile_port}"
-        for _ in range(6):
-            time.sleep(0.3)
+        deadline = time.time() + 8.0
+        orphan_retries = 2
+        while time.time() < deadline:
+            if self.profile_server.poll() is not None:
+                # Child exited (probably because bind failed).  Evict and
+                # respawn once — covers the case where the orphan was born
+                # faster than our kill round-trip.
+                if orphan_retries <= 0:
+                    break
+                orphan_retries -= 1
+                self._kill_orphan_profile_servers(self.profile_port)
+                time.sleep(0.3)
+                self.profile_server = subprocess.Popen(
+                    ["uv", "run", "--python", "3.12",
+                     os.path.join(SCRIPT_DIR, "profile-server.py")],
+                    env=env, stdout=subprocess.DEVNULL,
+                    stderr=self._profile_log)
+                continue
+            time.sleep(0.25)
             try:
-                urllib.request.urlopen(f"{base}/api/system", timeout=1)
-                break
+                with urllib.request.urlopen(f"{base}/api/identity", timeout=1) as r:
+                    data = _json.loads(r.read())
+                if data.get("token") == expected_token:
+                    break
+                # Wrong token → someone else is bound.  Nuke and try again.
+                logging.warning("profile-server identity mismatch on :%d (got token %s); "
+                                "evicting and retrying", self.profile_port,
+                                (data.get("token") or "")[:8])
+                self._kill_orphan_profile_servers(self.profile_port)
             except Exception:
                 continue
+        else:
+            logging.warning("profile-server readiness probe timed out on :%d",
+                            self.profile_port)
+
+    def _kill_orphan_profile_servers(self, port):
+        """SIGTERM any profile-server.py processes not owned by this menubar
+        instance — preferring pidfile lookup, falling back to a port sweep.
+
+        Safe to call unconditionally: it only kills processes matching
+        profile-server.py in their argv, so unrelated listeners on the same
+        port are left alone (we'll fail to bind and log it instead)."""
+        pidfile = os.path.expanduser("~/.config/local-models/profile-server.pid")
+        victims = set()
+        try:
+            with open(pidfile) as f:
+                data = json.loads(f.read())
+            pid = int(data.get("pid") or 0)
+            if pid and self._pid_is_profile_server(pid):
+                victims.add(pid)
+        except (FileNotFoundError, ValueError, json.JSONDecodeError, OSError):
+            pass
+        # Belt: walk ps and match any profile-server.py that's alive.  Also
+        # check lsof for anything holding our TCP port, in case it's under a
+        # different cmdline (e.g. a test harness).
+        try:
+            out = subprocess.check_output(
+                ["ps", "-axo", "pid=,command="], text=True, timeout=5)
+            for line in out.splitlines():
+                pid_str, _, cmd = line.strip().partition(" ")
+                try:
+                    pid = int(pid_str)
+                except ValueError:
+                    continue
+                if pid == os.getpid():
+                    continue
+                if "profile-server.py" in cmd and "--pull-worker" not in cmd:
+                    victims.add(pid)
+        except Exception:
+            pass
+        try:
+            out = subprocess.check_output(
+                ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+                text=True, timeout=3)
+            for line in out.splitlines():
+                try:
+                    pid = int(line.strip())
+                except ValueError:
+                    continue
+                if pid != os.getpid() and self._pid_is_profile_server(pid):
+                    victims.add(pid)
+        except subprocess.CalledProcessError:
+            pass  # lsof exits 1 when nothing matches
+        except Exception:
+            pass
+
+        if not victims:
+            return
+        for pid in victims:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                continue
+        # Give them up to 3s to exit and release the port.
+        for _ in range(30):
+            time.sleep(0.1)
+            if not any(self._pid_is_alive(p) for p in victims):
+                break
+        # Anything still alive gets SIGKILL'd.
+        for pid in victims:
+            if self._pid_is_alive(pid):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+        # Clean up a stale pidfile if we just killed the process it pointed at.
+        try:
+            with open(pidfile) as f:
+                data = json.loads(f.read())
+            if int(data.get("pid") or 0) in victims:
+                os.unlink(pidfile)
+        except (FileNotFoundError, ValueError, json.JSONDecodeError, OSError):
+            pass
+
+    @staticmethod
+    def _pid_is_alive(pid):
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+    @staticmethod
+    def _pid_is_profile_server(pid):
+        try:
+            out = subprocess.check_output(
+                ["ps", "-o", "command=", "-p", str(pid)],
+                text=True, timeout=2).strip()
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            return False
+        return "profile-server.py" in out and "--pull-worker" not in out
 
     def _open_webview(self, title, path, size=(960, 700)):
         """Open a native WKWebView window at the given server path."""
