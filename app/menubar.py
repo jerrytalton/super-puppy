@@ -96,6 +96,65 @@ class _WebViewUIDelegate(NSObject):
             completionHandler(None)
 
 
+class _WebViewNavigationDelegate(NSObject):
+    """Recover from WebContent-process termination by reloading the page.
+
+    Why: Without this, a WebContent crash (OOM, JIT abort, streaming bug)
+    leaves a dead WKWebView. If it was the only visible window, AppKit's
+    default "terminate after last window closed" behavior fires while the
+    app is in Regular activation policy — producing a clean NSApplication
+    exit 0 that bypasses launchd's restart-on-failure. Reloading keeps the
+    window alive, so the termination cascade never starts."""
+
+    def webViewWebContentProcessDidTerminate_(self, webView):
+        logging.warning("WKWebView WebContent process terminated — reloading")
+        try:
+            webView.reload()
+        except Exception as e:
+            logging.warning("WKWebView reload after WebContent crash failed: %s", e)
+
+
+class _NonTerminatingDelegateProxy(NSObject):
+    """Wraps rumps's NSApplicationDelegate to force
+    applicationShouldTerminateAfterLastWindowClosed: to NO.
+
+    Why: When a WKWebView window is open, we're in
+    NSApplicationActivationPolicyRegular (required for dock/cmd-tab/keyboard
+    input), and the default last-window-closed behavior for Regular apps is
+    to terminate the process. For a menubar app that should never be true —
+    the menu bar item is our "last window" and it isn't an NSWindow at all.
+    Returning NO here makes the app survive any window close, crash-induced
+    or otherwise, so launchd never sees a clean exit 0 from this path."""
+
+    _real_delegate = None
+
+    def initWithDelegate_(self, delegate):
+        self = objc.super(_NonTerminatingDelegateProxy, self).init()
+        if self is None:
+            return None
+        self._real_delegate = delegate
+        return self
+
+    def applicationShouldTerminateAfterLastWindowClosed_(self, sender):
+        return False
+
+    def respondsToSelector_(self, selector):
+        # NSObject's default respondsToSelector_ returns YES for methods
+        # defined on this class (including applicationShouldTerminate...),
+        # so we check that first and fall through to the wrapped delegate
+        # for everything rumps needs (applicationWillTerminate:, menu
+        # callbacks, etc). This avoids any SEL-string comparison, which is
+        # fragile under PyObjC's selector marshalling.
+        if objc.super(_NonTerminatingDelegateProxy, self).respondsToSelector_(selector):
+            return True
+        return self._real_delegate.respondsToSelector_(selector)
+
+    def forwardingTargetForSelector_(self, selector):
+        if self._real_delegate.respondsToSelector_(selector):
+            return self._real_delegate
+        return None
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -2238,6 +2297,23 @@ class LocalModelsApp(rumps.App):
             return False
         return "profile-server.py" in out and "--pull-worker" not in out
 
+    def _install_termination_guard(self):
+        """Wrap NSApp's delegate with a proxy that forces NO for
+        applicationShouldTerminateAfterLastWindowClosed:. Idempotent — only
+        installs the guard on first webview open."""
+        if getattr(self, "_termination_guard", None) is not None:
+            return
+        from AppKit import NSApp
+        real = NSApp.delegate()
+        if real is None:
+            logging.warning("termination guard: NSApp has no delegate yet, skipping")
+            return
+        guard = _NonTerminatingDelegateProxy.alloc().initWithDelegate_(real)
+        NSApp.setDelegate_(guard)
+        self._termination_guard = guard
+        logging.info("termination guard installed (wrapped %s)",
+                     type(real).__name__)
+
     def _open_webview(self, title, path, size=(960, 700)):
         """Open a native WKWebView window at the given server path."""
         from AppKit import (NSRect, NSBackingStoreBuffered,
@@ -2302,6 +2378,10 @@ class LocalModelsApp(rumps.App):
         ui_delegate = _WebViewUIDelegate.alloc().init()
         webview.setUIDelegate_(ui_delegate)
         window._ui_delegate = ui_delegate
+        nav_delegate = _WebViewNavigationDelegate.alloc().init()
+        webview.setNavigationDelegate_(nav_delegate)
+        window._nav_delegate = nav_delegate
+        self._install_termination_guard()
         webview.setAutoresizingMask_(0x12)
         # Disable WebKit's inline prediction + autocorrect UI.  On macOS 26
         # these route through NSSpellChecker → NSCorrectionPanel, which
