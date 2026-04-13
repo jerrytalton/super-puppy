@@ -2104,6 +2104,26 @@ class LocalModelsApp(rumps.App):
 
         self._ensure_profile_server()
 
+        # Belt-and-suspenders to the per-webview setters below: stamp the
+        # process's NSUserDefaults with the inline-prediction and
+        # autocorrect flags off before WebKit/NSSpellChecker cache them.
+        try:
+            from Foundation import NSUserDefaults
+            _d = NSUserDefaults.standardUserDefaults()
+            for key in (
+                "NSAllowsInlinePredictions",
+                "NSAutomaticSpellingCorrectionEnabled",
+                "NSAutomaticTextCompletionEnabled",
+                "NSAutomaticTextReplacementEnabled",
+                "NSAutomaticQuoteSubstitutionEnabled",
+                "NSAutomaticDashSubstitutionEnabled",
+                "WebAutomaticSpellingCorrectionEnabled",
+                "WebContinuousSpellCheckingEnabled",
+            ):
+                _d.setBool_forKey_(False, key)
+        except Exception:
+            pass
+
         frame = NSRect((200, 200), size)
         style = (NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
                  | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable)
@@ -2135,6 +2155,28 @@ class LocalModelsApp(rumps.App):
         webview.setUIDelegate_(ui_delegate)
         window._ui_delegate = ui_delegate
         webview.setAutoresizingMask_(0x12)
+        # Disable WebKit's inline prediction + autocorrect UI.  On macOS 26
+        # these route through NSSpellChecker → NSCorrectionPanel, which
+        # re-enters nextEventMatchingMask and raises an NSException that
+        # pyobjc cannot marshal back into Python — the whole app aborts with
+        # SIGABRT on the first keystroke inside an editable field.  None of
+        # this UI makes sense for our settings/playground surfaces anyway.
+        _disable_sels = (
+            b"setAllowsInlinePredictions:",
+            b"setAutomaticSpellingCorrectionEnabled:",
+            b"setAutomaticTextCompletionEnabled:",
+            b"setAutomaticTextReplacementEnabled:",
+            b"setAutomaticQuoteSubstitutionEnabled:",
+            b"setAutomaticDashSubstitutionEnabled:",
+            b"setContinuousSpellCheckingEnabled:",
+            b"setGrammarCheckingEnabled:",
+        )
+        for sel_bytes in _disable_sels:
+            if webview.respondsToSelector_(sel_bytes):
+                try:
+                    getattr(webview, sel_bytes.rstrip(b":").decode() + "_")(False)
+                except Exception:
+                    pass
         full_url = f"http://127.0.0.1:{self.profile_port}{path}"
         url = NSURL.URLWithString_(full_url)
         req = NSURLRequest.requestWithURL_cachePolicy_timeoutInterval_(
