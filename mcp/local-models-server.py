@@ -1109,7 +1109,7 @@ async def local_video(
         elif "ltx" in selected.lower():
             # LTX-2 via mlx-video
             cmd = [
-                sys.executable, "-m", "mlx_video.ltx_2.generate",
+                sys.executable, "-m", "mlx_video.generate",
                 "--prompt", prompt,
                 "--output-path", output_path,
             ]
@@ -1120,13 +1120,24 @@ async def local_video(
             if height:
                 cmd.extend(["--height", str(height)])
             if num_frames:
-                cmd.extend(["-n", str(num_frames)])
+                cmd.extend(["--num-frames", str(num_frames)])
             timeout = 900
         else:
-            # Wan2.x via mlx-video
+            # Wan2.x via mlx-video — generate_wan wants a filesystem path,
+            # so resolve the HF repo id to its local snapshot directory.
+            hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
+            snap_root = hf_cache / f"models--{selected.replace('/', '--')}" / "snapshots"
+            snapshot = None
+            if snap_root.exists():
+                snaps = sorted(snap_root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+                if snaps:
+                    snapshot = snaps[0]
+            if snapshot is None:
+                return (f"Error: video model {selected} is not downloaded locally. "
+                        f"Pull it with `hf download {selected}` or from the profiles page.")
             cmd = [
-                sys.executable, "-m", "mlx_video.wan_2.generate",
-                "--model-dir", selected,
+                sys.executable, "-m", "mlx_video.generate_wan",
+                "--model-dir", str(snapshot),
                 "--prompt", prompt,
                 "--output-path", output_path,
             ]
@@ -1470,8 +1481,8 @@ HF_EMBED_MODELS = {
 }
 
 # Ollama embedding models (discovered at startup)
-OLLAMA_EMBED_NAMES = ["mxbai-embed-large", "nomic-embed-text",
-                      "snowflake-arctic-embed", "all-minilm"]
+OLLAMA_EMBED_NAMES = ["qwen3-embedding", "mxbai-embed-large",
+                      "nomic-embed-text", "snowflake-arctic-embed", "all-minilm"]
 
 
 def _get_hf_model(name: str):
@@ -1517,12 +1528,12 @@ async def local_embed(
     Use for semantic code search, finding similar files, clustering, or RAG.
     Returns cosine-similarity-ready normalized vectors.
 
-    Available models: bge-m3 (best quality, multilingual), mxbai-embed-large,
-    nomic-embed-text, snowflake-arctic-embed, all-minilm (fastest), e5-small-v2.
+    Available models: qwen3-embedding (best quality, 32K context, multilingual),
+    bge-m3, nomic-embed-text, snowflake-arctic-embed, all-minilm (fastest), e5-small-v2.
 
     Args:
         texts: List of text strings to embed.
-        model: Embedding model name. Default: mxbai-embed-large (Ollama) or bge-m3 (HF).
+        model: Embedding model name. Default: qwen3-embedding:8b (Ollama) or bge-m3 (HF).
         file_paths: Optional file paths — contents are read and embedded.
     """
     if file_paths:
