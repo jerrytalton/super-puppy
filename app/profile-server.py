@@ -887,37 +887,77 @@ def _desktop_profile_server_url():
     return f"{parsed.scheme}://{parsed.hostname}:8101"
 
 
-def _fetch_all_models():
-    """Uncached model aggregation."""
+_KNOWN_MLX_PARAMS = {
+    "whisper": 1.5,
+}
+
+_HF_CACHE = Path.home() / ".cache" / "huggingface" / "hub"
+
+_HF_TASK_BACKENDS = {
+    "tts": "mlx-audio",
+    "transcription": "mlx",
+    "image_edit": "mflux",
+    "image_gen": "mflux",
+    "video": "mlx-video",
+}
+
+
+def _hf_snapshot_dir(model_path):
+    return _HF_CACHE / f"models--{model_path.replace('/', '--')}" / "snapshots"
+
+
+def _hf_model_downloaded(model_path):
+    """True if the HF snapshot has real weights (safetensors/npz/bin/pth) or at
+    minimum a config.json. Also checks one level of subdirectories for
+    component layouts like transformer/."""
+    if not model_path:
+        return False
+    cache_dir = _hf_snapshot_dir(model_path)
+    if not cache_dir.exists():
+        return False
+    for snap in sorted(cache_dir.iterdir(), reverse=True):
+        for ext in ("*.safetensors", "*.npz", "*.bin", "*.pth", "config.json"):
+            if list(snap.glob(ext)):
+                return True
+        for sub in snap.iterdir():
+            if sub.is_dir():
+                for ext in ("*.safetensors", "*.npz", "*.bin", "*.pth"):
+                    if list(sub.glob(ext)):
+                        return True
+    return False
+
+
+def _fetch_remote_models():
+    """Client mode: fetch the aggregated list from the desktop's profile server."""
+    try:
+        url = f"{_desktop_profile_server_url()}/api/models"
+        resp = requests.get(url, timeout=10)
+        return {m["name"]: m for m in resp.json()}
+    except Exception as e:
+        logging.warning("Failed to fetch models from desktop profile server: %s", e)
+        return None
+
+
+def _parse_ollama_param_size(parameter_size):
+    try:
+        if parameter_size.upper().endswith("M"):
+            return float(parameter_size[:-1]) / 1000
+        return float(parameter_size.rstrip("B"))
+    except (ValueError, AttributeError):
+        return 0.0
+
+
+def _fetch_ollama_models():
+    """Enumerate Ollama models via /api/tags and /api/show, then overlay
+    per-model loaded state (VRAM, expires_at) from /api/ps."""
     models = {}
-
-    # Client mode: get models from the desktop's profile server, not raw backends
-    if _is_remote_ollama():
-        try:
-            url = f"{_desktop_profile_server_url()}/api/models"
-            resp = requests.get(url, timeout=10)
-            remote_models = resp.json()
-            return {m["name"]: m for m in remote_models}
-        except Exception as e:
-            logging.warning("Failed to fetch models from desktop profile server: %s", e)
-
-    # Server/offline mode: discover locally
     tags = ollama_get("/api/tags") or {}
     for m in tags.get("models", []):
         name = m["name"]
         details = m.get("details", {})
         disk_bytes = m.get("size", 0)
-        total_b = 0.0
-        try:
-            ps = details.get("parameter_size", "0")
-            if ps.upper().endswith("M"):
-                total_b = float(ps[:-1]) / 1000
-            else:
-                total_b = float(ps.rstrip("B"))
-        except (ValueError, AttributeError):
-            pass
+        total_b = _parse_ollama_param_size(details.get("parameter_size", "0"))
 
-        # Get architecture details
         show = ollama_post("/api/show", {"name": name}, timeout=5) or {}
         mi = show.get("model_info", {})
         family = show.get("details", {}).get("family", details.get("family", ""))
@@ -928,16 +968,15 @@ def _fetch_all_models():
                 break
         has_vision = any("vision" in k for k in mi)
 
-        # For models where Ollama doesn't report params (image gen), estimate from disk
         if not total_b and disk_bytes:
-            total_b = disk_bytes / 2e9  # rough: ~0.5 bytes per param at 4-bit
+            total_b = disk_bytes / 2e9  # ~0.5 bytes per param at 4-bit
         active_b = compute_active_params(name, total_b, mi, family) if total_b else 0
 
         models[name] = {
             "name": name,
             "backend": "ollama",
             "disk_bytes": disk_bytes,
-            "vram_bytes": int(disk_bytes * 1.2),  # estimate; overridden if loaded
+            "vram_bytes": int(disk_bytes * 1.2),
             "total_params_b": round(total_b, 1),
             "active_params_b": round(active_b, 1),
             "context": ctx,
@@ -948,104 +987,93 @@ def _fetch_all_models():
             "expires_at": None,
         }
 
-    # Mark loaded models with actual VRAM
-    ps = ollama_get("/api/ps") or {}
-    for m in ps.get("models", []):
+    running = ollama_get("/api/ps") or {}
+    for m in running.get("models", []):
         name = m["name"]
         if name in models:
             models[name]["is_loaded"] = True
             models[name]["vram_bytes"] = m.get("size_vram", m.get("size", 0))
             models[name]["expires_at"] = m.get("expires_at")
 
-    # MLX models — config-driven discovery with download verification.
-    # The YAML config is the source of truth for what SHOULD be installed.
-    # The HF cache confirms what IS downloaded.  The MLX server response
-    # is supplementary (marks which models are currently loaded).
-    mlx_loaded = set()
+    return models
+
+
+def _mlx_loaded_ids():
     try:
         resp = requests.get(f"{MLX_URL}/v1/models", timeout=5)
-        mlx_loaded = {m["id"] for m in resp.json().get("data", [])}
+        return {m["id"] for m in resp.json().get("data", [])}
     except Exception:
-        pass
+        return set()
 
-    mlx_config = {}
-    if MLX_SERVER_CONFIG.exists():
-        try:
-            cfg = yaml.safe_load(MLX_SERVER_CONFIG.read_text())
-            for entry in cfg.get("models", []):
-                served_name = entry.get("served_model_name", "")
-                mlx_config[served_name] = entry
-        except Exception:
-            pass
 
-    hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
+def _load_mlx_config():
+    if not MLX_SERVER_CONFIG.exists():
+        return {}
+    try:
+        cfg = yaml.safe_load(MLX_SERVER_CONFIG.read_text())
+        return {entry.get("served_model_name", ""): entry
+                for entry in cfg.get("models", [])}
+    except Exception:
+        return {}
 
-    def _hf_model_downloaded(model_path):
-        """Check if a HuggingFace model has been downloaded (snapshot exists with model files)."""
-        if not model_path:
-            return False
-        cache_dir = hf_cache / f"models--{model_path.replace('/', '--')}" / "snapshots"
-        if not cache_dir.exists():
-            return False
-        for snap in sorted(cache_dir.iterdir(), reverse=True):
-            # A real download has model weights (safetensors, npz, bin, pth)
-            # or at minimum a config file
-            for ext in ("*.safetensors", "*.npz", "*.bin", "*.pth", "config.json"):
-                if list(snap.glob(ext)):
-                    return True
-            # Check subdirectories (e.g. transformer/)
-            for sub in snap.iterdir():
-                if sub.is_dir():
-                    for ext in ("*.safetensors", "*.npz", "*.bin", "*.pth"):
-                        if list(sub.glob(ext)):
-                            return True
+
+def _parse_mlx_params(model_path, served_name):
+    """Pull (total_b, active_b) from a model path like 'Qwen3.5-397B-A17B-4bit'.
+    Falls back to _KNOWN_MLX_PARAMS for models that don't encode it in the name."""
+    total_b, active_b = 0, 0
+    total_match = re.search(r'(\d+)B', model_path)
+    if total_match:
+        total_b = int(total_match.group(1))
+    else:
+        for prefix, params in _KNOWN_MLX_PARAMS.items():
+            if prefix in model_path.lower() or prefix in served_name.lower():
+                total_b = params
+                break
+    active_match = re.search(r'A(\d+)B', model_path)
+    if active_match:
+        active_b = int(active_match.group(1))
+    if not active_b:
+        active_b = total_b
+    return total_b, active_b
+
+
+def _mlx_model_has_vision(model_path):
+    """Prefer name hints; otherwise check HF config.json for a vision_config key
+    on the newest snapshot that has one."""
+    if "vision" in model_path.lower() or "vl" in model_path.lower():
+        return True
+    if not model_path:
         return False
+    cache_dir = _hf_snapshot_dir(model_path)
+    if not cache_dir.exists():
+        return False
+    for snap in sorted(cache_dir.iterdir(), reverse=True):
+        hf_cfg = snap / "config.json"
+        if not hf_cfg.exists():
+            continue
+        try:
+            hf = json.loads(hf_cfg.read_text())
+            return "vision_config" in hf or "vision_config" in hf.get("text_config", {})
+        except Exception:
+            return False
+    return False
 
-    for mid, cfg in mlx_config.items():
-        if mid in models:
-            continue  # already discovered via Ollama
+
+def _fetch_mlx_models(existing):
+    """MLX models: the YAML config is the source of truth for what SHOULD be
+    installed, the HF cache confirms what IS, the MLX server marks what's
+    currently loaded. Skips any name already covered by Ollama."""
+    models = {}
+    mlx_loaded = _mlx_loaded_ids()
+    for mid, cfg in _load_mlx_config().items():
+        if mid in existing:
+            continue
         model_path = cfg.get("model_path", "")
-        on_demand = cfg.get("on_demand", False)
-
-        # Only include models that are actually downloaded
         if not _hf_model_downloaded(model_path):
             continue
 
-        # Parse params from model path (e.g. "Qwen3.5-397B-A17B-4bit")
-        _KNOWN_MLX_PARAMS = {
-            "whisper": 1.5,  # whisper-large-v3 is ~1.5B
-        }
-        total_b, active_b = 0, 0
-        total_match = re.search(r'(\d+)B', model_path)
-        if total_match:
-            total_b = int(total_match.group(1))
-        else:
-            for prefix, params in _KNOWN_MLX_PARAMS.items():
-                if prefix in model_path.lower() or prefix in mid.lower():
-                    total_b = params
-                    break
-        active_match = re.search(r'A(\d+)B', model_path)
-        if active_match:
-            active_b = int(active_match.group(1))
-        if not active_b:
-            active_b = total_b
-
+        total_b, active_b = _parse_mlx_params(model_path, mid)
         est_bytes = int(total_b * 1e9 * 0.5) if total_b else 0
-
-        # Detect vision: check HuggingFace config.json for vision_config
-        has_vision = "vision" in model_path.lower() or "vl" in model_path.lower()
-        if not has_vision and model_path:
-            cache_dir = hf_cache / f"models--{model_path.replace('/', '--')}" / "snapshots"
-            if cache_dir.exists():
-                for snap in sorted(cache_dir.iterdir(), reverse=True):
-                    hf_cfg = snap / "config.json"
-                    if hf_cfg.exists():
-                        try:
-                            hf = json.loads(hf_cfg.read_text())
-                            has_vision = "vision_config" in hf or "vision_config" in hf.get("text_config", {})
-                        except Exception:
-                            pass
-                        break
 
         models[mid] = {
             "name": mid,
@@ -1055,33 +1083,31 @@ def _fetch_all_models():
             "total_params_b": total_b,
             "active_params_b": active_b,
             "context": cfg.get("context_length", 0),
-            "has_vision": has_vision,
+            "has_vision": _mlx_model_has_vision(model_path),
             "family": "mlx",
             "quant": "4bit" if "4bit" in model_path else "",
             "is_loaded": mid in mlx_loaded,
             "expires_at": None,
-            "on_demand": on_demand,
+            "on_demand": cfg.get("on_demand", False),
         }
+    return models
 
-    # HuggingFace cache: TTS, transcription, image_edit, image_gen models
-    _TASK_BACKENDS = {
-        "tts": "mlx-audio",
-        "transcription": "mlx",
-        "image_edit": "mflux",
-        "image_gen": "mflux",
-        "video": "mlx-video",
-    }
+
+def _fetch_hf_cache_models(existing):
+    """TTS / transcription / image / video models discovered via the HF cache
+    scanner (not served by Ollama or MLX-OpenAI-Server)."""
     from lib.hf_scanner import scan_hf_cache
-    for hf_model in scan_hf_cache(_TASK_BACKENDS.keys()):
+    models = {}
+    for hf_model in scan_hf_cache(_HF_TASK_BACKENDS.keys()):
         name = hf_model["name"]
-        if name in models:
+        if name in existing:
             continue
         quant_str = f"{hf_model['quant_bits']}bit" if hf_model["quant_bits"] else ""
         if not quant_str and hf_model["dtypes"]:
             quant_str = hf_model["dtypes"][0].lower()
         models[name] = {
             "name": name,
-            "backend": _TASK_BACKENDS[hf_model["task"]],
+            "backend": _HF_TASK_BACKENDS[hf_model["task"]],
             "disk_bytes": hf_model["disk_bytes"],
             "vram_bytes": hf_model["vram_bytes"],
             "total_params_b": hf_model["total_params_b"],
@@ -1094,7 +1120,17 @@ def _fetch_all_models():
             "on_demand": True,
             "expires_at": None,
         }
+    return models
 
+
+def _fetch_all_models():
+    if _is_remote_ollama():
+        remote = _fetch_remote_models()
+        if remote is not None:
+            return remote
+    models = _fetch_ollama_models()
+    models.update(_fetch_mlx_models(existing=models))
+    models.update(_fetch_hf_cache_models(existing=models))
     return models
 
 
@@ -1901,14 +1937,37 @@ def _requests_error_detail(e):
     return str(e)
 
 
-def _chat(model, backend, messages, timeout=120, tool="chat"):
-    """Send a chat request to the appropriate backend."""
+def _attach_image(messages, image_b64, backend):
+    messages = [dict(m) for m in messages]
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "user":
+            msg = messages[i]
+            if backend == "mlx":
+                text = msg["content"] if isinstance(msg["content"], str) else ""
+                msg["content"] = [
+                    {"type": "text", "text": text},
+                    {"type": "image_url", "image_url": {
+                        "url": f"data:image/png;base64,{image_b64}"}},
+                ]
+            else:
+                msg["images"] = [image_b64]
+            break
+    return messages
+
+
+def _chat(model, backend, messages, timeout=300, tool="chat", image_b64=None):
+    """Send a chat request to the appropriate backend.
+
+    If image_b64 is set, the last user message is augmented in the backend's
+    native image format (OpenAI image_url for mlx, `images` field for ollama)."""
+    if image_b64:
+        messages = _attach_image(messages, image_b64, backend)
     with _track_playground(tool, model, backend):
         try:
             if backend == "mlx":
                 resp = requests.post(f"{MLX_URL}/v1/chat/completions", json={
-                    "model": model, "messages": messages,
-                }, timeout=300)
+                    "model": model, "messages": messages, "stream": False,
+                }, timeout=timeout)
                 resp.raise_for_status()
                 return resp.json()["choices"][0]["message"]["content"]
             else:
@@ -2102,6 +2161,356 @@ def api_test_stream():
     return Response(_safe_stream(), mimetype="text/event-stream")
 
 
+_COMPUTER_USE_SYSTEM_PROMPT = (
+    "You are a GUI automation assistant. Given a screenshot and an intent, "
+    "return a JSON array of actions to accomplish the intent.\n\n"
+    "Each action is one of:\n"
+    '- {"action": "click", "x": <int>, "y": <int>, "description": "<what>"}\n'
+    '- {"action": "type", "text": "<text>", "description": "<where>"}\n'
+    '- {"action": "scroll", "direction": "up"|"down", "amount": <int>, "description": "<why>"}\n'
+    '- {"action": "key", "key": "<key combo>", "description": "<why>"}\n'
+    '- {"action": "wait", "seconds": <float>, "description": "<why>"}\n\n'
+    "Return ONLY the JSON array."
+)
+
+
+def _subprocess_env():
+    return {**os.environ, "PATH": f"/opt/homebrew/bin:{os.environ.get('PATH', '')}"}
+
+
+def _read_image_b64(image_path):
+    import base64
+    return base64.b64encode(Path(image_path).read_bytes()).decode()
+
+
+def _handle_test_code(body, pick):
+    tool = body.get("tool")
+    task = "code" if tool == "code" else "general"
+    try:
+        model, backend = pick(task)
+    except ValueError:
+        model, backend = pick("general" if task == "code" else "code")
+    result = _chat(model, backend,
+                   [{"role": "user", "content": body["prompt"]}],
+                   tool=tool)
+    return jsonify({"result": result, "model": model})
+
+
+def _handle_test_review(body, pick):
+    model, backend = pick("reasoning")
+    result = _chat(model, backend, [
+        {"role": "system", "content": "Review this code. Be concise."},
+        {"role": "user", "content": body["code"]},
+    ], tool="review")
+    return jsonify({"result": result, "model": model})
+
+
+def _handle_test_vision(body, pick):
+    model, backend = pick("vision")
+    if not _is_safe_test_path(body["image_path"]):
+        return jsonify({"error": _PLAYGROUND_PATH_ERROR}), 403
+    prompt = body.get("prompt", "Describe this image.")
+    result = _chat(model, backend,
+                   [{"role": "user", "content": prompt}],
+                   tool="vision", timeout=120,
+                   image_b64=_read_image_b64(body["image_path"]))
+    return jsonify({"result": result, "model": model})
+
+
+def _handle_test_computer_use(body, pick):
+    model, backend = pick("computer_use")
+    image_path = body.get("image_path")
+    if not image_path:
+        return jsonify({"error": "Screenshot required"}), 400
+    if not _is_safe_test_path(image_path):
+        return jsonify({"error": _PLAYGROUND_PATH_ERROR}), 403
+    intent = body.get("intent", "Describe what actions to take")
+    result = _chat(model, backend, [
+        {"role": "system", "content": _COMPUTER_USE_SYSTEM_PROMPT},
+        {"role": "user", "content": intent},
+    ], tool="computer_use", timeout=300,
+       image_b64=_read_image_b64(image_path))
+    return jsonify({"result": result, "model": model})
+
+
+def _handle_test_image_edit(body, pick):
+    model, backend = pick("image_edit")
+    image_path = body.get("image_path", "")
+    if not _is_safe_test_path(image_path):
+        return jsonify({"error": _PLAYGROUND_PATH_ERROR}), 403
+    prompt = body.get("prompt", "")
+    out_path = f"/tmp/playground_edit_{int(time.time())}.png"
+    with _track_playground("image_edit", model, backend):
+        try:
+            result = subprocess.run(
+                ["mflux-generate-kontext",
+                 "--image-path", image_path,
+                 "--prompt", prompt,
+                 "--output", out_path,
+                 "--steps", "8",
+                 "--image-strength", "0.75"],
+                capture_output=True, text=True, timeout=600,
+                env=_subprocess_env(),
+            )
+            if result.returncode != 0:
+                return jsonify({"error": f"image_edit: mflux-generate-kontext failed:\n{result.stderr[-300:]}"})
+            return jsonify({
+                "result": f"Saved to {out_path}",
+                "image_path": out_path,
+                "model": model,
+            })
+        except Exception as e:
+            return jsonify({"error": _friendly_error(e, "image_edit")})
+
+
+def _handle_test_image_gen(body, pick):
+    import base64
+    model, backend = pick("image_gen")
+    out = f"/tmp/test_image_{int(time.time())}.png"
+
+    if backend == "mflux":
+        with _track_playground("image_gen", model, backend):
+            steps = "4" if any(k in model.lower() for k in ("schnell", "turbo", "klein")) else "20"
+            try:
+                result = subprocess.run(
+                    ["mflux-generate", "--model", model,
+                     "--prompt", body["prompt"],
+                     "--output", out, "--steps", steps],
+                    capture_output=True, text=True, timeout=600,
+                    env=_subprocess_env(),
+                )
+            except FileNotFoundError:
+                return jsonify({"error": _MISSING_TOOL_HELP["mflux-generate"]})
+            if result.returncode != 0:
+                return jsonify({"error": f"image_gen: mflux-generate failed:\n{result.stderr[-300:]}"})
+        if not Path(out).exists():
+            return jsonify({"error": f"image_gen: output image was not created at {out}"})
+        return jsonify({"result": f"Saved to {out}", "image_path": out, "model": model})
+
+    with _track_playground("image_gen", model, backend):
+        resp = requests.post(f"{OLLAMA_URL}/api/generate", json={
+            "model": model, "prompt": body["prompt"], "stream": False,
+        }, timeout=300)
+        resp.raise_for_status()
+        image_b64 = resp.json().get("image", "")
+    if not image_b64:
+        return jsonify({"error": f"image_gen: {model} did not return an image — "
+                                 f"this model may not support image generation."})
+    Path(out).write_bytes(base64.b64decode(image_b64))
+    return jsonify({"result": f"Saved to {out}", "image_path": out, "model": model})
+
+
+def _build_video_cmd(runner_prefix, model, prompt, image_path, out_path,
+                     width_str, height_str, frames_str, mode):
+    def _maybe_add_dims(cmd):
+        if width_str:
+            cmd.extend(["--width", width_str])
+        if height_str:
+            cmd.extend(["--height", height_str])
+        if frames_str:
+            cmd.extend(["--num-frames", frames_str])
+
+    if mode == "audio":
+        cmd = runner_prefix + ["mlx_video.generate_av",
+                               "--prompt", prompt, "--output-path", out_path]
+        _maybe_add_dims(cmd)
+        return cmd, None
+    if "ltx" in model.lower():
+        cmd = runner_prefix + ["mlx_video.generate",
+                               "--prompt", prompt, "--output-path", out_path]
+        if image_path:
+            cmd.extend(["--image", image_path])
+        _maybe_add_dims(cmd)
+        return cmd, None
+    snapshot = resolve_hf_snapshot(model)
+    if snapshot is None:
+        return None, (jsonify({"error": f"video: model {model} is not downloaded — pull it from the profiles page first."}), 400)
+    not_ready = check_wan_snapshot_ready(snapshot)
+    if not_ready:
+        return None, (jsonify({"error":
+            f"video: {model} is still downloading ({not_ready}). "
+            f"Wait for the Downloads panel to hit 100% and try again."
+        }), 409)
+    cmd = runner_prefix + ["mlx_video.generate_wan",
+                           "--model-dir", str(snapshot),
+                           "--prompt", prompt, "--output-path", out_path]
+    if image_path:
+        cmd.extend(["--image", image_path])
+    _maybe_add_dims(cmd)
+    return cmd, None
+
+
+def _handle_test_video(body, pick):
+    model, backend = pick("video")
+    image_path = body.get("image_path", "")
+    if image_path and not _is_safe_test_path(image_path):
+        return jsonify({"error": _PLAYGROUND_PATH_ERROR}), 403
+    audio_genre = body.get("audio_genre", "")
+    out = f"/tmp/playground_video_{int(time.time())}.mp4"
+
+    mode = "audio" if audio_genre else ("i2v" if image_path else "t2v")
+    video_runner = Path(__file__).parent / "mlx-video-run.py"
+    runner_prefix = ["uv", "run", "--python", "3.12", "--script", str(video_runner)]
+
+    cmd, err = _build_video_cmd(
+        runner_prefix, model, body.get("prompt", ""), image_path, out,
+        body.get("width", ""), body.get("height", ""), body.get("num_frames", ""),
+        mode,
+    )
+    if err is not None:
+        return err
+
+    with _track_playground("video", model, backend):
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=1200,
+                env=_subprocess_env(),
+            )
+        except FileNotFoundError:
+            return jsonify({"error": "mlx-video is not installed. Install with: pip install git+https://github.com/Blaizzy/mlx-video.git"}), 500
+        except subprocess.TimeoutExpired:
+            return jsonify({"error": "video: generation timed out after 20 minutes."})
+        if result.returncode != 0:
+            return jsonify({"error": f"video: generation failed:\n{result.stderr[-300:]}"})
+
+    if not Path(out).exists():
+        return jsonify({"error": f"video: output was not created at {out}"})
+    return jsonify({"result": f"Saved to {out}", "video_path": out, "model": model})
+
+
+def _handle_test_transcribe(body, pick):
+    model, backend = pick("transcription")
+    if not model:
+        model = "whisper-v3"
+    if not _is_safe_test_path(body["audio_path"]):
+        return jsonify({"error": _PLAYGROUND_PATH_ERROR}), 403
+    audio_path = Path(body["audio_path"])
+    suffix = audio_path.suffix.lstrip(".")
+
+    if suffix == "webm":
+        wav_path = audio_path.with_suffix(".wav")
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", str(audio_path), str(wav_path)],
+                capture_output=True, timeout=30)
+        except FileNotFoundError:
+            return jsonify({"error": _MISSING_TOOL_HELP["ffmpeg"]})
+        audio_path = wav_path
+        suffix = "wav"
+
+    ct_map = {"mp3": "audio/mpeg", "wav": "audio/wav",
+              "m4a": "audio/mp4", "ogg": "audio/ogg"}
+    ct = ct_map.get(suffix, "application/octet-stream")
+    url = MLX_URL if backend == "mlx" else OLLAMA_URL
+    with _track_playground("transcribe", model, backend):
+        resp = requests.post(f"{url}/v1/audio/transcriptions",
+                             files={"file": (audio_path.name, audio_path.read_bytes(), ct)},
+                             data={"model": model}, timeout=300)
+        resp.raise_for_status()
+    return jsonify({"result": resp.json().get("text", resp.text), "model": model})
+
+
+def _handle_test_speak(body, pick):
+    model, backend = pick("tts")
+    model = body.get("model") or model
+    voice = body.get("voice", "casual_male")
+    lang = body.get("language", "en")
+    text = body.get("text", "")
+    ref_audio = body.get("ref_audio")
+    if ref_audio and not _is_safe_test_path(ref_audio):
+        return jsonify({"error": _PLAYGROUND_PATH_ERROR}), 403
+    if ref_audio:
+        model = body.get("model") or "mlx-community/chatterbox-fp16"
+    out_path = f"/tmp/playground_tts_{int(time.time())}.wav"
+    out_dir = os.path.dirname(out_path)
+    prefix = Path(out_path).stem
+    with _track_playground("speak", model, backend):
+        try:
+            from mlx_audio.tts.generate import generate_audio
+            kwargs = dict(
+                text=text, model=model, voice=voice,
+                lang_code=lang, output_path=out_dir,
+                file_prefix=prefix, audio_format="wav",
+                verbose=False, play=False,
+            )
+            if ref_audio:
+                kwargs["ref_audio"] = ref_audio
+            generate_audio(**kwargs)
+            actual = os.path.join(out_dir, f"{prefix}_000.wav")
+            if os.path.exists(actual):
+                os.rename(actual, out_path)
+            return jsonify({
+                "result": f"Audio saved to {out_path}",
+                "audio_path": out_path, "model": model.split("/")[-1],
+            })
+        except Exception as e:
+            return jsonify({"error": f"speak: {e}"})
+
+
+def _handle_test_translate(body, pick):
+    model, backend = pick("translation")
+    result = _chat(model, backend, [
+        {"role": "system",
+         "content": f"Translate to {body['target']}. Output only the translation."},
+        {"role": "user", "content": body["text"]},
+    ], tool="translate")
+    return jsonify({"result": result, "model": model})
+
+
+def _handle_test_summarize(body, pick):
+    model, backend = pick("long_context")
+    if not _is_safe_test_path(body["file_path"]):
+        return jsonify({"error": _PLAYGROUND_PATH_ERROR}), 403
+    text = Path(body["file_path"]).read_text(errors="replace")[:50000]
+    result = _chat(model, backend, [
+        {"role": "system", "content": "Summarize this content concisely."},
+        {"role": "user", "content": text},
+    ], tool="summarize")
+    return jsonify({"result": result, "model": model})
+
+
+def _handle_test_embed(body, pick):
+    model, backend = pick("embedding")
+    if not model:
+        model, backend = "qwen3-embedding:8b", "ollama"
+    with _track_playground("embed", model, backend):
+        if backend == "mlx":
+            resp = requests.post(f"{MLX_URL}/v1/embeddings", json={
+                "model": model, "input": [body["text"]],
+            }, timeout=60)
+            resp.raise_for_status()
+            embeddings = [d["embedding"] for d in resp.json().get("data", [])]
+        else:
+            resp = requests.post(f"{OLLAMA_URL}/api/embed", json={
+                "model": model, "input": [body["text"]],
+            }, timeout=60)
+            resp.raise_for_status()
+            embeddings = resp.json().get("embeddings", [])
+    return jsonify({
+        "embeddings": embeddings,
+        "dimensions": len(embeddings[0]) if embeddings else 0,
+        "count": len(embeddings),
+        "model": model,
+    })
+
+
+_TEST_HANDLERS = {
+    "code": _handle_test_code,
+    "general": _handle_test_code,
+    "review": _handle_test_review,
+    "vision": _handle_test_vision,
+    "computer_use": _handle_test_computer_use,
+    "image_edit": _handle_test_image_edit,
+    "image_gen": _handle_test_image_gen,
+    "video": _handle_test_video,
+    "transcribe": _handle_test_transcribe,
+    "speak": _handle_test_speak,
+    "translate": _handle_test_translate,
+    "summarize": _handle_test_summarize,
+    "embed": _handle_test_embed,
+}
+
+
 @app.route("/api/test", methods=["POST"])
 def api_test():
     proxied = _proxy_to_desktop("/api/test")
@@ -2109,410 +2518,40 @@ def api_test():
         return proxied
     body = request.json
     tool = body.get("tool")
+    handler = _TEST_HANDLERS.get(tool)
+    if handler is None:
+        return jsonify({"error": f"Unknown tool: {tool}"}), 400
+
     override = body.get("model")
+    override_warning = []
 
-    _override_warning = []
-
-    def _pick(task):
+    def pick(task):
         if override:
             models = get_all_models()
             if override in models:
                 return override, models[override]["backend"]
-            _override_warning.append(f"Model '{override}' not found in available models — fell back to profile default for '{task}'")
+            override_warning.append(f"Model '{override}' not found in available models — fell back to profile default for '{task}'")
         model, backend, stale_warning = _pick_model_for_task(task)
         if stale_warning:
-            _override_warning.append(stale_warning)
+            override_warning.append(stale_warning)
         if not model:
             raise ValueError(f"No model available for task '{task}' — check that Ollama/MLX are running and models are loaded")
         return model, backend
 
     @after_this_request
     def _inject_warning(response):
-        if _override_warning and response.content_type == "application/json":
+        if override_warning and response.content_type == "application/json":
             try:
                 data = response.get_json()
                 if isinstance(data, dict):
-                    data["warning"] = "; ".join(_override_warning)
+                    data["warning"] = "; ".join(override_warning)
                     response.set_data(json.dumps(data))
             except Exception:
                 pass
         return response
 
     try:
-        if tool in ("code", "general"):
-            task = "code" if tool == "code" else "general"
-            try:
-                model, backend = _pick(task)
-            except ValueError:
-                model, backend = _pick("code" if task == "general" else "general")
-            result = _chat(model, backend,
-                           [{"role": "user", "content": body["prompt"]}],
-                           tool=tool)
-            return jsonify({"result": result, "model": model})
-
-        elif tool == "review":
-            model, backend = _pick("reasoning")
-            result = _chat(model, backend, [
-                {"role": "system", "content": "Review this code. Be concise."},
-                {"role": "user", "content": body["code"]},
-            ], tool="review")
-            return jsonify({"result": result, "model": model})
-
-        elif tool == "vision":
-            import base64
-            model, backend = _pick("vision")
-            if not _is_safe_test_path(body["image_path"]):
-                return jsonify({"error": _PLAYGROUND_PATH_ERROR}), 403
-            image_data = Path(body["image_path"]).read_bytes()
-            image_b64 = base64.b64encode(image_data).decode()
-            prompt = body.get("prompt", "Describe this image.")
-            with _track_playground("vision", model, backend):
-                if backend == "mlx":
-                    resp = requests.post(f"{MLX_URL}/v1/chat/completions", json={
-                        "model": model, "stream": False,
-                        "messages": [{"role": "user", "content": [
-                            {"type": "text", "text": prompt},
-                            {"type": "image_url", "image_url": {
-                                "url": f"data:image/png;base64,{image_b64}"}},
-                        ]}],
-                    }, timeout=120)
-                    resp.raise_for_status()
-                    result = resp.json()["choices"][0]["message"]["content"]
-                else:
-                    resp = requests.post(f"{OLLAMA_URL}/api/chat", json={
-                        "model": model, "stream": False,
-                        "messages": [{"role": "user",
-                                      "content": prompt,
-                                      "images": [image_b64]}],
-                    }, timeout=120)
-                    resp.raise_for_status()
-                    result = resp.json()["message"]["content"]
-            return jsonify({"result": result, "model": model})
-
-        elif tool == "computer_use":
-            import base64
-            model, backend = _pick("computer_use")
-            if body.get("image_path"):
-                if not _is_safe_test_path(body["image_path"]):
-                    return jsonify({"error": _PLAYGROUND_PATH_ERROR}), 403
-                image_data = Path(body["image_path"]).read_bytes()
-            else:
-                return jsonify({"error": "Screenshot required"}), 400
-            image_b64 = base64.b64encode(image_data).decode()
-            intent = body.get("intent", "Describe what actions to take")
-            system_prompt = (
-                "You are a GUI automation assistant. Given a screenshot and an intent, "
-                "return a JSON array of actions to accomplish the intent.\n\n"
-                "Each action is one of:\n"
-                '- {"action": "click", "x": <int>, "y": <int>, "description": "<what>"}\n'
-                '- {"action": "type", "text": "<text>", "description": "<where>"}\n'
-                '- {"action": "scroll", "direction": "up"|"down", "amount": <int>, "description": "<why>"}\n'
-                '- {"action": "key", "key": "<key combo>", "description": "<why>"}\n'
-                '- {"action": "wait", "seconds": <float>, "description": "<why>"}\n\n'
-                "Return ONLY the JSON array."
-            )
-            with _track_playground("computer_use", model, backend):
-                if backend == "mlx":
-                    resp = requests.post(f"{MLX_URL}/v1/chat/completions", json={
-                        "model": model, "stream": False,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": [
-                                {"type": "text", "text": intent},
-                                {"type": "image_url", "image_url": {
-                                    "url": f"data:image/png;base64,{image_b64}"}},
-                            ]},
-                        ],
-                    }, timeout=300)
-                    resp.raise_for_status()
-                    result = resp.json()["choices"][0]["message"]["content"]
-                else:
-                    resp = requests.post(f"{OLLAMA_URL}/api/chat", json={
-                        "model": model, "stream": False,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": intent,
-                             "images": [image_b64]},
-                        ],
-                    }, timeout=300)
-                    resp.raise_for_status()
-                    result = resp.json()["message"]["content"]
-            return jsonify({"result": result, "model": model})
-
-        elif tool == "image_edit":
-            model, backend = _pick("image_edit")
-            image_path = body.get("image_path", "")
-            if not _is_safe_test_path(image_path):
-                return jsonify({"error": _PLAYGROUND_PATH_ERROR}), 403
-            prompt = body.get("prompt", "")
-            import time as _time
-            out_path = f"/tmp/playground_edit_{int(_time.time())}.png"
-            with _track_playground("image_edit", model, backend):
-                try:
-                    result = subprocess.run(
-                        ["mflux-generate-kontext",
-                         "--image-path", image_path,
-                         "--prompt", prompt,
-                         "--output", out_path,
-                         "--steps", "8",
-                         "--image-strength", "0.75"],
-                        capture_output=True, text=True, timeout=600,
-                        env={**os.environ,
-                             "PATH": f"/opt/homebrew/bin:{os.environ.get('PATH', '')}"},
-                    )
-                    if result.returncode != 0:
-                        return jsonify({"error": f"image_edit: mflux-generate-kontext failed:\n{result.stderr[-300:]}"})
-                    return jsonify({
-                        "result": f"Saved to {out_path}",
-                        "image_path": out_path,
-                        "model": model,
-                    })
-                except Exception as e:
-                    return jsonify({"error": _friendly_error(e, "image_edit")})
-
-        elif tool == "image_gen":
-            model, backend = _pick("image_gen")
-            import time as _time
-            out = f"/tmp/test_image_{int(_time.time())}.png"
-
-            if backend == "mflux":
-                with _track_playground("image_gen", model, backend):
-                    steps = "4" if any(k in model.lower() for k in ("schnell", "turbo", "klein")) else "20"
-                    try:
-                        result = subprocess.run(
-                            ["mflux-generate", "--model", model,
-                             "--prompt", body["prompt"],
-                             "--output", out, "--steps", steps],
-                            capture_output=True, text=True, timeout=600,
-                            env={**os.environ,
-                                 "PATH": f"/opt/homebrew/bin:{os.environ.get('PATH', '')}"},
-                        )
-                    except FileNotFoundError:
-                        return jsonify({"error": _MISSING_TOOL_HELP["mflux-generate"]})
-                    if result.returncode != 0:
-                        return jsonify({"error": f"image_gen: mflux-generate failed:\n{result.stderr[-300:]}"})
-                if not Path(out).exists():
-                    return jsonify({"error": f"image_gen: output image was not created at {out}"})
-                return jsonify({"result": f"Saved to {out}", "image_path": out, "model": model})
-            else:
-                with _track_playground("image_gen", model, backend):
-                    resp = requests.post(f"{OLLAMA_URL}/api/generate", json={
-                        "model": model, "prompt": body["prompt"], "stream": False,
-                    }, timeout=300)
-                    resp.raise_for_status()
-                    import base64
-                    image_b64 = resp.json().get("image", "")
-                if not image_b64:
-                    return jsonify({"error": f"image_gen: {model} did not return an image — "
-                                             f"this model may not support image generation."})
-                Path(out).write_bytes(base64.b64decode(image_b64))
-                return jsonify({"result": f"Saved to {out}", "image_path": out, "model": model})
-
-        elif tool == "video":
-            model, backend = _pick("video")
-            image_path = body.get("image_path", "")
-            if image_path and not _is_safe_test_path(image_path):
-                return jsonify({"error": _PLAYGROUND_PATH_ERROR}), 403
-            audio_genre = body.get("audio_genre", "")
-            import time as _time
-            out = f"/tmp/playground_video_{int(_time.time())}.mp4"
-
-            width_str = body.get("width", "")
-            height_str = body.get("height", "")
-            frames_str = body.get("num_frames", "")
-
-            mode = "audio" if audio_genre else ("i2v" if image_path else "t2v")
-            video_runner = Path(__file__).parent / "mlx-video-run.py"
-            runner_prefix = ["uv", "run", "--python", "3.12", "--script", str(video_runner)]
-
-            with _track_playground("video", model, backend):
-                try:
-                    prompt = body.get("prompt", "")
-                    if mode == "audio":
-                        cmd = runner_prefix + [
-                            "mlx_video.generate_av",
-                            "--prompt", prompt,
-                            "--output-path", out,
-                        ]
-                        if width_str:
-                            cmd.extend(["--width", width_str])
-                        if height_str:
-                            cmd.extend(["--height", height_str])
-                        if frames_str:
-                            cmd.extend(["--num-frames", frames_str])
-                    elif "ltx" in model.lower():
-                        cmd = runner_prefix + [
-                            "mlx_video.generate",
-                            "--prompt", prompt,
-                            "--output-path", out,
-                        ]
-                        if image_path:
-                            cmd.extend(["--image", image_path])
-                        if width_str:
-                            cmd.extend(["--width", width_str])
-                        if height_str:
-                            cmd.extend(["--height", height_str])
-                        if frames_str:
-                            cmd.extend(["--num-frames", frames_str])
-                    else:
-                        snapshot = resolve_hf_snapshot(model)
-                        if snapshot is None:
-                            return jsonify({"error": f"video: model {model} is not downloaded — pull it from the profiles page first."}), 400
-                        not_ready = check_wan_snapshot_ready(snapshot)
-                        if not_ready:
-                            return jsonify({"error":
-                                f"video: {model} is still downloading ({not_ready}). "
-                                f"Wait for the Downloads panel to hit 100% and try again."
-                            }), 409
-                        cmd = runner_prefix + [
-                            "mlx_video.generate_wan",
-                            "--model-dir", str(snapshot),
-                            "--prompt", prompt,
-                            "--output-path", out,
-                        ]
-                        if image_path:
-                            cmd.extend(["--image", image_path])
-                        if width_str:
-                            cmd.extend(["--width", width_str])
-                        if height_str:
-                            cmd.extend(["--height", height_str])
-                        if frames_str:
-                            cmd.extend(["--num-frames", frames_str])
-
-                    result = subprocess.run(
-                        cmd, capture_output=True, text=True, timeout=1200,
-                        env={**os.environ,
-                             "PATH": f"/opt/homebrew/bin:{os.environ.get('PATH', '')}"},
-                    )
-                except FileNotFoundError:
-                    return jsonify({"error": "mlx-video is not installed. Install with: pip install git+https://github.com/Blaizzy/mlx-video.git"}), 500
-                except subprocess.TimeoutExpired:
-                    return jsonify({"error": "video: generation timed out after 20 minutes."})
-                if result.returncode != 0:
-                    return jsonify({"error": f"video: generation failed:\n{result.stderr[-300:]}"})
-
-            if not Path(out).exists():
-                return jsonify({"error": f"video: output was not created at {out}"})
-            return jsonify({"result": f"Saved to {out}", "video_path": out, "model": model})
-
-        elif tool == "transcribe":
-            model, backend = _pick("transcription")
-            if not model:
-                model = "whisper-v3"
-            if not _is_safe_test_path(body["audio_path"]):
-                return jsonify({"error": _PLAYGROUND_PATH_ERROR}), 403
-            audio_path = Path(body["audio_path"])
-            suffix = audio_path.suffix.lstrip(".")
-
-            # Whisper needs wav/mp3/m4a — convert webm via ffmpeg
-            if suffix == "webm":
-                wav_path = audio_path.with_suffix(".wav")
-                try:
-                    subprocess.run(
-                        ["ffmpeg", "-y", "-i", str(audio_path), str(wav_path)],
-                        capture_output=True, timeout=30)
-                except FileNotFoundError:
-                    return jsonify({"error": _MISSING_TOOL_HELP["ffmpeg"]})
-                audio_path = wav_path
-                suffix = "wav"
-
-            audio_data = audio_path.read_bytes()
-            ct_map = {"mp3": "audio/mpeg", "wav": "audio/wav",
-                      "m4a": "audio/mp4", "ogg": "audio/ogg"}
-            ct = ct_map.get(suffix, "application/octet-stream")
-            url = MLX_URL if backend == "mlx" else OLLAMA_URL
-            with _track_playground("transcribe", model, backend):
-                resp = requests.post(f"{url}/v1/audio/transcriptions",
-                                     files={"file": (audio_path.name, audio_data, ct)},
-                                     data={"model": model}, timeout=300)
-                resp.raise_for_status()
-            return jsonify({"result": resp.json().get("text", resp.text), "model": model})
-
-        elif tool == "speak":
-            model, backend = _pick("tts")
-            model = body.get("model") or model
-            voice = body.get("voice", "casual_male")
-            lang = body.get("language", "en")
-            text = body.get("text", "")
-            ref_audio = body.get("ref_audio")
-            if ref_audio and not _is_safe_test_path(ref_audio):
-                return jsonify({"error": _PLAYGROUND_PATH_ERROR}), 403
-            if ref_audio:
-                model = body.get("model") or "mlx-community/chatterbox-fp16"
-            import time as _time
-            out_path = f"/tmp/playground_tts_{int(_time.time())}.wav"
-            out_dir = os.path.dirname(out_path)
-            prefix = Path(out_path).stem
-            with _track_playground("speak", model, backend):
-                try:
-                    from mlx_audio.tts.generate import generate_audio
-                    kwargs = dict(
-                        text=text, model=model, voice=voice,
-                        lang_code=lang, output_path=out_dir,
-                        file_prefix=prefix, audio_format="wav",
-                        verbose=False, play=False,
-                    )
-                    if ref_audio:
-                        kwargs["ref_audio"] = ref_audio
-                    generate_audio(**kwargs)
-                    actual = os.path.join(out_dir, f"{prefix}_000.wav")
-                    if os.path.exists(actual):
-                        os.rename(actual, out_path)
-                    return jsonify({
-                        "result": f"Audio saved to {out_path}",
-                        "audio_path": out_path, "model": model.split("/")[-1],
-                    })
-                except Exception as e:
-                    return jsonify({"error": f"speak: {e}"})
-
-        elif tool == "translate":
-            model, backend = _pick("translation")
-            result = _chat(model, backend, [
-                {"role": "system",
-                 "content": f"Translate to {body['target']}. Output only the translation."},
-                {"role": "user", "content": body["text"]},
-            ], tool="translate")
-            return jsonify({"result": result, "model": model})
-
-        elif tool == "summarize":
-            model, backend = _pick("long_context")
-            if not _is_safe_test_path(body["file_path"]):
-                return jsonify({"error": _PLAYGROUND_PATH_ERROR}), 403
-            text = Path(body["file_path"]).read_text(errors="replace")[:50000]
-            result = _chat(model, backend, [
-                {"role": "system", "content": "Summarize this content concisely."},
-                {"role": "user", "content": text},
-            ], tool="summarize")
-            return jsonify({"result": result, "model": model})
-
-        elif tool == "embed":
-            model, backend = _pick("embedding")
-            if not model:
-                model, backend = "qwen3-embedding:8b", "ollama"
-            with _track_playground("embed", model, backend):
-                if backend == "mlx":
-                    resp = requests.post(f"{MLX_URL}/v1/embeddings", json={
-                        "model": model, "input": [body["text"]],
-                    }, timeout=60)
-                    resp.raise_for_status()
-                    data = resp.json().get("data", [])
-                    embeddings = [d["embedding"] for d in data]
-                else:
-                    resp = requests.post(f"{OLLAMA_URL}/api/embed", json={
-                        "model": model, "input": [body["text"]],
-                    }, timeout=60)
-                    resp.raise_for_status()
-                    embeddings = resp.json().get("embeddings", [])
-            return jsonify({
-                "embeddings": embeddings,
-                "dimensions": len(embeddings[0]) if embeddings else 0,
-                "count": len(embeddings),
-                "model": model,
-            })
-
-        else:
-            return jsonify({"error": f"Unknown tool: {tool}"}), 400
-
+        return handler(body, pick)
     except requests.RequestException as e:
         return jsonify({"error": f"{tool}: {_requests_error_detail(e)}"}), 500
     except Exception as e:
