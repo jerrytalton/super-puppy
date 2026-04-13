@@ -63,14 +63,19 @@ def _parse_playground_tools():
 
 
 def _parse_api_routes():
-    """Extract tool names handled by /api/test in profile-server.py."""
+    """Extract tool names the playground backend handles.
+
+    Two entry points:
+      - /api/test dispatches through the `_TEST_HANDLERS` dict.
+      - /api/test/stream still uses `elif tool == "X"` branches
+        (stream-only tools like `unfiltered` don't live in the dict)."""
     src = PROFILE_SERVER.read_text()
-    # Match: tool == "X" or tool in ("X", "Y")
-    single = set(re.findall(r'tool\s*==\s*["\'](\w+)["\']', src))
-    multi = re.findall(r'tool\s+in\s*\(([^)]+)\)', src)
-    for group in multi:
-        single.update(re.findall(r'["\'](\w+)["\']', group))
-    return single
+    match = re.search(r"_TEST_HANDLERS\s*=\s*\{(.+?)\}", src, re.DOTALL)
+    assert match, "Could not find _TEST_HANDLERS dict in profile-server.py"
+    tools = set(re.findall(r'["\'](\w+)["\']\s*:\s*_handle_test_\w+',
+                           match.group(1)))
+    tools.update(re.findall(r'tool\s*==\s*["\'](\w+)["\']', src))
+    return tools
 
 
 class TestPlaygroundCoverage:
