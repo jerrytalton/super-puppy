@@ -363,19 +363,48 @@ class TestRoutes:
         assert resp.status_code == 400
         assert "Unknown tool" in resp.get_json()["error"]
 
-    def test_api_test_code_dispatches_to_chat(self, client):
+    def test_api_test_code_round_trip(self, client):
+        """End-to-end: /api/test?tool=code picks the profile's code model,
+        posts to Ollama's chat endpoint with the user prompt, and returns the
+        parsed content. Mocks at the HTTP boundary, not at _chat."""
         prefs = {"code": ["qwen3:8b"], "general": ["qwen3:8b"]}
+        fake_resp = MagicMock()
+        fake_resp.status_code = 200
+        fake_resp.json.return_value = {"message": {"content": "Hello!"}}
+        fake_resp.raise_for_status = MagicMock()
         with patch.object(ps, "get_all_models", return_value=FAKE_MODELS), \
              patch.object(ps, "load_default_prefs", return_value=prefs), \
-             patch.object(ps, "_chat", return_value="Hello!") as mock_chat:
+             patch.object(ps.requests, "post", return_value=fake_resp) as mock_post:
             resp = client.post("/api/test", json={"tool": "code", "prompt": "say hi"})
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["result"] == "Hello!"
-        mock_chat.assert_called_once()
-        args = mock_chat.call_args
-        assert args[0][0] == "qwen3:8b"
-        assert args[0][1] == "ollama"
+        assert data["model"] == "qwen3:8b"
+        assert mock_post.call_count == 1
+        url = mock_post.call_args[0][0]
+        payload = mock_post.call_args[1]["json"]
+        assert url.endswith("/api/chat")
+        assert payload["model"] == "qwen3:8b"
+        assert payload["messages"] == [{"role": "user", "content": "say hi"}]
+        assert payload["stream"] is False
+
+    def test_api_test_override_round_trip(self, client):
+        """Override model flows all the way through to the HTTP request."""
+        prefs = {"code": ["qwen3:8b"]}
+        fake_resp = MagicMock()
+        fake_resp.status_code = 200
+        fake_resp.json.return_value = {"message": {"content": "override result"}}
+        fake_resp.raise_for_status = MagicMock()
+        with patch.object(ps, "get_all_models", return_value=FAKE_MODELS), \
+             patch.object(ps, "load_default_prefs", return_value=prefs), \
+             patch.object(ps.requests, "post", return_value=fake_resp) as mock_post:
+            resp = client.post("/api/test", json={
+                "tool": "code", "prompt": "hi", "model": "llama3:70b"})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["result"] == "override result"
+        assert data["model"] == "llama3:70b"
+        assert mock_post.call_args[1]["json"]["model"] == "llama3:70b"
 
     def test_api_test_review_dispatches_to_chat(self, client):
         prefs = {"reasoning": ["llama3:70b"]}
@@ -398,17 +427,6 @@ class TestRoutes:
         data = resp.get_json()
         assert "warning" in data
         assert "not found" in data["warning"]
-
-    def test_api_test_override_uses_specified_model(self, client):
-        prefs = {"code": ["qwen3:8b"]}
-        with patch.object(ps, "get_all_models", return_value=FAKE_MODELS), \
-             patch.object(ps, "load_default_prefs", return_value=prefs), \
-             patch.object(ps, "_chat", return_value="result") as mock_chat:
-            resp = client.post("/api/test", json={
-                "tool": "code", "prompt": "hi", "model": "llama3:70b"})
-        assert resp.status_code == 200
-        args = mock_chat.call_args
-        assert args[0][0] == "llama3:70b"
 
     def test_api_test_no_model_available_returns_error(self, client):
         with patch.object(ps, "get_all_models", return_value={}), \
