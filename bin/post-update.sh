@@ -98,9 +98,20 @@ PYEOF
     fi
 done
 
-# LaunchAgent
-link config/launchd/com.local-models.menubar.plist \
-    ~/Library/LaunchAgents/com.local-models.menubar.plist
+# LaunchAgent — reload if ProgramArguments changed so launchd uses the new path
+PLIST_DST="$HOME/Library/LaunchAgents/com.local-models.menubar.plist"
+PLIST_LABEL="com.local-models.menubar"
+old_args=""
+if [ -f "$PLIST_DST" ]; then
+    old_args=$(/usr/libexec/PlistBuddy -c "Print :ProgramArguments" "$PLIST_DST" 2>/dev/null || true)
+fi
+link config/launchd/com.local-models.menubar.plist "$PLIST_DST"
+new_args=$(/usr/libexec/PlistBuddy -c "Print :ProgramArguments" "$PLIST_DST" 2>/dev/null || true)
+if [ -n "$old_args" ] && [ "$old_args" != "$new_args" ]; then
+    log "ProgramArguments changed — reloading LaunchAgent"
+    launchctl unload "$PLIST_DST" 2>/dev/null || true
+    launchctl load "$PLIST_DST" 2>/dev/null || true
+fi
 
 # Server-only LaunchAgent
 NETWORK_CONF="$HOME/.config/local-models/network.conf"
