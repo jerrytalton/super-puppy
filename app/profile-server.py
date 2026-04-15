@@ -59,6 +59,12 @@ logging.basicConfig(
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 MLX_URL = os.environ.get("MLX_URL", "http://localhost:8000")
+# Default Ollama keep_alive for every chat/generate/embed request from this
+# server. Ollama's built-in default is 5 minutes, which causes cold reloads
+# between Playground turns and kills the "model feels warm" illusion. 30m is
+# long enough to survive normal interactive use and short enough not to pin
+# VRAM indefinitely.
+OLLAMA_KEEP_ALIVE = "30m"
 HTML_FILE = Path(__file__).parent / "profiles.html"
 TOOLS_HTML = Path(__file__).parent / "tools.html"
 
@@ -1821,7 +1827,8 @@ def api_profiles_warm(name):
     for model in ollama_to_load:
         try:
             requests.post(f"{OLLAMA_URL}/api/generate",
-                          json={"model": model, "prompt": "", "keep_alive": "5m"},
+                          json={"model": model, "prompt": "",
+                                "keep_alive": OLLAMA_KEEP_ALIVE},
                           timeout=300)
             loaded.append(model)
         except Exception as e:
@@ -1975,6 +1982,7 @@ def _chat(model, backend, messages, timeout=300, tool="chat", image_b64=None):
             else:
                 resp = requests.post(f"{OLLAMA_URL}/api/chat", json={
                     "model": model, "messages": messages, "stream": False,
+                    "keep_alive": OLLAMA_KEEP_ALIVE,
                 }, timeout=timeout)
                 resp.raise_for_status()
                 return resp.json()["message"]["content"]
@@ -2015,7 +2023,8 @@ def _chat_stream(model, backend, messages, think=True, tool="chat"):
             except (json.JSONDecodeError, IndexError, KeyError):
                 pass
     else:
-        body = {"model": model, "messages": messages, "stream": True}
+        body = {"model": model, "messages": messages, "stream": True,
+                "keep_alive": OLLAMA_KEEP_ALIVE}
         if not think:
             body["think"] = False
         try:
@@ -2292,6 +2301,7 @@ def _handle_test_image_gen(body, pick):
     with _track_playground("image_gen", model, backend):
         resp = requests.post(f"{OLLAMA_URL}/api/generate", json={
             "model": model, "prompt": body["prompt"], "stream": False,
+            "keep_alive": OLLAMA_KEEP_ALIVE,
         }, timeout=300)
         resp.raise_for_status()
         image_b64 = resp.json().get("image", "")
@@ -2485,6 +2495,7 @@ def _handle_test_embed(body, pick):
         else:
             resp = requests.post(f"{OLLAMA_URL}/api/embed", json={
                 "model": model, "input": [body["text"]],
+                "keep_alive": OLLAMA_KEEP_ALIVE,
             }, timeout=60)
             resp.raise_for_status()
             embeddings = resp.json().get("embeddings", [])
