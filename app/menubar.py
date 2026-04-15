@@ -96,6 +96,20 @@ class _WebViewUIDelegate(NSObject):
             completionHandler(None)
 
 
+def _raw_log(msg: str) -> None:
+    """Write a line directly to fd 2 (stderr, redirected to the menubar
+    log file by launchd). Bypasses the Python `logging` module so the
+    breadcrumb survives when an ObjC/libc-level exit has already torn
+    down the StreamHandler or flushed Python's stdio buffers.
+
+    Used exclusively in exit-defense hooks. Never raises — if the write
+    fails, the process is about to die anyway."""
+    try:
+        os.write(2, f"{time.strftime('%H:%M:%S')} RAW {msg}\n".encode())
+    except Exception:
+        pass
+
+
 class _WebViewNavigationDelegate(NSObject):
     """Recover from WebContent-process termination by reloading the page.
 
@@ -136,7 +150,28 @@ class _NonTerminatingDelegateProxy(NSObject):
         return self
 
     def applicationShouldTerminateAfterLastWindowClosed_(self, sender):
+        _raw_log("delegate: applicationShouldTerminateAfterLastWindowClosed → NO")
         return False
+
+    def applicationShouldTerminate_(self, sender):
+        """Observe every termination attempt. Forward to the real delegate
+        so legitimate quits still work; the raw log just lets us see
+        which path is firing next time SP dies overnight. Returns
+        NSTerminateNow (1) / NSTerminateCancel (0) / NSTerminateLater (2)."""
+        _raw_log("delegate: applicationShouldTerminate: called")
+        if self._real_delegate.respondsToSelector_(b"applicationShouldTerminate:"):
+            reply = self._real_delegate.applicationShouldTerminate_(sender)
+            _raw_log(f"delegate: forwarded reply={reply!r}")
+            return reply
+        _raw_log("delegate: no real handler, returning NSTerminateNow")
+        return 1  # NSTerminateNow
+
+    def applicationWillTerminate_(self, notification):
+        """Last-chance hook before NSApplication kills the process. Raw-log
+        so we know the termination is actually happening, then forward."""
+        _raw_log("delegate: applicationWillTerminate: — process is dying")
+        if self._real_delegate.respondsToSelector_(b"applicationWillTerminate:"):
+            self._real_delegate.applicationWillTerminate_(notification)
 
     def respondsToSelector_(self, selector):
         # NSObject's default respondsToSelector_ returns YES for methods
@@ -3041,18 +3076,51 @@ if __name__ == "__main__":
     import atexit
 
     def _exit_defense_atexit():
-        logging.warning("exit-defense: atexit fired → os._exit(1)")
+        _raw_log("exit-defense: atexit fired → os._exit(1)")
+        try:
+            logging.warning("exit-defense: atexit fired → os._exit(1)")
+        except Exception:
+            pass
         os._exit(1)
 
     def _exit_defense_sigterm(*_):
-        logging.warning("exit-defense: SIGTERM handler fired → os._exit(1)")
+        _raw_log("exit-defense: SIGTERM handler fired → os._exit(1)")
+        try:
+            logging.warning("exit-defense: SIGTERM handler fired → os._exit(1)")
+        except Exception:
+            pass
         os._exit(1)
 
     atexit.register(_exit_defense_atexit)
     signal.signal(signal.SIGTERM, _exit_defense_sigterm)
+    # Catch the other obvious signals too — any of them firing will give us
+    # a breadcrumb before the atexit hook runs.
+    for _sig_num, _sig_name in (
+        (signal.SIGHUP, "SIGHUP"),
+        (signal.SIGINT, "SIGINT"),
+        (signal.SIGQUIT, "SIGQUIT"),
+    ):
+        def _make_handler(name):
+            def _h(*_):
+                _raw_log(f"exit-defense: {name} received → os._exit(1)")
+                os._exit(1)
+            return _h
+        try:
+            signal.signal(_sig_num, _make_handler(_sig_name))
+        except (ValueError, OSError):
+            pass
+
+    _raw_log("exit-defense: hooks installed")
 
     try:
         acquire_lock()
         LocalModelsApp().run()
     except SystemExit as e:
-        logging.warning("exit-defense: SystemExit caught (code=%r) → falling through to atexit", e.code)
+        _raw_log(f"exit-defense: SystemExit caught (code={e.code!r})")
+        try:
+            logging.warning("exit-defense: SystemExit caught (code=%r) → falling through to atexit", e.code)
+        except Exception:
+            pass
+    except BaseException as e:
+        _raw_log(f"exit-defense: unhandled {type(e).__name__}: {e}")
+        raise
