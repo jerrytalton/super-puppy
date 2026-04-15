@@ -387,6 +387,7 @@ class TestRoutes:
         assert payload["model"] == "qwen3:8b"
         assert payload["messages"] == [{"role": "user", "content": "say hi"}]
         assert payload["stream"] is False
+        assert payload["keep_alive"] == "30m"
 
     def test_api_test_override_round_trip(self, client):
         """Override model flows all the way through to the HTTP request."""
