@@ -1410,7 +1410,7 @@ async def local_candidates(
     else:
         # Pick a diverse set across backends
         diverse = ["qwen3.5", "nemotron-super", "qwen-coder", "DeepSeek-R1",
-                    "qwen3.5-large", "qwen3.5-fast"]
+                    "qwen3.5-397b-8bit", "qwen3.5-fast"]
         selected = [(m, _models[m]["backend"]) for m in diverse if m in _models]
 
     selected = selected[:max_models]

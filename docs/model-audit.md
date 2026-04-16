@@ -42,7 +42,7 @@ For each tool: what's installed, what's best-in-class, and where to run it.
 | Llama 4 Scout | 109B | 17B MoE | Q4 | ~60 GB | `llama4-scout` | — | Not installed. 10M context window. |
 | Phi-4 | 14B | dense | Q4 | ~8 GB | `phi4` | mlx-community | Not installed. Punches above weight, tiny. |
 
-**Verdict**: Current routing (qwen3.5-fast → qwen3.5-large) is solid. **Gemma 4 26B-A4B is worth adding** — 3.8B active params at 300 tok/s is absurdly efficient for a general assistant, Apache licensed. Good "fast" tier alternative.
+**Verdict**: Current routing (qwen3.5-fast → qwen3.5-397b-8bit) is solid. **Gemma 4 26B-A4B is worth adding** — 3.8B active params at 300 tok/s is absurdly efficient for a general assistant, Apache licensed. Good "fast" tier alternative.
 
 ---
 
@@ -237,7 +237,7 @@ These MLX models are downloaded but not configured:
 | code | qwen3-coder-next *(MoE, 3B active)* | **no change** | Best code model |
 | general | qwen3.5-fast *(MoE, 3B active)* | **no change** (or add Gemma 4 26B-A4B as alt) | qwen3.5-fast is great; Gemma is faster |
 | reasoning | nemotron-super *(MoE, 12B active)* | **no change** | Nemotron is strong; R1-0528 is upgrade path |
-| vision | qwen3.5-large (397B MLX) | **qwen3.5:35b → qwen3.5:122b → qwen3.5-large** | 35B (3B active) for everyday, 122B/397B for hard cases |
+| vision | qwen3.5-397b-8bit (397B MLX) | **qwen3.5:35b → qwen3.5:122b → qwen3.5-397b-8bit** | 35B (3B active) for everyday, 122B/397B for hard cases |
 | long_context | nemotron-super | **no change** | |
 | translation | qwen3.5-fast | **no change** | |
 | embedding | all-minilm | **mxbai-embed-large** | Higher quality, already installed |
