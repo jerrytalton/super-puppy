@@ -33,7 +33,7 @@ Comprehensive audit of Super Puppy from the perspective of 15 diverse user perso
 
 **4. Run 70B+ parameter models for complex reasoning tasks**
 
-- **Works?** Yes. With 192GB RAM, the user can run `qwen3.5-large` (397B params, ~A17B active MoE) via MLX, or `deepseek-r1:671b` via Ollama. The "Maximum" profile configures these automatically.
+- **Works?** Yes. With 192GB RAM, the user can run `qwen3.5-397b-8bit` (397B params, ~A17B active MoE) via MLX, or `deepseek-r1:671b` via Ollama. The "Maximum" profile configures these automatically.
 - **Documented?** The README mentions "256GB+ handles 70B+ parameter models with full context." Profiles are documented. The memory requirements per model are not documented — the user would need to know that a 70B 4-bit model needs ~35GB.
 - **Tested?** Profile activation is tested. No tests validate that specific models actually fit in specific RAM tiers.
 - **Issues:** No clear documentation on memory-per-model. A user with 192GB might pick the "Maximum" profile and load everything, causing swapping. The profile's `max_ram_gb` field exists but is informational — nothing enforces it or warns when total loaded models exceed available RAM.
@@ -418,7 +418,7 @@ Comprehensive audit of Super Puppy from the perspective of 15 diverse user perso
 
 **3. Use long-context models for summarizing papers**
 
-- **Works?** Yes. `local_summarize` routes to the `long_context` task which filters for models with 64K+ context. On a 512GB machine, qwen3.5-large with 65K context is available.
+- **Works?** Yes. `local_summarize` routes to the `long_context` task which filters for models with 64K+ context. On a 512GB machine, qwen3.5-397b-8bit with 65K context is available.
 - **Documented?** Adequate.
 - **Tested?** Route tested.
 - **Issues:** 65K tokens is roughly 50K words — sufficient for most papers. No issue for single papers. Batch summarization (summarize 100 papers) would need to be scripted.

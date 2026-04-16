@@ -48,9 +48,9 @@ models:
     on_demand_idle_timeout: 300
 
   # Flagship reasoning — on demand (CACHED)
-  - model_path: mlx-community/Qwen3.5-397B-A17B-4bit
+  - model_path: mlx-community/Qwen3.5-397B-A17B-8bit-gs32
     model_type: lm
-    served_model_name: qwen3.5-large
+    served_model_name: qwen3.5-397b-8bit
     context_length: 65536
     on_demand: true
     on_demand_idle_timeout: 300
