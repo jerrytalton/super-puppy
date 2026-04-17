@@ -1898,6 +1898,13 @@ def _pick_model_for_task(task):
         for name in models:
             if name.startswith(candidate + ":"):
                 return name, models[name]["backend"], None
+        # Download-on-demand HF backends (mlx-audio, mflux, mlx-video) fetch
+        # weights on first use. `get_all_models()` only lists what's already
+        # on disk or served, so a profile-assigned model that hasn't been
+        # pulled yet would otherwise fail this lookup — trust the profile's
+        # HF repo id and let the backend download it.
+        if "/" in candidate and task in _HF_TASK_BACKENDS:
+            return candidate, _HF_TASK_BACKENDS[task], None
     warning = None
     if candidates:
         warning = (f"Profile models for '{task}' not available: {', '.join(candidates)} "
@@ -2564,6 +2571,10 @@ def api_test():
             models = get_all_models()
             if override in models:
                 return override, models[override]["backend"]
+            # Download-on-demand HF backends: accept an HF path that hasn't
+            # been cached yet (mlx-audio / mflux will pull on first use).
+            if "/" in override and task in _HF_TASK_BACKENDS:
+                return override, _HF_TASK_BACKENDS[task]
             override_warning.append(f"Model '{override}' not found in available models — fell back to profile default for '{task}'")
         model, backend, stale_warning = _pick_model_for_task(task)
         if stale_warning:
