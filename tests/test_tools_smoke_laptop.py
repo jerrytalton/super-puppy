@@ -39,8 +39,8 @@ LAPTOP = {
     "transcription": "whisper-v3",
     "tts":           "mlx-community/Kokoro-82M-bf16",
     "embedding":     "nomic-embed-text:latest",
-    "unfiltered":    "dolphin3:8b",
-    "computer_use":  "maternion/fara:7b",
+    # unfiltered and computer_use intentionally absent — see DEFAULT_PROFILES.
+    # Cases parametrized against missing keys skip cleanly via run_fixture_case.
 }
 
 
