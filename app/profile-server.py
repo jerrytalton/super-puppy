@@ -35,6 +35,7 @@ from flask import (Flask, Response, after_this_request, jsonify, request,
 from lib import activity
 from lib.models import (
     ALWAYS_EXCLUDE,
+    DOWNLOAD_ON_DEMAND_TASKS,
     KNOWN_ACTIVE_PARAMS,
     MCP_PREFS_FILE,
     MLX_SERVER_CONFIG,
@@ -43,6 +44,7 @@ from lib.models import (
     SPECIAL_TASKS,
     STANDARD_TASKS,
     TASK_FILTERS,
+    THINK_CAPABLE_TASKS,
     active_params_b,
     mflux_command,
     mflux_is_turbo,
@@ -1069,6 +1071,33 @@ def _mlx_model_has_vision(model_path):
     return False
 
 
+_QUANT_BYTES_PER_PARAM = (
+    # Ordered most-specific-first so "mxfp8" doesn't fall through to "8bit".
+    ("3bit",  0.375),
+    ("4bit",  0.5),
+    ("nvfp4", 0.5),
+    ("fp4",   0.5),
+    ("5bit",  0.625),
+    ("6bit",  0.75),
+    ("mxfp8", 1.0),
+    ("8bit",  1.0),
+    ("fp8",   1.0),
+    ("bf16",  2.0),
+    ("fp16",  2.0),
+    ("fp32",  4.0),
+)
+
+
+def _mlx_quant_footprint(model_path: str) -> tuple[float, str]:
+    """Return (bytes-per-param, display-quant) derived from the model path.
+    Default to bf16 when no marker is present — most MLX community repos are."""
+    p = model_path.lower()
+    for marker, bpp in _QUANT_BYTES_PER_PARAM:
+        if marker in p:
+            return bpp, marker
+    return 2.0, "bf16"
+
+
 def _fetch_mlx_models(existing):
     """MLX models: the YAML config is the source of truth for what SHOULD be
     installed, the HF cache confirms what IS, the MLX server marks what's
@@ -1083,7 +1112,8 @@ def _fetch_mlx_models(existing):
             continue
 
         total_b, active_b = _parse_mlx_params(model_path, mid)
-        est_bytes = int(total_b * 1e9 * 0.5) if total_b else 0
+        bpp, quant = _mlx_quant_footprint(model_path)
+        est_bytes = int(total_b * 1e9 * bpp) if total_b else 0
 
         models[mid] = {
             "name": mid,
@@ -1095,7 +1125,7 @@ def _fetch_mlx_models(existing):
             "context": cfg.get("context_length", 0),
             "has_vision": _mlx_model_has_vision(model_path),
             "family": "mlx",
-            "quant": "4bit" if "4bit" in model_path else "",
+            "quant": quant,
             "is_loaded": mid in mlx_loaded,
             "expires_at": None,
             "on_demand": cfg.get("on_demand", False),
@@ -1436,11 +1466,15 @@ def api_tasks():
     all_tasks = {}
     for key, label in STANDARD_TASKS.items():
         all_tasks[key] = {"label": label, "defaults": prefs.get(key, []),
-                          "thinking": thinking.get(key, True)}
+                          "thinking": thinking.get(key, True),
+                          "think_capable": key in THINK_CAPABLE_TASKS,
+                          "download_on_demand": key in DOWNLOAD_ON_DEMAND_TASKS}
     for key, spec in SPECIAL_TASKS.items():
         all_tasks[key] = {"label": spec["label"], "defaults": prefs.get(key, []),
                           "prefixes": spec["prefixes"],
-                          "thinking": thinking.get(key, False)}
+                          "thinking": thinking.get(key, False),
+                          "think_capable": key in THINK_CAPABLE_TASKS,
+                          "download_on_demand": key in DOWNLOAD_ON_DEMAND_TASKS}
     return jsonify(all_tasks)
 
 

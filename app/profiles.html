@@ -738,30 +738,44 @@ function renderTasks() {
     const isPreset = S.sel && S.sel !== 'custom';
     const selectedName = picked || (isPreset ? null : def);
     const selectedLabel = selectedName ? selectedName.split(':')[0] : 'none';
-    const isStale = selectedName && !findModel(selectedName);
+    // A profile-assigned HF path for a download-on-demand backend (mflux /
+    // mlx-audio / mlx-video) isn't actually stale — pick() honors it and
+    // the backend pulls on first use. Only flag truly-unresolvable refs.
+    const isStale = selectedName
+      && !findModel(selectedName)
+      && !(info.download_on_demand && selectedName.includes('/'));
 
     const row = document.createElement('div');
     row.className = 'task-row' + (S.openTasks.has(key) ? ' open' : '');
 
     const think = S.thinkPicks[key] !== false;
+    // The think toggle only makes sense for chat-LLM tasks. image_gen /
+    // image_edit / video / transcription / tts / embedding all hit
+    // specialized models that don't do chain-of-thought.
+    const thinkToggle = info.think_capable
+      ? `<div class="think-toggle ${think ? 'on' : ''}" data-key="${key}">think</div>`
+      : '';
     row.innerHTML = `
       <div class="task-header" data-task="${key}">
         <div class="task-color" style="background:${color}"></div>
         <div class="task-label">${info.label}</div>
         <div class="task-selected${isStale ? ' stale' : ''}">${selectedLabel}</div>
-        <div class="think-toggle ${think ? 'on' : ''}" data-key="${key}">think</div>
+        ${thinkToggle}
         <div class="task-chevron">&#9654;</div>
       </div>
       <div class="task-body"></div>
     `;
 
-    row.querySelector('.think-toggle').onclick = (e) => {
-      e.stopPropagation();
-      switchToCustom();
-      S.thinkPicks[key] = !think;
-      S.dirty = true;
-      render();
-    };
+    const toggleEl = row.querySelector('.think-toggle');
+    if (toggleEl) {
+      toggleEl.onclick = (e) => {
+        e.stopPropagation();
+        switchToCustom();
+        S.thinkPicks[key] = !think;
+        S.dirty = true;
+        render();
+      };
+    }
     row.querySelector('.task-header').onclick = () => {
       if (S.openTasks.has(key)) S.openTasks.delete(key);
       else S.openTasks.add(key);
