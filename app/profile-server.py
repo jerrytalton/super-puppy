@@ -1940,6 +1940,11 @@ def _requests_error_detail(e):
             model_name = model_match.group(1) if model_match else "the model"
             return (f"Model {model_name} is not downloaded. "
                     f"Pull it first: ollama pull {model_name}")
+        if "libmlxc.dylib not found" in body:
+            return ("Ollama's MLX image-gen runner can't find libmlxc.dylib "
+                    "(OLLAMA_LIBRARY_PATH missing from its env). Quit Ollama "
+                    "and relaunch it — Super Puppy has already pushed the "
+                    "correct value into launchd, so the next start will work.")
         return f"HTTP {e.response.status_code} from {e.response.url} — {body or '(empty body)'}"
     if isinstance(e, requests.ConnectionError):
         return f"Cannot connect to backend — is it running? ({e})"
@@ -2302,12 +2307,15 @@ def _handle_test_image_gen(body, pick):
         return jsonify({"result": f"Saved to {out}", "image_path": out, "model": model})
 
     with _track_playground("image_gen", model, backend):
-        resp = requests.post(f"{OLLAMA_URL}/api/generate", json={
-            "model": model, "prompt": body["prompt"], "stream": False,
-            "keep_alive": OLLAMA_KEEP_ALIVE,
-        }, timeout=300)
-        resp.raise_for_status()
-        image_b64 = resp.json().get("image", "")
+        try:
+            resp = requests.post(f"{OLLAMA_URL}/api/generate", json={
+                "model": model, "prompt": body["prompt"], "stream": False,
+                "keep_alive": OLLAMA_KEEP_ALIVE,
+            }, timeout=300)
+            resp.raise_for_status()
+            image_b64 = resp.json().get("image", "")
+        except Exception as e:
+            return jsonify({"error": _friendly_error(e, "image_gen")})
     if not image_b64:
         return jsonify({"error": f"image_gen: {model} did not return an image — "
                                  f"this model may not support image generation."})
