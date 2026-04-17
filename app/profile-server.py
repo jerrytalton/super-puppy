@@ -1004,7 +1004,13 @@ def _fetch_ollama_models():
         name = m["name"]
         if name in models:
             models[name]["is_loaded"] = True
-            models[name]["vram_bytes"] = m.get("size_vram", m.get("size", 0))
+            # Keep vram_bytes as the static weights-only estimate so profile-
+            # fit math is consistent regardless of load state. The /api/ps
+            # figure includes KV cache + vision projector + compute buffers
+            # — real resident memory, but context-dependent and useless for
+            # "does this model fit in the RAM budget" planning. Record it
+            # separately for anyone who wants live observability.
+            models[name]["live_vram_bytes"] = m.get("size_vram", m.get("size", 0))
             models[name]["expires_at"] = m.get("expires_at")
 
     return models
@@ -1215,7 +1221,7 @@ def get_eligible_tasks(name, model_info):
 
 # ── Profiles ─────────────────────────────────────────────────────────
 
-PROFILES_VERSION = 20  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 21  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -1287,6 +1293,10 @@ DEFAULT_PROFILES = {
             "description": "Fits in 32GB",
             "max_ram_gb": 32,
             "tasks": {
+                # unfiltered (dolphin3:8b, ~6GB) and computer_use (fara:7b,
+                # ~7GB) dropped: including them pushed the static-weights sum
+                # past the 32GB cap by ~8GB. Both specialists are more useful
+                # on the desktop/everyday tiers where RAM actually allows.
                 "code": "qwen3.6-35b-4bit",
                 "general": "qwen3.6-35b-4bit",
                 "reasoning": "qwen3.6-35b-4bit",
@@ -1297,8 +1307,6 @@ DEFAULT_PROFILES = {
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/Kokoro-82M-bf16",
                 "embedding": "nomic-embed-text:latest",
-                "unfiltered": "dolphin3:8b",
-                "computer_use": "maternion/fara:7b",
             },
         },
     },
