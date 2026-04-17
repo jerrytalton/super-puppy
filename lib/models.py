@@ -123,6 +123,25 @@ STANDARD_TASKS: dict[str, str] = {
     "translation": "Translation",
 }
 
+# Tasks routed through a chat LLM, where chain-of-thought (and the
+# `chat_template_kwargs.enable_thinking` knob on Qwen3) actually applies.
+# Everything outside this set (image/video/audio/embedding) hits a
+# specialized model that doesn't reason, so the UI's "think" toggle is
+# meaningless for them.
+THINK_CAPABLE_TASKS: frozenset[str] = frozenset({
+    "code", "general", "reasoning", "long_context", "translation",
+    "vision", "computer_use", "unfiltered",
+})
+
+# Tasks whose backend downloads weights on first use (mlx-audio, mflux,
+# mlx-video). A profile-assigned HF path for one of these is NOT "stale"
+# just because the HF cache doesn't have it yet — pick() honors it and
+# the backend pulls on demand.
+DOWNLOAD_ON_DEMAND_TASKS: frozenset[str] = frozenset({
+    "tts", "image_gen", "image_edit", "video",
+})
+
+
 SPECIAL_TASKS: dict[str, dict[str, Any]] = {
     "vision": {
         "label": "Vision",
