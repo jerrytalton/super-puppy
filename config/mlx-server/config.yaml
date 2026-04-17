@@ -69,3 +69,12 @@ models:
     served_model_name: whisper-v3
     on_demand: true
     on_demand_idle_timeout: 300
+
+  # Next-gen fast MoE — on demand (~70GB bf16, 262K native ctx)
+  - model_path: mlx-community/Qwen3.6-35B-A3B-bf16
+    model_type: multimodal
+    served_model_name: qwen3.6-35b-bf16
+    context_length: 262144
+    prompt_cache_size: 10
+    on_demand: true
+    on_demand_idle_timeout: 300
