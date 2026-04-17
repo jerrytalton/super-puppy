@@ -109,16 +109,20 @@ Dependencies are pinned to exact versions in PEP 723 inline metadata.
 
 ## Testing
 
-Run all tests: `uv run --with pytest --with flask --with pyyaml --with requests pytest tests/ -v`
+Run all tests: `uv run --with pytest --with flask --with pyyaml --with requests --with mlx-audio pytest tests/ -v`
 
 - `tests/test_core.py` — 28 unit tests (mocked subprocesses, real sockets)
 - `tests/test_deployment.py` — 53 tests for auto-update, rollback, tag verification, and post-update pipeline
 - `tests/test_mcp_server.py` — 47 tests for model selection, GPU tracking, auth, job store, path validation
 - `tests/test_profile_server.py` — 56 tests for Flask routes, profiles CRUD, model selection, config, auth
 - `tests/test_playground_coverage.py` — 4 tests ensuring MCP tools have playground UI and API routes
+- `tests/test_tools_smoke_laptop.py` — 11 live smoke tests (Laptop profile), marked `@pytest.mark.smoke`. Drives each task through the real profile-server → Ollama/MLX/mflux stack. Included in the default `pytest tests/` run; skips cleanly if services are down or a model isn't pulled. Excluded from the pre-commit hook because cold loads make it occasionally flaky.
+- `tests/test_tools_smoke_everyday.py` — same as laptop but for the Everyday profile's bigger models. Marked `@pytest.mark.smoke` and `@pytest.mark.slow`; excluded by default. Run with `pytest -m slow` or `pytest -m ''`.
 - `tests/test_e2e.py` — 43 end-to-end tests against live services
 - `tests/test_error_handling.py` — 24 tests for error handling and model validation
 - `tests/test_remote_access.sh` — bash script testing Tailscale HTTPS endpoints
+
+Smoke tests intentionally **do not mock** `requests`/`subprocess` — they're the insurance against dispatch bugs and wire-format regressions that mocked unit tests can't see. When they fail, the output is the bug report: the test name is the task, and the error text is what the user would see. Shared machinery lives in `tests/_smoke_helpers.py`.
 
 ## Menu Bar Features
 
