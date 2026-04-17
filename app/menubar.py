@@ -174,17 +174,22 @@ class _NonTerminatingDelegateProxy(NSObject):
         return False
 
     def applicationShouldTerminate_(self, sender):
-        """Observe every termination attempt. Forward to the real delegate
-        so legitimate quits still work; the raw log just lets us see
-        which path is firing next time SP dies overnight. Returns
-        NSTerminateNow (1) / NSTerminateCancel (0) / NSTerminateLater (2)."""
-        _raw_log("delegate: applicationShouldTerminate: called")
-        if self._real_delegate.respondsToSelector_(b"applicationShouldTerminate:"):
-            reply = self._real_delegate.applicationShouldTerminate_(sender)
-            _raw_log(f"delegate: forwarded reply={reply!r}")
-            return reply
-        _raw_log("delegate: no real handler, returning NSTerminateNow")
-        return 1  # NSTerminateNow
+        """Refuse termination. A menu-bar app has no notion of a
+        "normal quit" — any exit is either an intentional auto-update
+        restart (which goes through os._exit(1) and bypasses this
+        delegate entirely) or an accident we want to stop.
+
+        Without this we get clean-exit-0 deaths whenever Cmd-Q is pressed
+        while the Profiles / Playground window is key, or when macOS
+        sends a quit-all on sleep/logout. NSApp.terminate: then calls
+        exit(0) and launchd's SuccessfulExit=false policy treats it as
+        success → no restart → SP silently dead. Returning
+        NSTerminateCancel keeps the process alive; a real restart still
+        works because os._exit(1) sidesteps AppKit entirely.
+
+        Returns NSTerminateNow (1) / NSTerminateCancel (0) / NSTerminateLater (2)."""
+        _raw_log("delegate: applicationShouldTerminate: called → NSTerminateCancel")
+        return 0  # NSTerminateCancel
 
     def applicationWillTerminate_(self, notification):
         """Last-chance hook before NSApplication kills the process. Raw-log

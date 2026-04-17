@@ -249,7 +249,20 @@ let S = { sys:null, models:[], tasks:{}, profiles:{active:null,profiles:{}},
            sel:null, picks:{}, thinkPicks:{}, openTasks:new Set(), dirty:false };
 
 const fmt = b => b>=1e12?(b/1e12).toFixed(1)+'TB':b>=1e9?Math.round(b/1e9)+'GB':b>=1e6?Math.round(b/1e6)+'MB':b+'B';
-const fmtP = (t,a) => t===a||!a ? t+'B' : t+'B/'+a+'B';
+// Round params sensibly: integer for >= 10B (122B, 34B, 397B), one
+// decimal stripped of trailing zero for 1-10B (7.6B, 8B, 3B), and
+// millions when < 1B (Kokoro at 0.082B → 82M). Avoids displaying false
+// precision like "34.38B" when the underlying number came from an
+// active-params heuristic or param_count field.
+const fmtParamB = v => {
+  if (!v) return '';
+  if (v >= 1) {
+    const rounded = v >= 10 ? Math.round(v) : +v.toFixed(1);
+    return String(rounded).replace(/\.0$/, '') + 'B';
+  }
+  return Math.round(v * 1000) + 'M';
+};
+const fmtP = (t, a) => !a || t === a ? fmtParamB(t) : fmtParamB(t) + '/' + fmtParamB(a);
 const fmtC = c => c>=1e6?Math.round(c/1e6)+'M':c>=1024?Math.floor(c/1024)+'K':c>0?''+c:'';
 const findModel = name => S.models.find(m => m.name === name) || S.models.find(m => m.name.startsWith(name + ':'));
 // Display helpers — keep the collapsed views (task row + memory legend)
