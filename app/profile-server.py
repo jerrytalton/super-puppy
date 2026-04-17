@@ -1560,7 +1560,14 @@ def _check_missing_models(prefs):
     for task, candidates in prefs.items():
         if task == "thinking" or not isinstance(candidates, list):
             continue
+        # Download-on-demand backends (mflux, mlx-audio, mlx-video) fetch HF
+        # repos on first use, so a profile-assigned HF path for one of these
+        # tasks isn't "missing" — flagging it would nag the user to pre-pull
+        # something pick() already handles transparently.
+        on_demand = task in DOWNLOAD_ON_DEMAND_TASKS
         for c in candidates:
+            if on_demand and "/" in c:
+                continue
             if not _model_exists(c) and c not in seen:
                 seen.add(c)
                 missing_pullable.append(c)
