@@ -44,6 +44,8 @@ from lib.models import (
     STANDARD_TASKS,
     TASK_FILTERS,
     active_params_b,
+    mflux_command,
+    mflux_is_turbo,
     model_matches_filter as _model_matches_filter,
     validate_network_conf,
 )
@@ -2281,10 +2283,11 @@ def _handle_test_image_gen(body, pick):
 
     if backend == "mflux":
         with _track_playground("image_gen", model, backend):
-            steps = "4" if any(k in model.lower() for k in ("schnell", "turbo", "klein")) else "20"
+            binary, extra_args = mflux_command(model)
+            steps = "4" if mflux_is_turbo(model) else "20"
             try:
                 result = subprocess.run(
-                    ["mflux-generate", "--model", model,
+                    [binary, *extra_args,
                      "--prompt", body["prompt"],
                      "--output", out, "--steps", steps],
                     capture_output=True, text=True, timeout=600,
@@ -2293,7 +2296,7 @@ def _handle_test_image_gen(body, pick):
             except FileNotFoundError:
                 return jsonify({"error": _MISSING_TOOL_HELP["mflux-generate"]})
             if result.returncode != 0:
-                return jsonify({"error": f"image_gen: mflux-generate failed:\n{result.stderr[-300:]}"})
+                return jsonify({"error": f"image_gen: {binary} failed:\n{result.stderr[-300:]}"})
         if not Path(out).exists():
             return jsonify({"error": f"image_gen: output image was not created at {out}"})
         return jsonify({"result": f"Saved to {out}", "image_path": out, "model": model})

@@ -286,3 +286,61 @@ def model_matches_filter(
         return False
 
     return True
+
+
+# ── mflux dispatch ────────────────────────────────────────────────────
+#
+# mflux 0.17+ ships family-specific binaries and a `--base-model` enum.
+# Passing an HF path like "black-forest-labs/FLUX.2-klein-9B" to the
+# generic `mflux-generate` makes it load the weights as FLUX.1 (two text
+# encoders) and die looking for `text_encoder_2/`. Dispatch by family.
+
+_MFLUX_DISPATCH: tuple[tuple[str, str, str], ...] = (
+    # (substring match on lowercased id, binary, --base-model value)
+    ("flux2-klein-base-9b",   "mflux-generate-flux2",         "flux2-klein-base-9b"),
+    ("flux2-klein-base-4b",   "mflux-generate-flux2",         "flux2-klein-base-4b"),
+    ("flux.2-klein-base-9b",  "mflux-generate-flux2",         "flux2-klein-base-9b"),
+    ("flux.2-klein-base-4b",  "mflux-generate-flux2",         "flux2-klein-base-4b"),
+    ("flux2-klein-9b",        "mflux-generate-flux2",         "flux2-klein-9b"),
+    ("flux2-klein-4b",        "mflux-generate-flux2",         "flux2-klein-4b"),
+    ("flux.2-klein-9b",       "mflux-generate-flux2",         "flux2-klein-9b"),
+    ("flux.2-klein-4b",       "mflux-generate-flux2",         "flux2-klein-4b"),
+    ("flux.2-klein",          "mflux-generate-flux2",         "flux2-klein-9b"),
+    ("flux2-klein",           "mflux-generate-flux2",         "flux2-klein-9b"),
+    ("z-image-turbo",         "mflux-generate-z-image-turbo", "z-image-turbo"),
+    ("z-image",               "mflux-generate-z-image",       "z-image"),
+    ("qwen-image",            "mflux-generate-qwen",          "qwen"),
+    ("fibo-edit",             "mflux-generate-fibo",          "fibo-edit"),
+    ("fibo-lite",             "mflux-generate-fibo",          "fibo-lite"),
+    ("fibo",                  "mflux-generate-fibo",          "fibo"),
+    ("krea-dev",              "mflux-generate",               "krea-dev"),
+    ("flux.1-schnell",        "mflux-generate",               "schnell"),
+    ("flux1-schnell",         "mflux-generate",               "schnell"),
+    ("flux.1-dev",            "mflux-generate",               "dev"),
+    ("flux1-dev",             "mflux-generate",               "dev"),
+)
+
+
+def mflux_command(model_id: str) -> tuple[str, list[str]]:
+    """Return (binary, extra_args) for an image-gen model identifier.
+
+    For recognized families, dispatches to the specialized binary and sets
+    `--base-model` so mflux loads the right weight layout. When the id looks
+    like an HF repo path we also pass `--model`, so a custom fork is honored
+    instead of being silently replaced by mflux's default. Unrecognized ids
+    fall through to `mflux-generate --model <id>`.
+    """
+    normalized = model_id.lower().replace("_", "-")
+    for needle, binary, base in _MFLUX_DISPATCH:
+        if needle in normalized:
+            args = ["--base-model", base]
+            if "/" in model_id:
+                args += ["--model", model_id]
+            return binary, args
+    return "mflux-generate", ["--model", model_id]
+
+
+def mflux_is_turbo(model_id: str) -> bool:
+    """Few-step turbo/schnell variants. Used to pick a sane `--steps` default."""
+    m = model_id.lower()
+    return any(k in m for k in ("schnell", "turbo"))
