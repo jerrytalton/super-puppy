@@ -253,14 +253,47 @@ const fmtP = (t,a) => t===a||!a ? t+'B' : t+'B/'+a+'B';
 const fmtC = c => c>=1e6?Math.round(c/1e6)+'M':c>=1024?Math.floor(c/1024)+'K':c>0?''+c:'';
 const findModel = name => S.models.find(m => m.name === name) || S.models.find(m => m.name.startsWith(name + ':'));
 // Display helpers — keep the collapsed views (task row + memory legend)
-// consistent no matter how a model got named. Strip HF org prefix and
-// Ollama :tag so "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16" and
-// "qwen3.5:122b" both render at the same scale.
-const shortName = name => {
+// consistent no matter how a model got named. Parse out the structured
+// bits (provider, params, quant, size) so the model's own name can stand
+// alone. Without this, "mlx-community/Qwen3.6-35B-A3B-bf16" renders at
+// a wildly different scale than "qwen3.5:122b" or "dolphin3:8b" — all of
+// which are "the same kind of thing" conceptually.
+const _STRIP_SUFFIX = [
+  /-(bf16|fp16|fp32|fp8|nvfp4|mxfp8)$/i,       // float dtypes
+  /-\d+bit$/i,                                  // -4bit, -8bit, -3bit
+  /-Q[0-9][A-Z_0-9]*$/i,                        // Ollama GGUF quants (Q4_K_M, Q8_0...)
+  /-mlx$/i,                                     // community naming habit
+  /-\d{4}$/,                                    // 4-digit date suffix (-2603 etc.)
+  /-A\d+(\.\d+)?B$/i,                           // active params (-A3B, -A14B)
+  /-\d+(\.\d+)?[BM]$/i,                         // total params (-35B, -82M)
+];
+
+const providerOf = name => {
   if (!name) return '';
   const i = name.indexOf('/');
-  const base = i >= 0 ? name.slice(i + 1) : name;
-  return base.split(':')[0];
+  return i >= 0 ? name.slice(0, i) : '';
+};
+
+// Just the model name — no provider, no Ollama tag, no params/quant/mlx/date suffixes.
+const baseName = name => {
+  if (!name) return '';
+  const i = name.indexOf('/');
+  let n = (i >= 0 ? name.slice(i + 1) : name).split(':')[0];
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const re of _STRIP_SUFFIX) {
+      if (re.test(n)) { n = n.replace(re, ''); changed = true; }
+    }
+  }
+  return n || (i >= 0 ? name.slice(i + 1) : name);
+};
+
+// Combined short label for the collapsed views: "provider/base" or "base".
+const shortName = name => {
+  const provider = providerOf(name);
+  const base = baseName(name);
+  return provider ? `${provider}/${base}` : base;
 };
 // Short meta string: "35B · bf16 · 70GB" or "35B/3B · bf16 · 70GB".
 // Skips fields we genuinely don't have — shorter is better than "?".
@@ -698,13 +731,14 @@ function renderMemory() {
 
   segs.forEach(seg => {
     const pct = (seg.bytes / barMax) * 100;
-    const short = shortName(seg.name);
+    const base = baseName(seg.name);          // segment label: narrow, no provider
+    const short = shortName(seg.name);        // legend + tooltip: provider/base
     const meta = modelMeta(seg.model);
     const d = document.createElement('div');
     d.className = 'mem-seg';
     d.style.width = Math.max(pct, 0.8) + '%';
     d.style.background = seg.color;
-    d.innerHTML = pct > 5 ? `<span>${short}</span>` : '';
+    d.innerHTML = pct > 5 ? `<span>${base}</span>` : '';
     d.title = `${seg.name}${meta ? ' · ' + meta : ''}`;
     bar.appendChild(d);
 
