@@ -78,3 +78,12 @@ models:
     prompt_cache_size: 10
     on_demand: true
     on_demand_idle_timeout: 300
+
+  # Same model at 4-bit for desktop/laptop profiles (~20GB)
+  - model_path: mlx-community/Qwen3.6-35B-A3B-4bit
+    model_type: multimodal
+    served_model_name: qwen3.6-35b-4bit
+    context_length: 131072
+    prompt_cache_size: 10
+    on_demand: true
+    on_demand_idle_timeout: 300

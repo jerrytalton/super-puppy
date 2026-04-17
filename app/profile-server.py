@@ -1185,7 +1185,7 @@ def get_eligible_tasks(name, model_info):
 
 # ── Profiles ─────────────────────────────────────────────────────────
 
-PROFILES_VERSION = 19  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 20  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -1196,11 +1196,11 @@ DEFAULT_PROFILES = {
             "description": "Best balance for high-memory machines (256GB+)",
             "max_ram_gb": 512,
             "tasks": {
-                "code": "qwen3-coder-next:latest",
-                "general": "qwen3.5:35b",
-                "reasoning": "nemotron-super",
-                "long_context": "nemotron-super",
-                "translation": "qwen3.5:35b",
+                "code": "qwen3.6-35b-bf16",
+                "general": "qwen3.6-35b-bf16",
+                "reasoning": "qwen3.6-35b-bf16",
+                "long_context": "qwen3.6-35b-bf16",
+                "translation": "qwen3.6-35b-bf16",
                 "vision": "qwen3.5:122b",
                 "image_gen": "x/z-image-turbo:bf16",
                 "image_edit": "black-forest-labs/FLUX.1-Kontext-dev",
@@ -1217,12 +1217,12 @@ DEFAULT_PROFILES = {
             "description": "Fits in 64GB",
             "max_ram_gb": 64,
             "tasks": {
-                "code": "qwen3.5:35b",
-                "general": "qwen3.5:35b",
-                "reasoning": "qwen3.5:35b",
-                "long_context": "qwen3.5:35b",
-                "translation": "qwen3.5:35b",
-                "vision": "qwen3.5:35b",
+                "code": "qwen3.6-35b-4bit",
+                "general": "qwen3.6-35b-4bit",
+                "reasoning": "qwen3.6-35b-4bit",
+                "long_context": "qwen3.6-35b-4bit",
+                "translation": "qwen3.6-35b-4bit",
+                "vision": "qwen3.6-35b-4bit",
                 "image_gen": "x/flux2-klein:latest",
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
@@ -1257,12 +1257,12 @@ DEFAULT_PROFILES = {
             "description": "Fits in 32GB",
             "max_ram_gb": 32,
             "tasks": {
-                "code": "qwen3.5:9b",
-                "general": "qwen3.5:9b",
-                "reasoning": "qwen3.5:9b",
-                "long_context": "qwen3.5:9b",
-                "translation": "qwen3.5:9b",
-                "vision": "qwen3.5:9b",
+                "code": "qwen3.6-35b-4bit",
+                "general": "qwen3.6-35b-4bit",
+                "reasoning": "qwen3.6-35b-4bit",
+                "long_context": "qwen3.6-35b-4bit",
+                "translation": "qwen3.6-35b-4bit",
+                "vision": "qwen3.6-35b-4bit",
                 "image_gen": "x/flux2-klein:latest",
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/Kokoro-82M-bf16",
@@ -1971,26 +1971,34 @@ def _attach_image(messages, image_b64, backend):
     return messages
 
 
-def _chat(model, backend, messages, timeout=300, tool="chat", image_b64=None):
+def _chat(model, backend, messages, timeout=300, tool="chat", image_b64=None, think=True):
     """Send a chat request to the appropriate backend.
 
     If image_b64 is set, the last user message is augmented in the backend's
-    native image format (OpenAI image_url for mlx, `images` field for ollama)."""
+    native image format (OpenAI image_url for mlx, `images` field for ollama).
+
+    think=False disables chain-of-thought for models that support it — Qwen3
+    (including 3.6) via MLX uses `chat_template_kwargs.enable_thinking`;
+    Ollama uses its native `think: false` flag."""
     if image_b64:
         messages = _attach_image(messages, image_b64, backend)
     with _track_playground(tool, model, backend):
         try:
             if backend == "mlx":
-                resp = requests.post(f"{MLX_URL}/v1/chat/completions", json={
-                    "model": model, "messages": messages, "stream": False,
-                }, timeout=timeout)
+                body = {"model": model, "messages": messages, "stream": False}
+                if not think:
+                    body["chat_template_kwargs"] = {"enable_thinking": False}
+                resp = requests.post(f"{MLX_URL}/v1/chat/completions",
+                                     json=body, timeout=timeout)
                 resp.raise_for_status()
                 return resp.json()["choices"][0]["message"]["content"]
             else:
-                resp = requests.post(f"{OLLAMA_URL}/api/chat", json={
-                    "model": model, "messages": messages, "stream": False,
-                    "keep_alive": OLLAMA_KEEP_ALIVE,
-                }, timeout=timeout)
+                body = {"model": model, "messages": messages, "stream": False,
+                        "keep_alive": OLLAMA_KEEP_ALIVE}
+                if not think:
+                    body["think"] = False
+                resp = requests.post(f"{OLLAMA_URL}/api/chat", json=body,
+                                     timeout=timeout)
                 resp.raise_for_status()
                 return resp.json()["message"]["content"]
         except requests.RequestException as e:
@@ -2005,9 +2013,11 @@ def _chat_stream(model, backend, messages, think=True, tool="chat"):
                                            "started": time.time()}
     try:
         if backend == "mlx":
-            resp = requests.post(f"{MLX_URL}/v1/chat/completions", json={
-                "model": model, "messages": messages, "stream": True,
-            }, stream=True, timeout=300)
+            body = {"model": model, "messages": messages, "stream": True}
+            if not think:
+                body["chat_template_kwargs"] = {"enable_thinking": False}
+            resp = requests.post(f"{MLX_URL}/v1/chat/completions",
+                                 json=body, stream=True, timeout=300)
             resp.raise_for_status()
     except requests.RequestException as e:
         raise RuntimeError(f"Stream ({model} via {backend}): {_requests_error_detail(e)}") from e
@@ -2230,7 +2240,7 @@ def _handle_test_vision(body, pick):
     prompt = body.get("prompt", "Describe this image.")
     result = _chat(model, backend,
                    [{"role": "user", "content": prompt}],
-                   tool="vision", timeout=120,
+                   tool="vision", timeout=120, think=False,
                    image_b64=_read_image_b64(body["image_path"]))
     return jsonify({"result": result, "model": model})
 
@@ -2246,7 +2256,7 @@ def _handle_test_computer_use(body, pick):
     result = _chat(model, backend, [
         {"role": "system", "content": _COMPUTER_USE_SYSTEM_PROMPT},
         {"role": "user", "content": intent},
-    ], tool="computer_use", timeout=300,
+    ], tool="computer_use", timeout=300, think=False,
        image_b64=_read_image_b64(image_path))
     return jsonify({"result": result, "model": model})
 
@@ -2476,7 +2486,7 @@ def _handle_test_translate(body, pick):
         {"role": "system",
          "content": f"Translate to {body['target']}. Output only the translation."},
         {"role": "user", "content": body["text"]},
-    ], tool="translate")
+    ], tool="translate", think=False)
     return jsonify({"result": result, "model": model})
 
 

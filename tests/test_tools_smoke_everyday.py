@@ -23,11 +23,11 @@ require_local_services()
 
 
 EVERYDAY = {
-    "code":          "qwen3-coder-next:latest",
-    "general":       "qwen3.5:35b",
-    "reasoning":     "nemotron-super",
-    "long_context":  "nemotron-super",
-    "translation":   "qwen3.5:35b",
+    "code":          "qwen3.6-35b-bf16",
+    "general":       "qwen3.6-35b-bf16",
+    "reasoning":     "qwen3.6-35b-bf16",
+    "long_context":  "qwen3.6-35b-bf16",
+    "translation":   "qwen3.6-35b-bf16",
     "vision":        "qwen3.5:122b",
     "image_gen":     "x/z-image-turbo:bf16",
     "image_edit":    "black-forest-labs/FLUX.1-Kontext-dev",
