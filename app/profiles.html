@@ -135,6 +135,7 @@ nav a.active { color: #fff; background: var(--accent); }
 .task-color { width: 4px; height: 24px; border-radius: 2px; flex-shrink: 0; }
 .task-label { font-size: 13px; font-weight: 600; flex: 1; }
 .task-selected { font-size: 12px; color: var(--text2); }
+.task-selected .task-meta { color: var(--text3); margin-left: 8px; font-variant-numeric: tabular-nums; }
 .task-chevron { font-size: 10px; color: var(--text3); transition: transform 0.2s; }
 .task-row.open .task-chevron { transform: rotate(90deg); }
 .task-body { display: none; padding: 4px 14px 10px; }
@@ -251,6 +252,27 @@ const fmt = b => b>=1e12?(b/1e12).toFixed(1)+'TB':b>=1e9?Math.round(b/1e9)+'GB':
 const fmtP = (t,a) => t===a||!a ? t+'B' : t+'B/'+a+'B';
 const fmtC = c => c>=1e6?Math.round(c/1e6)+'M':c>=1024?Math.floor(c/1024)+'K':c>0?''+c:'';
 const findModel = name => S.models.find(m => m.name === name) || S.models.find(m => m.name.startsWith(name + ':'));
+// Display helpers — keep the collapsed views (task row + memory legend)
+// consistent no matter how a model got named. Strip HF org prefix and
+// Ollama :tag so "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16" and
+// "qwen3.5:122b" both render at the same scale.
+const shortName = name => {
+  if (!name) return '';
+  const i = name.indexOf('/');
+  const base = i >= 0 ? name.slice(i + 1) : name;
+  return base.split(':')[0];
+};
+// Short meta string: "35B · bf16 · 70GB" or "35B/3B · bf16 · 70GB".
+// Skips fields we genuinely don't have — shorter is better than "?".
+const modelMeta = m => {
+  if (!m) return '';
+  const parts = [];
+  if (m.total_params_b) parts.push(fmtP(m.total_params_b, m.active_params_b));
+  if (m.quant) parts.push(m.quant);
+  const bytes = m.vram_bytes || m.disk_bytes;
+  if (bytes) parts.push(fmt(bytes));
+  return parts.join(' · ');
+};
 
 let _authToken = '';
 
@@ -664,7 +686,7 @@ function renderMemory() {
     if (!m || seen.has(m.name)) continue;
     seen.add(m.name);
     segs.push({ name: m.name, bytes: m.vram_bytes || m.disk_bytes,
-                color: TC[task] || '#888', task });
+                color: TC[task] || '#888', task, model: m });
   }
 
   const totalUsed = segs.reduce((s,x) => s + x.bytes, 0);
@@ -676,17 +698,20 @@ function renderMemory() {
 
   segs.forEach(seg => {
     const pct = (seg.bytes / barMax) * 100;
+    const short = shortName(seg.name);
+    const meta = modelMeta(seg.model);
     const d = document.createElement('div');
     d.className = 'mem-seg';
     d.style.width = Math.max(pct, 0.8) + '%';
     d.style.background = seg.color;
-    d.innerHTML = pct > 5 ? `<span>${seg.name.split(':')[0]}</span>` : '';
-    d.title = `${seg.name}: ${fmt(seg.bytes)}`;
+    d.innerHTML = pct > 5 ? `<span>${short}</span>` : '';
+    d.title = `${seg.name}${meta ? ' · ' + meta : ''}`;
     bar.appendChild(d);
 
     const li = document.createElement('span');
     li.className = 'mem-legend-item';
-    li.innerHTML = `<span class="mem-dot" style="background:${seg.color}"></span>${seg.name.split(':')[0]} · ${fmt(seg.bytes)}`;
+    const legendMeta = meta || fmt(seg.bytes);
+    li.innerHTML = `<span class="mem-dot" style="background:${seg.color}"></span>${short} · ${legendMeta}`;
     legend.appendChild(li);
   });
 
@@ -737,7 +762,10 @@ function renderTasks() {
 
     const isPreset = S.sel && S.sel !== 'custom';
     const selectedName = picked || (isPreset ? null : def);
-    const selectedLabel = selectedName ? selectedName.split(':')[0] : 'none';
+    const selectedModel = selectedName ? findModel(selectedName) : null;
+    const selectedShort = selectedName ? shortName(selectedName) : 'none';
+    const selectedMeta = modelMeta(selectedModel);
+    const selectedLabel = selectedShort + (selectedMeta ? ` <span class="task-meta">${selectedMeta}</span>` : '');
     // A profile-assigned HF path for a download-on-demand backend (mflux /
     // mlx-audio / mlx-video) isn't actually stale — pick() honors it and
     // the backend pulls on first use. Only flag truly-unresolvable refs.
