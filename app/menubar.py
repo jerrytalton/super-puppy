@@ -55,8 +55,11 @@ class _ProfileWindowDelegate(NSObject):
     callback = None
 
     def windowWillClose_(self, notification):
-        if self.callback:
-            self.callback()
+        try:
+            if self.callback:
+                self.callback()
+        except Exception as e:  # PyObjC → NSException → abort(), so swallow.
+            _raw_log(f"windowWillClose_ raised: {type(e).__name__}: {e}")
 
 
 class _WebViewMessageHandler(NSObject):
@@ -64,8 +67,11 @@ class _WebViewMessageHandler(NSObject):
     on_message = None  # callable(body_dict)
 
     def userContentController_didReceiveScriptMessage_(self, controller, message):
-        if self.on_message:
-            self.on_message(message.body())
+        try:
+            if self.on_message:
+                self.on_message(message.body())
+        except Exception as e:
+            _raw_log(f"didReceiveScriptMessage raised: {type(e).__name__}: {e}")
 
 
 class _WebViewUIDelegate(NSObject):
@@ -80,20 +86,34 @@ class _WebViewUIDelegate(NSObject):
     def webView_requestMediaCapturePermissionForOrigin_initiatedByFrame_type_decisionHandler_(
         self, webView, origin, frame, mediaType, decisionHandler
     ):
-        # WKPermissionDecision.grant = 1
-        decisionHandler(1)
+        try:
+            # WKPermissionDecision.grant = 1
+            decisionHandler(1)
+        except Exception as e:
+            _raw_log(f"requestMediaCapturePermission raised: {type(e).__name__}: {e}")
+            try:
+                decisionHandler(0)  # deny — WebKit must get a reply or it hangs
+            except Exception:
+                pass
 
     @objc.typedSelector(b"v@:@@@@?")
     def webView_runOpenPanelWithParameters_initiatedByFrame_completionHandler_(
         self, webView, parameters, frame, completionHandler
     ):
-        from AppKit import NSOpenPanel
-        panel = NSOpenPanel.openPanel()
-        panel.setAllowsMultipleSelection_(parameters.allowsMultipleSelection())
-        if panel.runModal() == 1:  # NSModalResponseOK
-            completionHandler(panel.URLs())
-        else:
-            completionHandler(None)
+        try:
+            from AppKit import NSOpenPanel
+            panel = NSOpenPanel.openPanel()
+            panel.setAllowsMultipleSelection_(parameters.allowsMultipleSelection())
+            if panel.runModal() == 1:  # NSModalResponseOK
+                completionHandler(panel.URLs())
+            else:
+                completionHandler(None)
+        except Exception as e:
+            _raw_log(f"runOpenPanel raised: {type(e).__name__}: {e}")
+            try:
+                completionHandler(None)
+            except Exception:
+                pass
 
 
 def _raw_log(msg: str) -> None:
@@ -121,11 +141,11 @@ class _WebViewNavigationDelegate(NSObject):
     window alive, so the termination cascade never starts."""
 
     def webViewWebContentProcessDidTerminate_(self, webView):
-        logging.warning("WKWebView WebContent process terminated — reloading")
         try:
+            logging.warning("WKWebView WebContent process terminated — reloading")
             webView.reload()
         except Exception as e:
-            logging.warning("WKWebView reload after WebContent crash failed: %s", e)
+            _raw_log(f"webContentProcessDidTerminate raised: {type(e).__name__}: {e}")
 
 
 class _NonTerminatingDelegateProxy(NSObject):
@@ -2409,6 +2429,18 @@ class LocalModelsApp(rumps.App):
         window.setReleasedWhenClosed_(False)
 
         config = WKWebViewConfiguration.alloc().init()
+        # allowsInlinePredictions is on the *configuration*, not the webview.
+        # Setting it on the WKWebView (as we used to) silently no-ops because
+        # respondsToSelector_ returns false — which is how 2026-04-17's
+        # SIGABRT got through: NSSpellChecker was still called, its
+        # correction panel pumped the run loop, a PyObjC callback raised,
+        # and AppKit turned it into abort(). Must be set before
+        # initWithFrame_configuration_ for WebKit to respect it.
+        if config.respondsToSelector_(b"setAllowsInlinePredictions:"):
+            try:
+                config.setAllowsInlinePredictions_(False)
+            except Exception as e:
+                _raw_log(f"config.setAllowsInlinePredictions_ raised: {e}")
         prefs = config.preferences()
         try:
             prefs.setValue_forKey_(True, "mediaDevicesEnabled")
@@ -3109,6 +3141,28 @@ if __name__ == "__main__":
 
     atexit.register(_exit_defense_atexit)
     signal.signal(signal.SIGTERM, _exit_defense_sigterm)
+
+    # Breadcrumb for uncaught NSException. We can't prevent the abort(),
+    # but we can at least log what blew up — the default AppKit path
+    # demangles through __cxa_rethrow and the log has nothing to show for
+    # it (see 2026-04-17 11:05 SIGABRT, NSSpellChecker / Inline Predictions
+    # → PyObjC → NSException → libc abort).
+    try:
+        from Foundation import NSSetUncaughtExceptionHandler
+        import objc as _objc_mod
+
+        @_objc_mod.callbackFor(NSSetUncaughtExceptionHandler)
+        def _nsexc_handler(exc):
+            try:
+                name = str(exc.name()) if exc else "<nil>"
+                reason = str(exc.reason()) if exc else ""
+                _raw_log(f"uncaught NSException: {name} — {reason[:400]}")
+            except Exception:
+                pass
+
+        NSSetUncaughtExceptionHandler(_nsexc_handler)
+    except Exception as _e:
+        _raw_log(f"NSSetUncaughtExceptionHandler install failed: {_e}")
     # Catch the other obvious signals too — any of them firing will give us
     # a breadcrumb before the atexit hook runs.
     for _sig_num, _sig_name in (
