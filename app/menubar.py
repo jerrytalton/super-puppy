@@ -1136,12 +1136,28 @@ def save_routing_prefs(prefs):
 # App
 # ---------------------------------------------------------------------------
 
+def _ensure_ollama_library_path():
+    """Ollama's MLX image-gen runner dlopens libmlxc.dylib via OLLAMA_LIBRARY_PATH.
+    The Electron launcher is supposed to set it, but has been observed to drop
+    it — breaking every z-image / flux request with 'libmlxc.dylib not found'
+    until Ollama restarts. Push the value into launchd's session env so the
+    next Ollama launch (auto-update, restart, reboot) inherits it."""
+    resources = "/Applications/Ollama.app/Contents/Resources"
+    if not os.path.isdir(resources):
+        return
+    subprocess.run(
+        ["launchctl", "setenv", "OLLAMA_LIBRARY_PATH", resources],
+        check=False, timeout=5,
+    )
+
+
 class LocalModelsApp(rumps.App):
     def __init__(self):
         icon = ICON_PATH if os.path.exists(ICON_PATH) else None
         super().__init__("Local Models", icon=icon, template=True,
                          quit_button=None)
 
+        _ensure_ollama_library_path()
         validate_network_conf(logger=logging.getLogger())
         self.conf = load_network_conf()
         self.desktop = is_desktop()
