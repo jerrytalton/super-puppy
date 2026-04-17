@@ -530,8 +530,10 @@ async def chat_mlx(model: str, messages: list[dict],
     body = {"model": model, "messages": messages, "max_tokens": max_tokens,
             "stream": False}
     if not think:
-        # MLX OpenAI-compatible: some models respect this
-        body["temperature"] = 0.3
+        # Qwen3 family (including 3.6) honors enable_thinking via the chat
+        # template. mlx-openai-server forwards chat_template_kwargs to the
+        # tokenizer. Non-Qwen MLX models silently ignore this field.
+        body["chat_template_kwargs"] = {"enable_thinking": False}
     try:
         async with httpx.AsyncClient(timeout=300) as client:
             resp = await client.post(f"{MLX_URL}/v1/chat/completions", json=body)
