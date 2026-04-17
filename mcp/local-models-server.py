@@ -28,7 +28,14 @@ from mcp.server.fastmcp import FastMCP
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib import activity
-from lib.models import MCP_PREFS_FILE, MLX_SERVER_CONFIG, NETWORK_CONF, active_params_b
+from lib.models import (
+    MCP_PREFS_FILE,
+    MLX_SERVER_CONFIG,
+    NETWORK_CONF,
+    active_params_b,
+    mflux_command,
+    mflux_is_turbo,
+)
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
@@ -913,17 +920,17 @@ async def local_image(
         with _gpu_request("mlx", f"image:{selected}"):
             warning = _gpu_contention_warning("mlx")
             loop = asyncio.get_event_loop()
+            binary, extra_args = mflux_command(selected)
+            steps = "4" if mflux_is_turbo(selected) else "20"
             try:
-                # Dev models need more steps; schnell/turbo/klein are fast
-                steps = "4" if any(k in selected.lower() for k in ("schnell", "turbo", "klein")) else "20"
                 proc = await loop.run_in_executor(None, lambda: subprocess.run(
-                    ["mflux-generate", "--model", selected, "--prompt", prompt,
+                    [binary, *extra_args, "--prompt", prompt,
                      "--output", output_path, "--steps", steps],
                     capture_output=True, text=True, timeout=600,
                     env={**os.environ, "PATH": f"/opt/homebrew/bin:{os.environ.get('PATH', '')}"},
                 ))
                 if proc.returncode != 0:
-                    return f"Error: mflux-generate failed:\n{proc.stderr[-500:]}"
+                    return f"Error: {binary} failed:\n{proc.stderr[-500:]}"
             except subprocess.TimeoutExpired:
                 return "Error: image generation timed out after 10 minutes."
 
