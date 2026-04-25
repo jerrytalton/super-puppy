@@ -2679,7 +2679,30 @@ def api_test_screenshot():
 
 @app.route("/api/test/upload", methods=["POST"])
 def api_test_upload():
-    """Save an uploaded file to /tmp and return its path."""
+    """Save an uploaded file to /tmp and return its path.
+
+    In client mode, the file must end up on the desktop's /tmp (that's where
+    the model backends will read it from), so the multipart body is forwarded
+    to the desktop's profile server. The proxy can't go through
+    _proxy_to_desktop because that helper assumes JSON bodies.
+    """
+    if _is_remote_ollama():
+        hops = int(request.headers.get("X-SP-Proxy-Hops", "0"))
+        if hops >= _MAX_PROXY_HOPS:
+            return jsonify({"error": "Proxy loop detected — too many hops between servers"}), 502
+        try:
+            url = f"{_desktop_profile_server_url()}/api/test/upload"
+            proxy_headers = {
+                "X-SP-Proxy-Hops": str(hops + 1),
+                "Content-Type": request.content_type or "application/octet-stream",
+            }
+            resp = requests.post(url, data=request.get_data(), headers=proxy_headers,
+                                 timeout=300)
+            return Response(resp.content, status=resp.status_code,
+                            content_type=resp.headers.get("content-type"))
+        except Exception as e:
+            return jsonify({"error": f"Desktop unreachable: {e}"}), 502
+
     f = request.files.get("file")
     if not f:
         return jsonify({"error": "No file uploaded"}), 400
@@ -2708,6 +2731,9 @@ def _is_safe_test_path(path: str) -> bool:
 
 @app.route("/api/test/image")
 def api_test_image():
+    proxied = _proxy_to_desktop("/api/test/image", method="GET")
+    if proxied is not None:
+        return proxied
     path = request.args.get("path", "")
     if not path or not _is_safe_test_path(path) or not Path(path).exists():
         return "Not found", 404
@@ -2717,6 +2743,9 @@ def api_test_image():
 
 @app.route("/api/test/audio")
 def api_test_audio():
+    proxied = _proxy_to_desktop("/api/test/audio", method="GET")
+    if proxied is not None:
+        return proxied
     path = request.args.get("path", "")
     if not path or not _is_safe_test_path(path) or not Path(path).exists():
         return "Not found", 404
@@ -2727,6 +2756,9 @@ def api_test_audio():
 
 @app.route("/api/test/video")
 def api_test_video():
+    proxied = _proxy_to_desktop("/api/test/video", method="GET")
+    if proxied is not None:
+        return proxied
     path = request.args.get("path", "")
     if not path or not _is_safe_test_path(path) or not Path(path).exists():
         return "Not found", 404
