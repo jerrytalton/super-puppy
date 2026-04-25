@@ -590,3 +590,134 @@ class TestProfileServerAuth:
             resp = client.get("/api/auth-token",
                               environ_base={"REMOTE_ADDR": "100.64.0.5"})
             assert resp.status_code == 403
+
+
+class TestClientModeMediaProxy:
+    """In client mode, media-serving endpoints (/api/test/image|audio|video)
+    must forward to the desktop's profile server. The path returned by the
+    desktop's tool handlers refers to a file on the desktop's filesystem,
+    so the laptop has to fetch it through the desktop, not from local /tmp.
+    """
+
+    @staticmethod
+    def _fake_media_response(content_type, payload=b"\x89PNG\r\n\x1a\nFAKE"):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {"content-type": content_type}
+        resp.iter_content = lambda chunk_size=4096: iter([payload])
+        resp.content = payload
+        return resp
+
+    def test_image_route_proxies_in_client_mode(self, client):
+        fake = self._fake_media_response("image/png")
+        with patch.object(ps, "OLLAMA_URL", "http://100.64.0.2:11434"), \
+             patch.object(ps.requests, "get", return_value=fake) as mock_get:
+            resp = client.get("/api/test/image?path=/tmp/test_image_1.png")
+        assert resp.status_code == 200
+        assert resp.data == b"\x89PNG\r\n\x1a\nFAKE"
+        assert resp.headers["Content-Type"] == "image/png"
+        url = mock_get.call_args[0][0]
+        assert url == "http://100.64.0.2:8101/api/test/image"
+        params = mock_get.call_args[1]["params"]
+        assert params["path"] == "/tmp/test_image_1.png"
+        assert mock_get.call_args[1]["headers"]["X-SP-Proxy-Hops"] == "1"
+
+    def test_audio_route_proxies_in_client_mode(self, client):
+        fake = self._fake_media_response("audio/wav", b"RIFF\x00\x00\x00\x00WAVE")
+        with patch.object(ps, "OLLAMA_URL", "http://100.64.0.2:11434"), \
+             patch.object(ps.requests, "get", return_value=fake) as mock_get:
+            resp = client.get("/api/test/audio?path=/tmp/test_speech.wav")
+        assert resp.status_code == 200
+        assert resp.data == b"RIFF\x00\x00\x00\x00WAVE"
+        assert mock_get.call_args[0][0] == "http://100.64.0.2:8101/api/test/audio"
+
+    def test_video_route_proxies_in_client_mode(self, client):
+        fake = self._fake_media_response("video/mp4", b"\x00\x00\x00\x18ftypmp42FAKE")
+        with patch.object(ps, "OLLAMA_URL", "http://100.64.0.2:11434"), \
+             patch.object(ps.requests, "get", return_value=fake) as mock_get:
+            resp = client.get("/api/test/video?path=/tmp/test_video.mp4")
+        assert resp.status_code == 200
+        assert resp.data == b"\x00\x00\x00\x18ftypmp42FAKE"
+        assert mock_get.call_args[0][0] == "http://100.64.0.2:8101/api/test/video"
+
+    def test_local_mode_serves_from_disk(self, client, tmp_path):
+        """When OLLAMA_URL is local, the route should NOT proxy — it should
+        read the file from /tmp directly. (We use /tmp to satisfy
+        _is_safe_test_path.)"""
+        target = Path("/tmp/test_image_local.png")
+        target.write_bytes(b"localdata")
+        try:
+            with patch.object(ps, "OLLAMA_URL", "http://localhost:11434"), \
+                 patch.object(ps.requests, "get") as mock_get:
+                resp = client.get(f"/api/test/image?path={target}")
+            assert resp.status_code == 200
+            assert resp.data == b"localdata"
+            assert mock_get.call_count == 0
+        finally:
+            target.unlink(missing_ok=True)
+
+    def test_proxy_loop_guard(self, client):
+        """If a proxied request comes back to us with too many hops, we
+        refuse to proxy again."""
+        with patch.object(ps, "OLLAMA_URL", "http://100.64.0.2:11434"):
+            resp = client.get("/api/test/image?path=/tmp/x.png",
+                              headers={"X-SP-Proxy-Hops": "3"})
+        assert resp.status_code == 502
+        assert "loop" in resp.get_json()["error"].lower()
+
+
+class TestClientModeUploadProxy:
+    """In client mode, /api/test/upload must forward the multipart body to
+    the desktop so the saved path is on the desktop's filesystem (where the
+    backends will read it from)."""
+
+    def test_upload_proxies_multipart_in_client_mode(self, client):
+        fake = MagicMock()
+        fake.status_code = 200
+        fake.headers = {"content-type": "application/json"}
+        fake.content = b'{"path": "/tmp/test_upload_999.png"}'
+        with patch.object(ps, "OLLAMA_URL", "http://100.64.0.2:11434"), \
+             patch.object(ps.requests, "post", return_value=fake) as mock_post:
+            resp = client.post(
+                "/api/test/upload",
+                data={"file": (Path("/dev/null").open("rb"), "screenshot.png")},
+                content_type="multipart/form-data",
+            )
+        assert resp.status_code == 200
+        assert resp.get_json()["path"] == "/tmp/test_upload_999.png"
+        url = mock_post.call_args[0][0]
+        assert url == "http://100.64.0.2:8101/api/test/upload"
+        # The raw multipart body must be forwarded, not re-encoded as JSON
+        kwargs = mock_post.call_args[1]
+        assert "data" in kwargs and kwargs["data"]
+        assert "json" not in kwargs
+        assert kwargs["headers"]["Content-Type"].startswith("multipart/form-data")
+        assert kwargs["headers"]["X-SP-Proxy-Hops"] == "1"
+
+    def test_upload_local_mode_saves_to_tmp(self, client):
+        """In local mode, the upload is saved to /tmp and its path returned —
+        no proxy involved."""
+        with patch.object(ps, "OLLAMA_URL", "http://localhost:11434"), \
+             patch.object(ps.requests, "post") as mock_post:
+            resp = client.post(
+                "/api/test/upload",
+                data={"file": (Path("/dev/null").open("rb"), "screenshot.png")},
+                content_type="multipart/form-data",
+            )
+        assert resp.status_code == 200
+        path = resp.get_json()["path"]
+        assert path.startswith("/tmp/test_upload_")
+        assert path.endswith(".png")
+        assert mock_post.call_count == 0
+        Path(path).unlink(missing_ok=True)
+
+    def test_upload_loop_guard(self, client):
+        with patch.object(ps, "OLLAMA_URL", "http://100.64.0.2:11434"):
+            resp = client.post(
+                "/api/test/upload",
+                data={"file": (Path("/dev/null").open("rb"), "x.png")},
+                content_type="multipart/form-data",
+                headers={"X-SP-Proxy-Hops": "3"},
+            )
+        assert resp.status_code == 502
+        assert "loop" in resp.get_json()["error"].lower()
