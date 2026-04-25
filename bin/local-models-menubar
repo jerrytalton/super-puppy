@@ -71,4 +71,23 @@ if [ -f "$UPDATE_STARTED" ]; then
     fi
 fi
 
+# ── Auth token ────────────────────────────────────────────────────
+# Load MCP_AUTH_TOKEN so the Python process (and the profile-server it
+# spawns) can stamp it on requests and verify incoming ones.  Same
+# cache/op-fallback logic as bin/local-models-mcp-detect.
+TOKEN_CACHE="$CONFIG_DIR/mcp_auth_token"
+if [ -f "$TOKEN_CACHE" ] && [ -s "$TOKEN_CACHE" ]; then
+    MCP_AUTH_TOKEN=$(cat "$TOKEN_CACHE")
+elif [ -n "${OP_REF:-}" ] && command -v op >/dev/null 2>&1; then
+    MCP_AUTH_TOKEN=$(op read "$OP_REF" 2>/dev/null || true)
+    if [ -n "$MCP_AUTH_TOKEN" ]; then
+        mkdir -p "$CONFIG_DIR"
+        (umask 077 && echo "$MCP_AUTH_TOKEN" > "$TOKEN_CACHE")
+    fi
+fi
+if [ -z "${MCP_AUTH_TOKEN:-}" ]; then
+    echo "local-models menubar: WARNING: no auth token — Playground/profile API will refuse all requests" >&2
+fi
+export MCP_AUTH_TOKEN
+
 exec "$REPO_DIR/app/SuperPuppy.app/Contents/MacOS/super-puppy"

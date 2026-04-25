@@ -308,7 +308,14 @@ const fmtC = c => c>=1e6?Math.round(c/1e6)+'M':c>=1024?Math.floor(c/1024)+'K':c>
 let _authToken = '';
 
 async function _initAuth() {
-  // Check URL for token param (remote access links)
+  // Preferred: WKWebView userScript injects window.__SP_TOKEN__ before any
+  // page JS runs (see menubar.py _open_webview).
+  if (typeof window.__SP_TOKEN__ === 'string' && window.__SP_TOKEN__) {
+    _authToken = window.__SP_TOKEN__;
+    sessionStorage.setItem('sp_token', _authToken);
+    return;
+  }
+  // URL token param (paste-link path)
   const params = new URLSearchParams(location.search);
   if (params.has('token')) {
     _authToken = params.get('token');
@@ -318,14 +325,13 @@ async function _initAuth() {
     history.replaceState(null, '', location.pathname + (clean ? '?' + clean : ''));
     return;
   }
-  // Check sessionStorage (returning remote user)
+  // sessionStorage from a prior load
   const stored = sessionStorage.getItem('sp_token');
-  if (stored) { _authToken = stored; return; }
-  // Try localhost-only token endpoint (menu bar webview)
-  try {
-    const r = await fetch('/api/auth-token');
-    if (r.ok) { _authToken = (await r.json()).token || ''; }
-  } catch {}
+  if (stored) { _authToken = stored; }
+  // No /api/auth-token fallback: every API call requires the bearer token,
+  // and there's no public path to bootstrap it from the browser.  Fetches
+  // will 401 if we got here without a token — which is correct for tabs
+  // opened outside the menu bar app.
 }
 
 function _authHeaders(opts = {}) {
@@ -333,6 +339,16 @@ function _authHeaders(opts = {}) {
   const h = opts.headers instanceof Headers ? opts.headers : new Headers(opts.headers || {});
   h.set('Authorization', 'Bearer ' + _authToken);
   return {...opts, headers: h};
+}
+
+// Native <img>/<audio>/<video>/<a download> elements can't set Authorization
+// headers; smuggle the token in as a query param instead.  The server only
+// honors ?token= for GETs, never mutation routes.
+function _authedMediaUrl(path, mediaPath) {
+  const base = `/api/test/${path}?path=${encodeURIComponent(mediaPath)}`;
+  return _authToken
+    ? base + `&token=${encodeURIComponent(_authToken)}`
+    : base;
 }
 
 function _fetch(url) {
@@ -784,17 +800,17 @@ async function run() {
         if (data.error) {
           html = data.error; cls = 'output-box error';
         } else if (data.audio_path) {
-          const audioUrl = `/api/test/audio?path=${encodeURIComponent(data.audio_path)}`;
+          const audioUrl = _authedMediaUrl('audio', data.audio_path);
           html = data.result +
             `<audio controls src="${audioUrl}" style="display:block;margin-top:8px;width:100%"></audio>` +
             `<a href="#" onclick="downloadFile('${audioUrl}','audio.wav');return false" class="download-btn">Download audio</a>`;
         } else if (data.image_path) {
-          const imgUrl = `/api/test/image?path=${encodeURIComponent(data.image_path)}`;
+          const imgUrl = _authedMediaUrl('image', data.image_path);
           html = data.result +
             `<img src="${imgUrl}">` +
             `<a href="#" onclick="downloadFile('${imgUrl}','image.png');return false" class="download-btn">Download image</a>`;
         } else if (data.video_path) {
-          const vidUrl = `/api/test/video?path=${encodeURIComponent(data.video_path)}`;
+          const vidUrl = _authedMediaUrl('video', data.video_path);
           html = data.result +
             `<video controls src="${vidUrl}" style="display:block;margin-top:8px;width:100%;max-height:400px"></video>` +
             `<a href="#" onclick="downloadFile('${vidUrl}','video.mp4');return false" class="download-btn">Download video</a>`;
@@ -820,7 +836,7 @@ async function run() {
         output.className = 'output-box error';
       } else if (data.audio_path) {
         output.textContent = data.result;
-        const audioUrl = '/api/test/audio?path=' + encodeURIComponent(data.audio_path);
+        const audioUrl = _authedMediaUrl('audio', data.audio_path);
         const audio = document.createElement('audio');
         audio.controls = true; audio.style.cssText = 'display:block;margin-top:8px;width:100%';
         audio.src = audioUrl;
@@ -831,7 +847,7 @@ async function run() {
         output.appendChild(dl);
       } else if (data.image_path) {
         output.textContent = data.result;
-        const imgUrl = '/api/test/image?path=' + encodeURIComponent(data.image_path);
+        const imgUrl = _authedMediaUrl('image', data.image_path);
         const img = document.createElement('img');
         img.src = imgUrl;
         output.appendChild(img);
@@ -841,7 +857,7 @@ async function run() {
         output.appendChild(dl);
       } else if (data.video_path) {
         output.textContent = data.result;
-        const vidUrl = '/api/test/video?path=' + encodeURIComponent(data.video_path);
+        const vidUrl = _authedMediaUrl('video', data.video_path);
         const vid = document.createElement('video');
         vid.controls = true; vid.style.cssText = 'display:block;margin-top:8px;width:100%;max-height:400px';
         vid.src = vidUrl;
