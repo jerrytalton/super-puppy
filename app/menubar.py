@@ -3013,7 +3013,7 @@ class LocalModelsApp(rumps.App):
             if not data.get("enabled"):
                 return None
             return data
-        except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        except (FileNotFoundError, json.JSONDecodeError):
             return None
 
     def _schedule_woof(self):

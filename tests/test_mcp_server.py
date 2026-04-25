@@ -473,6 +473,43 @@ class TestPathValidation:
         finally:
             Path(good_path).unlink()
 
+    def test_extension_allowlist_rejects_id_rsa(self):
+        """The extension gate stops prompt-injected calls like
+        local_image_edit(image_path='~/.ssh/id_rsa') from passing
+        validation just because the file is under $HOME."""
+        import tempfile
+        with tempfile.NamedTemporaryFile(dir="/tmp", suffix="", delete=False) as f:
+            f.write(b"junk")
+            sketchy = f.name
+        try:
+            err = server._validate_path(sketchy, allowed_exts=server._IMAGE_EXTS)
+            assert err is not None
+            assert "extension" in err.lower()
+        finally:
+            Path(sketchy).unlink()
+
+    def test_extension_allowlist_accepts_image(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile(dir="/tmp", suffix=".png", delete=False) as f:
+            f.write(b"\x89PNG\r\n\x1a\n")
+            good = f.name
+        try:
+            assert server._validate_path(
+                good, allowed_exts=server._IMAGE_EXTS) is None
+        finally:
+            Path(good).unlink()
+
+    def test_extension_allowlist_case_insensitive(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile(dir="/tmp", suffix=".PNG", delete=False) as f:
+            f.write(b"x")
+            good = f.name
+        try:
+            assert server._validate_path(
+                good, allowed_exts=server._IMAGE_EXTS) is None
+        finally:
+            Path(good).unlink()
+
 
 class TestConfigurablePathRestrictions:
     """MCP_ALLOWED_PATHS in network.conf restricts file access."""

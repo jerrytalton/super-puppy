@@ -547,7 +547,14 @@ def _pull_worker_hf(name: str, total_bytes: int | None):
 
         if proc.stderr:
             try:
-                last_err_tail = proc.stderr.read().decode(errors="replace")[-400:]
+                raw_tail = proc.stderr.read().decode(errors="replace")[-400:]
+                # Defence-in-depth: scrub anything that looks like an HF
+                # token before we persist it.  hf usually masks tokens but
+                # has historically leaked them in some error paths, and the
+                # tail lands in ~/.config/local-models/pulls/<name>.json
+                # which the user might paste into a bug report.
+                last_err_tail = re.sub(
+                    r"hf_[A-Za-z0-9]{20,}", "<redacted-hf-token>", raw_tail)
             except Exception as e:
                 logging.warning("pull worker %s: failed to read stderr tail: %s", name, e)
 

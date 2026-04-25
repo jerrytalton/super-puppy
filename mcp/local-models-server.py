@@ -97,8 +97,18 @@ def _load_allowed_roots() -> tuple[Path, ...]:
 _ALLOWED_ROOTS: tuple[Path, ...] = _load_allowed_roots()
 
 
-def _validate_path(path: str, must_exist: bool = True) -> str | None:
-    """Validate a file path is under $HOME or /tmp.
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif"}
+_AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".webm", ".mp4"}
+_VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"}
+
+
+def _validate_path(path: str, must_exist: bool = True,
+                   allowed_exts: set[str] | None = None) -> str | None:
+    """Validate a file path is under $HOME or /tmp.  When allowed_exts is
+    set, also require an extension match — without it, a prompt-injected
+    call like local_image_edit(image_path="~/.ssh/id_rsa") would pass the
+    root check and reach the model, which would still read the file off
+    disk before failing.
 
     Returns None if safe, or an error message string if not.
     """
@@ -110,13 +120,19 @@ def _validate_path(path: str, must_exist: bool = True) -> str | None:
         return f"Path not allowed (must be under $HOME or /tmp): {path}"
     if must_exist and not resolved.exists():
         return f"File not found: {path}"
+    if allowed_exts is not None:
+        ext = resolved.suffix.lower()
+        if ext not in allowed_exts:
+            return (f"Path rejected: extension {ext or '<none>'} not allowed "
+                    f"for this tool (permitted: {', '.join(sorted(allowed_exts))})")
     return None
 
 
-def _validate_paths(paths: list[str], must_exist: bool = True) -> str | None:
+def _validate_paths(paths: list[str], must_exist: bool = True,
+                    allowed_exts: set[str] | None = None) -> str | None:
     """Validate a list of file paths. Returns first error or None."""
     for p in paths:
-        err = _validate_path(p, must_exist=must_exist)
+        err = _validate_path(p, must_exist=must_exist, allowed_exts=allowed_exts)
         if err:
             return f"Error: {err}"
     return None
@@ -244,7 +260,13 @@ _JOB_TTL = 3600  # expire uncollected jobs after 1 hour
 async def discover_models():
     """Query Ollama and MLX for available models and capabilities."""
     models = {}
-    async with httpx.AsyncClient(timeout=10) as client:
+    # Outer client timeout has to comfortably exceed N_models * per-call —
+    # at 10s, a cold Ollama with 30+ tagged models would time out the
+    # whole client mid-gather (asyncio cancels in-flight calls and we
+    # surface an empty registry as "no model available for ...").  60s is
+    # generous; per-call timeouts on /api/show below still bound any
+    # single hung request.
+    async with httpx.AsyncClient(timeout=60) as client:
         # Ollama
         try:
             resp = await client.get(f"{OLLAMA_URL}/api/tags")
@@ -722,7 +744,7 @@ async def local_vision(
     if not _models.get(model_name, {}).get("vision"):
         return f"Error: {model_name} is not vision-capable. Need a model like qwen3-vl."
 
-    err = _validate_paths(image_paths)
+    err = _validate_paths(image_paths, allowed_exts=_IMAGE_EXTS)
     if err:
         return err
     images_b64 = []
@@ -822,7 +844,7 @@ async def local_computer_use(
 
     # Take or read screenshot
     if screenshot_path:
-        err = _validate_path(screenshot_path)
+        err = _validate_path(screenshot_path, allowed_exts=_IMAGE_EXTS)
         if err:
             return f"Error: {err}"
         img_bytes = Path(screenshot_path).read_bytes()
@@ -1000,7 +1022,7 @@ async def local_image_edit(
     except ValueError:
         return "Error: no image editing model available. Need mflux-generate-kontext installed."
 
-    err = _validate_path(image_path)
+    err = _validate_path(image_path, allowed_exts=_IMAGE_EXTS)
     if err:
         return f"Error: {err}"
 
@@ -1083,7 +1105,7 @@ async def local_video(
                 "mlx-video-with-audio and download a model (e.g. Wan2.2-T2V-14B).")
 
     if image_path:
-        err = _validate_path(image_path)
+        err = _validate_path(image_path, allowed_exts=_IMAGE_EXTS)
         if err:
             return f"Error: {err}"
 
@@ -1211,7 +1233,7 @@ async def local_transcribe(
     except ValueError:
         return "Error: no transcription model available."
 
-    err = _validate_path(audio_path)
+    err = _validate_path(audio_path, allowed_exts=_AUDIO_EXTS)
     if err:
         return f"Error: {err}"
     try:
@@ -1291,7 +1313,7 @@ async def local_speak(
     if err:
         return f"Error: {err}"
     if ref_audio:
-        err = _validate_path(ref_audio)
+        err = _validate_path(ref_audio, allowed_exts=_AUDIO_EXTS)
         if err:
             return f"Error: {err}"
 
