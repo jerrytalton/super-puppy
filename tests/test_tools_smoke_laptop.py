@@ -29,12 +29,12 @@ pytestmark = pytest.mark.smoke
 
 
 LAPTOP = {
-    "code":          "qwen3.6-35b-4bit",
-    "general":       "qwen3.6-35b-4bit",
-    "reasoning":     "qwen3.6-35b-4bit",
-    "long_context":  "qwen3.6-35b-4bit",
-    "translation":   "qwen3.6-35b-4bit",
-    "vision":        "qwen3.6-35b-4bit",
+    "code":          "qwen3.6:27b",
+    "general":       "qwen3.6:27b",
+    "reasoning":     "qwen3.6:27b",
+    "long_context":  "qwen3.6:27b",
+    "translation":   "qwen3.6:27b",
+    "vision":        "qwen3.6:27b",
     "image_gen":     "x/flux2-klein:latest",
     "transcription": "whisper-v3",
     "tts":           "mlx-community/Kokoro-82M-bf16",

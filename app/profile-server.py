@@ -1221,7 +1221,7 @@ def get_eligible_tasks(name, model_info):
 
 # ── Profiles ─────────────────────────────────────────────────────────
 
-PROFILES_VERSION = 21  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 22  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -1232,7 +1232,7 @@ DEFAULT_PROFILES = {
             "description": "Best balance for high-memory machines (256GB+)",
             "max_ram_gb": 512,
             "tasks": {
-                "code": "qwen3.6-35b-bf16",
+                "code": "qwen3.6:27b-coding-bf16",
                 "general": "qwen3.6-35b-bf16",
                 "reasoning": "qwen3.6-35b-bf16",
                 "long_context": "qwen3.6-35b-bf16",
@@ -1253,12 +1253,12 @@ DEFAULT_PROFILES = {
             "description": "Fits in 64GB",
             "max_ram_gb": 64,
             "tasks": {
-                "code": "qwen3.6-35b-4bit",
-                "general": "qwen3.6-35b-4bit",
-                "reasoning": "qwen3.6-35b-4bit",
-                "long_context": "qwen3.6-35b-4bit",
-                "translation": "qwen3.6-35b-4bit",
-                "vision": "qwen3.6-35b-4bit",
+                "code": "qwen3.6:27b",
+                "general": "qwen3.6:27b",
+                "reasoning": "qwen3.6:27b",
+                "long_context": "qwen3.6:27b",
+                "translation": "qwen3.6:27b",
+                "vision": "qwen3.6:27b",
                 "image_gen": "x/flux2-klein:latest",
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
@@ -1272,7 +1272,7 @@ DEFAULT_PROFILES = {
             "description": "Biggest models for everything, damn the RAM",
             "max_ram_gb": 512,
             "tasks": {
-                "code": "qwen3-coder-next:latest",
+                "code": "qwen3.6:27b-coding-bf16",
                 "general": "qwen3.5-397b-8bit",
                 "reasoning": "qwen3.5-397b-8bit",
                 "long_context": "qwen3.5-397b-8bit",
@@ -1297,12 +1297,12 @@ DEFAULT_PROFILES = {
                 # ~7GB) dropped: including them pushed the static-weights sum
                 # past the 32GB cap by ~8GB. Both specialists are more useful
                 # on the desktop/everyday tiers where RAM actually allows.
-                "code": "qwen3.6-35b-4bit",
-                "general": "qwen3.6-35b-4bit",
-                "reasoning": "qwen3.6-35b-4bit",
-                "long_context": "qwen3.6-35b-4bit",
-                "translation": "qwen3.6-35b-4bit",
-                "vision": "qwen3.6-35b-4bit",
+                "code": "qwen3.6:27b",
+                "general": "qwen3.6:27b",
+                "reasoning": "qwen3.6:27b",
+                "long_context": "qwen3.6:27b",
+                "translation": "qwen3.6:27b",
+                "vision": "qwen3.6:27b",
                 "image_gen": "x/flux2-klein:latest",
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/Kokoro-82M-bf16",
