@@ -23,7 +23,7 @@ require_local_services()
 
 
 EVERYDAY = {
-    "code":          "qwen3.6-35b-bf16",
+    "code":          "qwen3.6:27b-coding-bf16",
     "general":       "qwen3.6-35b-bf16",
     "reasoning":     "qwen3.6-35b-bf16",
     "long_context":  "qwen3.6-35b-bf16",
