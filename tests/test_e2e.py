@@ -121,9 +121,36 @@ def profile_base(profile_port):
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _load_auth_header() -> dict[str, str]:
+    """Live e2e tests hit the running profile-server, which requires the
+    bearer token (no localhost shortcut as of v1.0.15).  Read it from the
+    same cache file the menubar uses."""
+    cache = Path.home() / ".config/local-models/mcp_auth_token"
+    try:
+        token = cache.read_text().strip()
+    except (FileNotFoundError, PermissionError):
+        return {}
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+_AUTH_HEADER = _load_auth_header()
+
+
+def _auto_auth(url: str, explicit_headers: dict | None) -> dict[str, str]:
+    """Auto-stamp the bearer token on requests targeting the profile-server
+    port.  Skipped for MCP (port 8100) — those tests deliberately test the
+    auth code path themselves with their own headers."""
+    if explicit_headers and "Authorization" in explicit_headers:
+        return {}
+    if ":8101/" in url or url.endswith(":8101"):
+        return _AUTH_HEADER
+    return {}
+
+
 def http_get(url: str, headers: dict | None = None, timeout: int = 10) -> tuple[int, bytes, dict]:
     """Return (status_code, body_bytes, response_headers)."""
-    req = urllib.request.Request(url, headers=headers or {})
+    hdrs = {**_auto_auth(url, headers), **(headers or {})}
+    req = urllib.request.Request(url, headers=hdrs)
     try:
         resp = urllib.request.urlopen(req, timeout=timeout)
         return resp.status, resp.read(), dict(resp.headers)
@@ -136,7 +163,7 @@ def http_get(url: str, headers: dict | None = None, timeout: int = 10) -> tuple[
 def http_post(url: str, body: dict, headers: dict | None = None, timeout: int = 10) -> tuple[int, bytes, dict]:
     """POST JSON, return (status_code, body_bytes, response_headers)."""
     data = json.dumps(body).encode()
-    hdrs = {"Content-Type": "application/json"}
+    hdrs = {"Content-Type": "application/json", **_auto_auth(url, headers)}
     if headers:
         hdrs.update(headers)
     req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")

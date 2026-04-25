@@ -739,3 +739,117 @@ class TestClientModeUploadProxy:
             )
         assert resp.status_code == 502
         assert "loop" in resp.get_json()["error"].lower()
+
+
+class TestPlaygroundModelAllowlist:
+    """The Playground model override used to accept any HF repo path —
+    POST {"tool": "speak", "model": "evil/repo"} would force an HF download
+    of an arbitrary model into the user's cache.  These tests pin the
+    allowlist gate (downloaded ∪ in-profile ∪ in-prefs)."""
+
+    def test_known_downloaded_model_accepted(self, tmp_path):
+        """A model that's already in the HF cache is accepted."""
+        with patch.object(ps, "_hf_model_downloaded", return_value=True):
+            assert ps._hf_model_is_known("foo/bar") is True
+
+    def test_unknown_repo_rejected(self):
+        """An HF repo that's neither cached nor configured is rejected."""
+        with patch.object(ps, "_hf_model_downloaded", return_value=False), \
+             patch.object(ps, "load_profiles",
+                          return_value={"profiles": {}}), \
+             patch.object(ps, "load_default_prefs", return_value={}):
+            assert ps._hf_model_is_known("evil/random-repo") is False
+
+    def test_model_in_profile_accepted(self):
+        """A model listed in some profile's task is accepted even if not
+        cached — the operator opted into it."""
+        with patch.object(ps, "_hf_model_downloaded", return_value=False), \
+             patch.object(ps, "load_profiles", return_value={
+                 "profiles": {
+                     "test": {"tasks": {"tts": "org/special-tts"}},
+                 },
+             }), \
+             patch.object(ps, "load_default_prefs", return_value={}):
+            assert ps._hf_model_is_known("org/special-tts") is True
+
+    def test_model_in_prefs_accepted(self):
+        """A model listed in mcp_preferences is accepted (user added it
+        to the candidate list, even if not currently downloaded)."""
+        with patch.object(ps, "_hf_model_downloaded", return_value=False), \
+             patch.object(ps, "load_profiles",
+                          return_value={"profiles": {}}), \
+             patch.object(ps, "load_default_prefs",
+                          return_value={"tts": ["org/voice"]}):
+            assert ps._hf_model_is_known("org/voice") is True
+
+    def test_non_hf_path_rejected(self):
+        """Names without `/` aren't HF repos — gate doesn't apply."""
+        assert ps._hf_model_is_known("qwen3.5:9b") is False
+        assert ps._hf_model_is_known("") is False
+        assert ps._hf_model_is_known(None) is False
+
+
+class TestUploadHardening:
+    """The /api/test/upload route was a sharp edge — it took a multipart
+    filename and used its suffix verbatim as the on-disk extension, with
+    no size cap.  These tests pin the new defences."""
+
+    def _post(self, client, name, data=b"x"):
+        from io import BytesIO
+        with patch.object(ps, "OLLAMA_URL", "http://localhost:11434"):
+            return client.post(
+                "/api/test/upload",
+                data={"file": (BytesIO(data), name)},
+                content_type="multipart/form-data",
+            )
+
+    def test_random_basename(self, client):
+        """Saved filename must NOT be predictable from the upload — random
+        token, not a timestamp."""
+        resp = self._post(client, "screenshot.png", b"PNGDATA")
+        assert resp.status_code == 200
+        path = resp.get_json()["path"]
+        # 16-char hex token (secrets.token_hex(8) → 16 chars)
+        assert path.startswith("/tmp/test_upload_")
+        assert path.endswith(".png")
+        # Reject the old timestamp-based pattern: those were all digits
+        basename = path.removeprefix("/tmp/test_upload_").removesuffix(".png")
+        assert not basename.isdigit(), \
+            f"basename {basename!r} looks like the old timestamp pattern"
+        Path(path).unlink(missing_ok=True)
+
+    def test_path_traversal_in_filename_stripped(self, client):
+        """A multipart filename like '../../etc/foo.png' must NOT escape /tmp."""
+        resp = self._post(client, "../../etc/passwd.png", b"x")
+        assert resp.status_code == 200
+        path = resp.get_json()["path"]
+        assert path.startswith("/tmp/test_upload_")
+        assert "/etc/" not in path
+        assert ".." not in path
+        Path(path).unlink(missing_ok=True)
+
+    def test_disallowed_extension_rejected(self, client):
+        for bad_ext in (".dylib", ".plist", ".so", ".sh", ".py", ""):
+            resp = self._post(client, f"evil{bad_ext}", b"x")
+            assert resp.status_code == 400, \
+                f"{bad_ext!r} should be rejected, got {resp.status_code}"
+            assert "not allowed" in resp.get_json()["error"]
+
+    def test_extension_check_is_case_insensitive(self, client):
+        resp = self._post(client, "PHOTO.PNG", b"x")
+        assert resp.status_code == 200
+        Path(resp.get_json()["path"]).unlink(missing_ok=True)
+
+    def test_oversize_payload_rejected(self, client):
+        """Payload over the size cap is rejected and the partial file is
+        deleted, not left dangling."""
+        big = b"\x00" * (ps._UPLOAD_MAX_BYTES + 1024)
+        resp = self._post(client, "big.png", big)
+        assert resp.status_code == 413
+        assert "limit" in resp.get_json()["error"].lower()
+        # No leftover from the truncated write
+        leftover = list(Path("/tmp").glob("test_upload_*.png"))
+        for p in leftover:
+            # Anything left over should be small (from other tests), not the big payload
+            assert p.stat().st_size <= ps._UPLOAD_MAX_BYTES, \
+                f"oversize file {p} was not cleaned up"

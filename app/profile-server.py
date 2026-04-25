@@ -940,6 +940,33 @@ def _hf_model_downloaded(model_path):
     return False
 
 
+def _hf_model_is_known(model_path):
+    """Gate for "may we accept this user-supplied HF model id?"  True if it's
+    already in the local cache OR explicitly configured in some profile's
+    task or in mcp_preferences.json's candidate lists.  False for arbitrary
+    repos the operator has never opted into — protects against Playground
+    callers triggering large HF downloads of unrelated repos."""
+    if not model_path or "/" not in model_path:
+        return False
+    if _hf_model_downloaded(model_path):
+        return True
+    try:
+        profiles = load_profiles().get("profiles", {})
+        for profile in profiles.values():
+            if model_path in profile.get("tasks", {}).values():
+                return True
+    except Exception:
+        pass
+    try:
+        prefs = load_default_prefs()
+        for candidates in prefs.values():
+            if isinstance(candidates, list) and model_path in candidates:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def _fetch_remote_models():
     """Client mode: fetch the aggregated list from the desktop's profile server."""
     try:
@@ -2130,6 +2157,19 @@ STREAM_TOOLS = {"code", "general", "review", "translate", "summarize"}
 
 _MAX_PROXY_HOPS = 3
 
+# Playground upload limits.  Extensions cover the inputs each tool accepts
+# (image_edit/vision/computer_use → images; transcribe → audio; speak ref-audio
+# → wav/mp3/flac).  Without an allowlist a multipart filename of ".dylib" or
+# ".plist" would let an attacker pick the on-disk extension and collide with
+# anything that consumes /tmp/test_upload_* by glob.
+_UPLOAD_ALLOWED_EXTS = {
+    ".png", ".jpg", ".jpeg", ".webp", ".gif",
+    ".wav", ".mp3", ".m4a", ".flac", ".ogg",
+    ".mp4", ".mov", ".webm",
+    ".txt", ".pdf",
+}
+_UPLOAD_MAX_BYTES = 100 * 1024 * 1024  # 100 MB
+
 
 def _proxy_to_desktop(path: str, method: str = "POST"):
     """In client mode, forward requests to the desktop's profile server.
@@ -2499,16 +2539,21 @@ def _handle_test_transcribe(body, pick):
 
 
 def _handle_test_speak(body, pick):
+    # pick() honors body['model'] through the gated path that rejects
+    # arbitrary HF repos.  We don't second-override below — earlier code
+    # had `model = body.get("model") or model` after pick(), which silently
+    # restored a model that pick() had already rejected.
     model, backend = pick("tts")
-    model = body.get("model") or model
     voice = body.get("voice", "casual_male")
     lang = body.get("language", "en")
     text = body.get("text", "")
     ref_audio = body.get("ref_audio")
     if ref_audio and not _is_safe_test_path(ref_audio):
         return jsonify({"error": _PLAYGROUND_PATH_ERROR}), 403
-    if ref_audio:
-        model = body.get("model") or "mlx-community/chatterbox-fp16"
+    if ref_audio and not body.get("model"):
+        # ref_audio needs a voice-cloning TTS — Chatterbox is the
+        # operator-blessed default when the caller didn't pick anything.
+        model = "mlx-community/chatterbox-fp16"
     out_path = f"/tmp/playground_tts_{int(time.time())}.wav"
     out_dir = os.path.dirname(out_path)
     prefix = Path(out_path).stem
@@ -2619,9 +2664,15 @@ def api_test():
             models = get_all_models()
             if override in models:
                 return override, models[override]["backend"]
-            # Download-on-demand HF backends: accept an HF path that hasn't
-            # been cached yet (mlx-audio / mflux will pull on first use).
-            if "/" in override and task in _HF_TASK_BACKENDS:
+            # Download-on-demand HF backends: accept an HF path only if it's
+            # already in the local cache OR appears in some profile's task
+            # list.  Without this gate, anyone with Playground access can
+            # POST {"tool": "speak", "model": "evil/repo"} and force an
+            # arbitrary HF download into the user's cache (disk-fill DoS;
+            # supply-chain attack surface).
+            if ("/" in override
+                    and task in _HF_TASK_BACKENDS
+                    and _hf_model_is_known(override)):
                 return override, _HF_TASK_BACKENDS[task]
             override_warning.append(f"Model '{override}' not found in available models — fell back to profile default for '{task}'")
         model, backend, stale_warning = _pick_model_for_task(task)
@@ -2707,10 +2758,43 @@ def api_test_upload():
     f = request.files.get("file")
     if not f:
         return jsonify({"error": "No file uploaded"}), 400
-    import time as _time
-    ext = Path(f.filename).suffix or ".bin"
-    dest = f"/tmp/test_upload_{int(_time.time())}{ext}"
-    f.save(dest)
+    # Validate filename: take ONLY the basename's suffix from a fixed
+    # allowlist.  Without this, a multipart filename of "../../etc/foo.png"
+    # or ".dylib" would let the caller pick the extension on disk and
+    # collide with anything that downstream consumes test_upload_* by
+    # extension.
+    raw_name = f.filename or ""
+    ext = Path(Path(raw_name).name).suffix.lower()
+    if ext not in _UPLOAD_ALLOWED_EXTS:
+        return jsonify({
+            "error": (f"upload rejected: extension {ext or '<none>'} not "
+                      f"allowed.  Permitted: "
+                      f"{', '.join(sorted(_UPLOAD_ALLOWED_EXTS))}")
+        }), 400
+    # Random basename so concurrent uploads don't collide and so callers
+    # can't predict the path before saving (defence-in-depth against any
+    # downstream that might consume /tmp/test_upload_* by glob).
+    import secrets as _secrets
+    dest = f"/tmp/test_upload_{_secrets.token_hex(8)}{ext}"
+    # Cap the size: stream + bail if we exceed the limit instead of
+    # trusting Content-Length headers (which clients can lie about).
+    fp = f.stream
+    written = 0
+    chunk_size = 64 * 1024
+    with open(dest, "wb") as out:
+        while True:
+            buf = fp.read(chunk_size)
+            if not buf:
+                break
+            written += len(buf)
+            if written > _UPLOAD_MAX_BYTES:
+                out.close()
+                Path(dest).unlink(missing_ok=True)
+                return jsonify({
+                    "error": (f"upload rejected: file exceeds "
+                              f"{_UPLOAD_MAX_BYTES // (1024 * 1024)} MB limit")
+                }), 413
+            out.write(buf)
     return jsonify({"path": dest})
 
 
