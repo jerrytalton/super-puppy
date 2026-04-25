@@ -524,32 +524,35 @@ class TestLoadDefaultPrefs:
 
 
 class TestProfileServerAuth:
-    """Bearer token auth for remote access."""
+    """Bearer token auth — required on every request, no localhost shortcut.
 
-    def test_localhost_skips_auth(self, client):
-        """Requests from 127.0.0.1 should work without a token."""
+    Tailscale serve forwards remote requests as if they came from 127.0.0.1,
+    so trusting the loopback address would silently bypass auth for any
+    tailnet peer.
+    """
+
+    def test_localhost_without_token_rejected(self, client):
+        """No localhost shortcut — a request without the token gets 403
+        even from 127.0.0.1, because Tailscale serve makes remote requests
+        look local."""
         with patch.object(ps, "_PROFILE_AUTH_TOKEN", "secret-token"):
             resp = client.get("/api/system")
+        assert resp.status_code == 403
+
+    def test_localhost_with_token_allowed(self, client):
+        with patch.object(ps, "_PROFILE_AUTH_TOKEN", "secret-token"):
+            resp = client.get(
+                "/api/system",
+                headers={"Authorization": "Bearer secret-token"})
         assert resp.status_code == 200
 
     def test_remote_without_token_rejected(self, client):
-        """Remote requests without a token should get 403."""
-        with patch.object(ps, "_PROFILE_AUTH_TOKEN", "secret-token"):
-            # Flask test client defaults to 127.0.0.1, so we need to
-            # simulate a remote request by patching request.remote_addr
-            with client.application.test_request_context(
-                    "/api/system", environ_base={"REMOTE_ADDR": "100.64.0.5"}):
-                from flask import request as flask_req
-                resp = client.application.full_dispatch_request()
-                # The before_request hook checks remote_addr
-        # Direct test: simulate via the app's test machinery
         with patch.object(ps, "_PROFILE_AUTH_TOKEN", "secret-token"):
             resp = client.get("/api/system", headers={},
                               environ_base={"REMOTE_ADDR": "100.64.0.5"})
         assert resp.status_code == 403
 
     def test_remote_with_correct_token_allowed(self, client):
-        """Remote requests with correct bearer token should work."""
         with patch.object(ps, "_PROFILE_AUTH_TOKEN", "secret-token"):
             resp = client.get("/api/system",
                               headers={"Authorization": "Bearer secret-token"},
@@ -557,19 +560,47 @@ class TestProfileServerAuth:
         assert resp.status_code == 200
 
     def test_remote_with_wrong_token_rejected(self, client):
-        """Remote requests with wrong token should get 403."""
         with patch.object(ps, "_PROFILE_AUTH_TOKEN", "secret-token"):
             resp = client.get("/api/system",
                               headers={"Authorization": "Bearer wrong"},
                               environ_base={"REMOTE_ADDR": "100.64.0.5"})
         assert resp.status_code == 403
 
-    def test_static_pages_skip_auth(self, client):
-        """HTML pages should load without auth even from remote."""
+    def test_static_pages_require_auth(self, client):
+        """HTML pages also require the bearer.  The menubar's WKWebView sets
+        Authorization on the initial NSURLRequest; tailnet peers without the
+        token see 403."""
         with patch.object(ps, "_PROFILE_AUTH_TOKEN", "secret-token"):
             for path in ("/", "/profiles", "/tools"):
-                resp = client.get(path, environ_base={"REMOTE_ADDR": "100.64.0.5"})
-                assert resp.status_code == 200, f"{path} should skip auth"
+                resp = client.get(path,
+                                  environ_base={"REMOTE_ADDR": "100.64.0.5"})
+                assert resp.status_code == 403, f"{path} must require auth"
+
+    def test_identity_route_exempt(self, client):
+        """/api/identity is the orphan-detection handshake — its per-launch
+        token is the auth, so the route is exempt from bearer checks."""
+        with patch.object(ps, "_PROFILE_AUTH_TOKEN", "secret-token"):
+            resp = client.get("/api/identity",
+                              environ_base={"REMOTE_ADDR": "100.64.0.5"})
+        assert resp.status_code == 200
+
+    def test_query_param_token_accepted_for_get(self, client):
+        """Native <img>/<audio>/<video> can't set headers — accept ?token=
+        for GETs only."""
+        with patch.object(ps, "_PROFILE_AUTH_TOKEN", "secret-token"):
+            resp = client.get(
+                "/api/system?token=secret-token",
+                environ_base={"REMOTE_ADDR": "100.64.0.5"})
+        assert resp.status_code == 200
+
+    def test_query_param_token_rejected_for_post(self, client):
+        """POSTs (mutation) ignore ?token= — only header counts."""
+        with patch.object(ps, "_PROFILE_AUTH_TOKEN", "secret-token"):
+            resp = client.post(
+                "/api/profiles?token=secret-token",
+                json={},
+                environ_base={"REMOTE_ADDR": "100.64.0.5"})
+        assert resp.status_code == 403
 
     def test_no_token_configured_allows_all(self, client):
         """When no token is set, all requests are allowed (dev mode)."""
@@ -577,19 +608,6 @@ class TestProfileServerAuth:
             resp = client.get("/api/system",
                               environ_base={"REMOTE_ADDR": "100.64.0.5"})
         assert resp.status_code == 200
-
-    def test_auth_token_endpoint_localhost_only(self, client):
-        """Token bootstrap endpoint only works from localhost."""
-        with patch.object(ps, "_PROFILE_AUTH_TOKEN", "secret-token"):
-            # Localhost: should return token
-            resp = client.get("/api/auth-token")
-            assert resp.status_code == 200
-            assert resp.get_json()["token"] == "secret-token"
-
-            # Remote: should be rejected
-            resp = client.get("/api/auth-token",
-                              environ_base={"REMOTE_ADDR": "100.64.0.5"})
-            assert resp.status_code == 403
 
 
 class TestClientModeMediaProxy:
@@ -617,7 +635,7 @@ class TestClientModeMediaProxy:
         assert resp.data == b"\x89PNG\r\n\x1a\nFAKE"
         assert resp.headers["Content-Type"] == "image/png"
         url = mock_get.call_args[0][0]
-        assert url == "http://100.64.0.2:8101/api/test/image"
+        assert url == "https://100.64.0.2:8101/api/test/image"
         params = mock_get.call_args[1]["params"]
         assert params["path"] == "/tmp/test_image_1.png"
         assert mock_get.call_args[1]["headers"]["X-SP-Proxy-Hops"] == "1"
@@ -629,7 +647,7 @@ class TestClientModeMediaProxy:
             resp = client.get("/api/test/audio?path=/tmp/test_speech.wav")
         assert resp.status_code == 200
         assert resp.data == b"RIFF\x00\x00\x00\x00WAVE"
-        assert mock_get.call_args[0][0] == "http://100.64.0.2:8101/api/test/audio"
+        assert mock_get.call_args[0][0] == "https://100.64.0.2:8101/api/test/audio"
 
     def test_video_route_proxies_in_client_mode(self, client):
         fake = self._fake_media_response("video/mp4", b"\x00\x00\x00\x18ftypmp42FAKE")
@@ -638,7 +656,7 @@ class TestClientModeMediaProxy:
             resp = client.get("/api/test/video?path=/tmp/test_video.mp4")
         assert resp.status_code == 200
         assert resp.data == b"\x00\x00\x00\x18ftypmp42FAKE"
-        assert mock_get.call_args[0][0] == "http://100.64.0.2:8101/api/test/video"
+        assert mock_get.call_args[0][0] == "https://100.64.0.2:8101/api/test/video"
 
     def test_local_mode_serves_from_disk(self, client, tmp_path):
         """When OLLAMA_URL is local, the route should NOT proxy — it should
@@ -686,7 +704,7 @@ class TestClientModeUploadProxy:
         assert resp.status_code == 200
         assert resp.get_json()["path"] == "/tmp/test_upload_999.png"
         url = mock_post.call_args[0][0]
-        assert url == "http://100.64.0.2:8101/api/test/upload"
+        assert url == "https://100.64.0.2:8101/api/test/upload"
         # The raw multipart body must be forwarded, not re-encoded as JSON
         kwargs = mock_post.call_args[1]
         assert "data" in kwargs and kwargs["data"]

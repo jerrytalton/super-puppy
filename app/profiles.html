@@ -323,6 +323,13 @@ const modelMeta = m => {
 let _authToken = '';
 
 async function _initAuth() {
+  // Preferred: WKWebView userScript injects window.__SP_TOKEN__ before any
+  // page JS runs (see menubar.py _open_webview).
+  if (typeof window.__SP_TOKEN__ === 'string' && window.__SP_TOKEN__) {
+    _authToken = window.__SP_TOKEN__;
+    sessionStorage.setItem('sp_token', _authToken);
+    return;
+  }
   const params = new URLSearchParams(location.search);
   if (params.has('token')) {
     _authToken = params.get('token');
@@ -333,11 +340,11 @@ async function _initAuth() {
     return;
   }
   const stored = sessionStorage.getItem('sp_token');
-  if (stored) { _authToken = stored; return; }
-  try {
-    const r = await fetch('/api/auth-token');
-    if (r.ok) { _authToken = (await r.json()).token || ''; }
-  } catch {}
+  if (stored) { _authToken = stored; }
+  // No /api/auth-token fallback: every API call requires the bearer token,
+  // and there's no public path to bootstrap it from the browser.  If we got
+  // here without a token, fetches will 401 — which is the correct behavior
+  // for a tab opened outside the menu bar app.
 }
 
 function _authHeaders(opts = {}) {

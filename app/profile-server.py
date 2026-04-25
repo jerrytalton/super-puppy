@@ -893,10 +893,11 @@ def get_all_models(force_refresh: bool = False):
 
 
 def _desktop_profile_server_url():
-    """Derive the desktop's profile server URL from OLLAMA_URL."""
+    """Derive the desktop's profile-server URL from OLLAMA_URL.  Always
+    https — `tailscale serve` only listens on https, never plain http."""
     from urllib.parse import urlparse
     parsed = urlparse(OLLAMA_URL)
-    return f"{parsed.scheme}://{parsed.hostname}:8101"
+    return f"https://{parsed.hostname}:8101"
 
 
 _KNOWN_MLX_PARAMS = {
@@ -1352,10 +1353,19 @@ def save_mcp_prefs(prefs):
 app = Flask(__name__)
 
 # ── Bearer token auth for remote access ─────────────────────────────
-# Local requests (from menu bar webview) skip auth. Remote requests
-# (via Tailscale) must provide the same MCP_AUTH_TOKEN bearer token.
+# Every request must carry MCP_AUTH_TOKEN as a bearer header (or `?token=`
+# query param for native media elements that can't set headers).  No
+# localhost shortcut: Tailscale serve forwards remote requests as if they
+# came from 127.0.0.1, so trusting the loopback address would silently
+# bypass auth for any tailnet peer.
 
 _PROFILE_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "")
+
+# Routes that are intentionally exempt from auth.  /api/identity returns
+# only a pid + a per-launch random token used by the menubar to confirm
+# it's talking to the child it just spawned (orphan detection); the
+# handshake is the auth.
+_AUTH_EXEMPT_PATHS = {"/api/identity"}
 
 
 @app.before_request
@@ -1366,23 +1376,19 @@ def _check_auth():
     if not _PROFILE_AUTH_TOKEN:
         return  # no token configured — allow all (dev/local-only mode)
 
-    # Localhost requests skip auth (menu bar webview, local browser)
-    remote_addr = request.remote_addr or ""
-    if remote_addr in ("127.0.0.1", "::1"):
+    if request.path in _AUTH_EXEMPT_PATHS:
         return
 
-    # Static HTML pages don't require auth (they bootstrap the token)
-    if request.path in ("/", "/profiles", "/tools", "/activity", "/diagnostics", "/manifest.json", "/sw.js") \
-            or request.path.startswith("/pwa/"):
-        return
-
-    # API and file-serving routes require bearer token
     auth = request.headers.get("Authorization", "")
     if auth == f"Bearer {_PROFILE_AUTH_TOKEN}":
         return
 
-    # Also accept token as query param (for EventSource/SSE which can't set headers)
-    if request.args.get("token") == _PROFILE_AUTH_TOKEN:
+    # Native <img>/<audio>/<video>/<a download> can't set headers; accept
+    # the token as a query param for those routes only.  Restricting it
+    # here means an attacker who somehow learns the token still can't
+    # use it as a clickable URL against arbitrary mutation routes.
+    if (request.method == "GET"
+            and request.args.get("token") == _PROFILE_AUTH_TOKEN):
         return
 
     return jsonify({"error": "unauthorized"}), 403
@@ -1396,15 +1402,6 @@ def index():
 @app.route("/profiles")
 def profiles_page():
     return send_file(str(HTML_FILE))
-
-
-@app.route("/api/auth-token")
-def api_auth_token():
-    """Return the auth token — only from localhost (for HTML bootstrapping)."""
-    remote_addr = request.remote_addr or ""
-    if remote_addr not in ("127.0.0.1", "::1"):
-        return jsonify({"error": "localhost only"}), 403
-    return jsonify({"token": _PROFILE_AUTH_TOKEN})
 
 
 @app.route("/api/system")
@@ -2147,6 +2144,8 @@ def _proxy_to_desktop(path: str, method: str = "POST"):
     try:
         url = f"{_desktop_profile_server_url()}{path}"
         proxy_headers = {"X-SP-Proxy-Hops": str(hops + 1)}
+        if _PROFILE_AUTH_TOKEN:
+            proxy_headers["Authorization"] = f"Bearer {_PROFILE_AUTH_TOKEN}"
         if method == "POST":
             resp = requests.post(url, json=request.json, headers=proxy_headers,
                                  timeout=300, stream=True)
@@ -2696,6 +2695,8 @@ def api_test_upload():
                 "X-SP-Proxy-Hops": str(hops + 1),
                 "Content-Type": request.content_type or "application/octet-stream",
             }
+            if _PROFILE_AUTH_TOKEN:
+                proxy_headers["Authorization"] = f"Bearer {_PROFILE_AUTH_TOKEN}"
             resp = requests.post(url, data=request.get_data(), headers=proxy_headers,
                                  timeout=300)
             return Response(resp.content, status=resp.status_code,

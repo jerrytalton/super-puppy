@@ -247,6 +247,28 @@ PRE_UPDATE_HEALTH_FILE = os.path.expanduser("~/.config/local-models/pre_update_h
 MCP_LOG_FILE = "/tmp/local-models-mcp.log"
 
 MODEL_PREFS_FILE = os.path.expanduser("~/.config/local-models/model_preferences.json")
+AUTH_TOKEN_CACHE = os.path.expanduser("~/.config/local-models/mcp_auth_token")
+
+
+def _load_auth_token() -> str:
+    """Read MCP_AUTH_TOKEN from the env, falling back to the on-disk cache.
+
+    Pure read — does NOT mutate os.environ.  When the menubar spawns
+    profile-server it injects the token into the child env explicitly;
+    leaking it into the parent process's environ would pollute pytest
+    runs (test_core imports this module, which would then leak the real
+    token into every other test's idea of os.environ)."""
+    token = os.environ.get("MCP_AUTH_TOKEN", "").strip()
+    if token:
+        return token
+    try:
+        with open(AUTH_TOKEN_CACHE) as f:
+            return f.read().strip()
+    except (FileNotFoundError, PermissionError):
+        return ""
+
+
+_AUTH_TOKEN = _load_auth_token()
 
 
 def load_force_local():
@@ -2216,6 +2238,8 @@ class LocalModelsApp(rumps.App):
         env["PROFILE_SERVER_PORT"] = str(self.profile_port)
         env["PROFILE_HOST"] = profile_host
         env["PROFILE_SERVER_TOKEN"] = expected_token
+        if _AUTH_TOKEN:
+            env["MCP_AUTH_TOKEN"] = _AUTH_TOKEN
         env["OLLAMA_URL"] = (
             self.ollama_remote if self.mode == "client" else OLLAMA_LOCAL)
         env["MLX_URL"] = (
@@ -2399,8 +2423,9 @@ class LocalModelsApp(rumps.App):
                             NSApplicationActivationPolicyRegular,
                             NSApplicationActivationPolicyAccessory,
                             NSApp, NSImage)
-        from WebKit import WKWebView, WKWebViewConfiguration, WKPreferences
-        from Foundation import NSURL, NSURLRequest
+        from WebKit import (WKWebView, WKWebViewConfiguration, WKPreferences,
+                             WKUserScript)
+        from Foundation import NSURL, NSMutableURLRequest
 
         self._ensure_profile_server()
 
@@ -2456,6 +2481,18 @@ class LocalModelsApp(rumps.App):
         msg_handler.on_message = self._on_webview_message
         config.userContentController().addScriptMessageHandler_name_(
             msg_handler, "app")
+        # Inject the bearer token before the page's first JS runs.  The page
+        # picks it up via window.__SP_TOKEN__ and uses it for every fetch.
+        # Native <img>/<audio>/<video> elements that can't set headers fall
+        # back to ?token= query param.
+        if _AUTH_TOKEN:
+            token_js = json.dumps(_AUTH_TOKEN)
+            user_script = WKUserScript.alloc().initWithSource_injectionTime_forMainFrameOnly_(
+                f"window.__SP_TOKEN__ = {token_js};",
+                0,  # WKUserScriptInjectionTimeAtDocumentStart
+                True,
+            )
+            config.userContentController().addUserScript_(user_script)
         # Keep a strong Python reference so the handler (and its on_message
         # callback) survives even when another webview is opened later.
         if not hasattr(self, "_msg_handlers"):
@@ -2495,8 +2532,11 @@ class LocalModelsApp(rumps.App):
                     pass
         full_url = f"http://127.0.0.1:{self.profile_port}{path}"
         url = NSURL.URLWithString_(full_url)
-        req = NSURLRequest.requestWithURL_cachePolicy_timeoutInterval_(
+        req = NSMutableURLRequest.requestWithURL_cachePolicy_timeoutInterval_(
             url, 1, 30)  # 1 = NSURLRequestReloadIgnoringLocalCacheData
+        if _AUTH_TOKEN:
+            req.setValue_forHTTPHeaderField_(
+                f"Bearer {_AUTH_TOKEN}", "Authorization")
         webview.loadRequest_(req)
         window.contentView().addSubview_(webview)
         window._webview = webview
