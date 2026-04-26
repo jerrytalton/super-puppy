@@ -101,6 +101,42 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif"
 _AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".webm", ".mp4"}
 _VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"}
 
+# Tools that ingest the contents of arbitrary files (translate, summarize,
+# embed, etc.) gate on this allowlist.  The threat model is prompt-injected
+# tool calls like local_summarize(file_paths=["~/.ssh/id_rsa", ...]) that
+# would otherwise read secrets off disk and feed them to a model whose
+# output ends up in tool results / activity history.  Extensionless files
+# (id_rsa, .netrc, known_hosts) are rejected because the suffix check
+# fails.  When in doubt, expand this list rather than leaving a tool
+# unrestricted.
+_TEXT_EXTS = {
+    # source code
+    ".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+    ".rs", ".go", ".java", ".kt", ".kts", ".scala", ".swift",
+    ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx",
+    ".cs", ".rb", ".php", ".lua", ".pl", ".r", ".jl", ".dart",
+    ".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat", ".cmd",
+    ".vim", ".el", ".clj", ".cljs", ".cljc", ".edn", ".ex", ".exs",
+    ".erl", ".hrl", ".hs", ".ml", ".mli", ".fs", ".fsi", ".nim",
+    ".zig", ".v", ".sv", ".vhd", ".vhdl",
+    # web / markup
+    ".html", ".htm", ".css", ".scss", ".sass", ".less",
+    ".vue", ".svelte", ".astro",
+    # data / config
+    ".json", ".jsonl", ".ndjson", ".yaml", ".yml", ".toml",
+    ".ini", ".cfg", ".conf", ".properties", ".env.example",
+    ".csv", ".tsv", ".xml", ".svg",
+    # docs / text
+    ".md", ".mdx", ".markdown", ".rst", ".txt", ".text",
+    ".org", ".tex", ".bib", ".adoc", ".asciidoc",
+    # queries
+    ".sql", ".graphql", ".gql",
+    # notebooks
+    ".ipynb",
+    # logs (often debugged)
+    ".log",
+}
+
 
 def _validate_path(path: str, must_exist: bool = True,
                    allowed_exts: set[str] | None = None) -> str | None:
@@ -649,7 +685,7 @@ async def local_generate(
 
     user_content = prompt
     if context_files:
-        err = _validate_paths(context_files)
+        err = _validate_paths(context_files, allowed_exts=_TEXT_EXTS)
         if err:
             return err
         file_contents = []
@@ -691,7 +727,7 @@ async def local_review(
 
     review_content = code or ""
     if file_paths:
-        err = _validate_paths(file_paths)
+        err = _validate_paths(file_paths, allowed_exts=_TEXT_EXTS)
         if err:
             return err
         parts = []
@@ -809,52 +845,35 @@ Coordinates are absolute pixel positions from the top-left of the screen.
 Return ONLY the JSON array. No explanation, no markdown."""
 
 
-async def _take_screenshot() -> str:
-    """Take a full-screen screenshot silently. Returns the file path."""
-    path = f"/tmp/sp_screenshot_{int(time.time())}.png"
-    proc = await asyncio.create_subprocess_exec(
-        "screencapture", "-x", path,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE)
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=10)
-    except asyncio.TimeoutError:
-        proc.kill()
-        raise RuntimeError("Screenshot timed out after 10s")
-    if not Path(path).exists():
-        raise RuntimeError("Screenshot failed — check Screen Recording permissions")
-    return path
-
-
 @mcp.tool()
 async def local_computer_use(
     intent: str,
-    screenshot_path: str | None = None,
+    screenshot_path: str,
     model: str | None = None,
 ) -> str:
     """Analyze a screenshot and return structured GUI actions for an intent.
 
-    Takes a screenshot (or uses a provided one), sends it to a GUI-aware
-    vision model (UI-TARS, Fara), and returns a JSON array of actions
-    (click, type, scroll, key, wait) to accomplish the intent.
+    Reads the screenshot at screenshot_path, sends it to a GUI-aware vision
+    model (UI-TARS, Fara), and returns a JSON array of actions (click,
+    type, scroll, key, wait) to accomplish the intent.
 
     The tool observes and plans — it does NOT execute the actions.
-    """
-    model_name, backend = pick_model("computer_use", model)
 
-    # Take or read screenshot
-    if screenshot_path:
-        err = _validate_path(screenshot_path, allowed_exts=_IMAGE_EXTS)
-        if err:
-            return f"Error: {err}"
-        img_bytes = Path(screenshot_path).read_bytes()
-    else:
-        try:
-            path = await _take_screenshot()
-            img_bytes = Path(path).read_bytes()
-            screenshot_path = path
-        except RuntimeError as e:
-            return f"Error: {e}"
+    The caller MUST capture the screenshot. The MCP server runs over the
+    tailnet; auto-capturing on every call would let any tailnet peer with
+    a valid token harvest screenshots silently.
+    """
+    if not screenshot_path:
+        return ("Error: screenshot_path is required. Capture the screen "
+                "yourself (e.g. `screencapture -x /tmp/foo.png`) and pass "
+                "the path. Auto-capture was removed to keep silent screen "
+                "harvesting off the tool surface.")
+    err = _validate_path(screenshot_path, allowed_exts=_IMAGE_EXTS)
+    if err:
+        return f"Error: {err}"
+    img_bytes = Path(screenshot_path).read_bytes()
+
+    model_name, backend = pick_model("computer_use", model)
 
     img_b64 = base64.b64encode(img_bytes).decode()
 
@@ -1393,7 +1412,7 @@ async def local_translate(
 
     content = text
     if file_paths:
-        err = _validate_paths(file_paths)
+        err = _validate_paths(file_paths, allowed_exts=_TEXT_EXTS)
         if err:
             return err
         parts = []
@@ -1490,7 +1509,7 @@ async def local_summarize(
     """
     model_name, backend = pick_model("long_context", model)
 
-    err = _validate_paths(file_paths)
+    err = _validate_paths(file_paths, allowed_exts=_TEXT_EXTS)
     if err:
         return err
     contents = []
@@ -1583,7 +1602,7 @@ async def local_embed(
         file_paths: Optional file paths — contents are read and embedded.
     """
     if file_paths:
-        err = _validate_paths(file_paths)
+        err = _validate_paths(file_paths, allowed_exts=_TEXT_EXTS)
         if err:
             return err
         for fp in file_paths:
@@ -1645,7 +1664,7 @@ async def local_similarity_search(
         return "Error: provide file_paths to search."
 
     # Read files
-    err = _validate_paths(file_paths)
+    err = _validate_paths(file_paths, allowed_exts=_TEXT_EXTS)
     if err:
         return err
     file_texts = []
@@ -1731,7 +1750,7 @@ async def local_dispatch(
 
     user_content = prompt
     if context_files:
-        err = _validate_paths(context_files)
+        err = _validate_paths(context_files, allowed_exts=_TEXT_EXTS)
         if err:
             return err
         file_parts = []

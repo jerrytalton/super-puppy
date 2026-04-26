@@ -230,8 +230,10 @@ class TestApplyRepoUpdate:
         assert ok is False
         assert "disk full" in msg
 
-    def test_updates_allowed_signers_before_verify(self):
-        """Key rotation: allowed_signers fetched from tag before verification."""
+    def test_verifies_signature_before_updating_allowed_signers(self):
+        """The signed-update trust model requires the *current* allowed_signers
+        to approve the *next* one. Verification MUST run first; only after
+        the current trust root has signed off do we install the new file."""
         call_order = []
         def mock_run(cmd, **kw):
             if "show" in cmd and "allowed_signers" in str(cmd):
@@ -251,7 +253,27 @@ class TestApplyRepoUpdate:
              patch("app.menubar.verify_tag_signature", side_effect=mock_verify):
             ok, _ = menubar.apply_repo_update("v2.0.0")
         assert ok is True
-        assert call_order == ["update_signers", "verify"]
+        assert call_order == ["verify", "update_signers"], (
+            "verify_tag_signature MUST run before _update_allowed_signers — "
+            "otherwise a malicious tag could ship its own allowed_signers and "
+            "self-approve, bypassing the entire signed-update model.")
+
+    def test_unsigned_tag_does_not_install_new_allowed_signers(self):
+        """If the tag fails verification, _update_allowed_signers must not run.
+        Otherwise an attacker's allowed_signers gets installed on every check."""
+        signers_writes = []
+        def mock_run(cmd, **kw):
+            if "show" in cmd and "allowed_signers" in str(cmd):
+                signers_writes.append(cmd)
+                return _mock_run(stdout="evil@example.com ssh-ed25519 AAAA\n")
+            return _mock_run()
+        with patch("app.menubar.subprocess.run", side_effect=mock_run), \
+             patch("app.menubar.verify_tag_signature",
+                   return_value=(False, "no trusted public key")):
+            ok, _ = menubar.apply_repo_update("v99.0.0")
+        assert ok is False
+        assert signers_writes == [], (
+            "Rejected tags must not trigger allowed_signers installation.")
 
     def test_unsigned_tag_rejected(self):
         with patch("app.menubar.verify_tag_signature",
