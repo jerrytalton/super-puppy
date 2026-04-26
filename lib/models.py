@@ -142,6 +142,175 @@ DOWNLOAD_ON_DEMAND_TASKS: frozenset[str] = frozenset({
 })
 
 
+# Task → backend mapping for HuggingFace-cached models that are NOT
+# served by Ollama or mlx-openai-server. These models live in the HF
+# cache and are dispatched via dedicated subprocesses (mflux,
+# mlx-audio, mlx-video). Used by the discovery and dispatch paths in
+# both the MCP server and the profile server — kept here so a new
+# entry flows through to both consumers.
+HF_TASK_BACKENDS: dict[str, str] = {
+    "tts": "mlx-audio",
+    "transcription": "mlx",
+    "image_edit": "mflux",
+    "image_gen": "mflux",
+    "video": "mlx-video",
+}
+
+
+def resolve_pref_candidate(
+    candidate: str,
+    models: dict[str, dict],
+    *,
+    task: str | None = None,
+    allow_hf_on_demand: bool = False,
+) -> tuple[str, str] | None:
+    """Resolve a single preference candidate to (name, backend).
+
+    Tried in order:
+    1. Exact match in `models`.
+    2. Prefix match (e.g. candidate "qwen3.5" matches "qwen3.5:8b").
+    3. HF download-on-demand: if the candidate looks like an HF repo id
+       ("org/repo") and the task uses an HF backend, return the repo
+       id and the appropriate backend so the caller can fetch on
+       first use.
+
+    `models` is `name -> {"backend": ...}` (other keys ignored).
+    Returns None if nothing matches.
+    """
+    if candidate in models:
+        return candidate, models[candidate]["backend"]
+    suffix_target = candidate + ":"
+    latest = candidate + ":latest"
+    for name in models:
+        if name == latest or name.startswith(suffix_target):
+            return name, models[name]["backend"]
+    if (allow_hf_on_demand and task in HF_TASK_BACKENDS
+            and "/" in candidate):
+        return candidate, HF_TASK_BACKENDS[task]
+    return None
+
+
+def pick_model_from_prefs(
+    task: str,
+    models: dict[str, dict],
+    prefs: dict,
+    *,
+    override: str | None = None,
+    allow_hf_on_demand: bool = False,
+    fallback_to_general: bool = False,
+) -> tuple[str, str] | None:
+    """Pick the first model matching a task from preferences.
+
+    Used by both the MCP server's `pick_model` and the profile server's
+    `_pick_model_for_task`. The caller passes the model registry and
+    prefs it has already loaded — that keeps this function pure (no
+    I/O) and lets each caller cache reads how it likes.
+
+    `override` short-circuits prefs entirely. If set, the override is
+    resolved with the same candidate-resolution rules and returned —
+    or, if it fails to resolve, prefs are NOT tried (the caller asked
+    for a specific model and shouldn't silently get a different one).
+
+    Set `fallback_to_general=True` for the MCP path: when a task has
+    no usable prefs, fall through to `prefs["general"]` rather than
+    failing immediately. The profile server keeps this False because
+    its callers have higher-level fallback logic.
+
+    Set `allow_hf_on_demand=True` to accept candidates that look like
+    HF repo ids (containing "/") for tasks served by HF backends —
+    even when the model isn't downloaded yet. The profile server
+    enables this so a freshly-set profile can dispatch a download on
+    first use; the MCP server keeps it disabled because its registry
+    only contains models that are actually loaded.
+
+    Returns (name, backend) or None.
+    """
+    if override:
+        return resolve_pref_candidate(
+            override, models, task=task,
+            allow_hf_on_demand=allow_hf_on_demand)
+
+    keys: list[str] = [task]
+    if fallback_to_general and task != "general":
+        keys.append("general")
+
+    for key in keys:
+        candidates = prefs.get(key, [])
+        if isinstance(candidates, str):
+            candidates = [candidates]
+        for c in candidates:
+            result = resolve_pref_candidate(
+                c, models, task=task,
+                allow_hf_on_demand=allow_hf_on_demand)
+            if result:
+                return result
+        # If the task itself had prefs but none resolved, don't fall
+        # through to general — the user expressed a preference and we
+        # owe them the error rather than a surprise pick.
+        if key == task and candidates:
+            return None
+    return None
+
+
+def model_has_vision(
+    name: str,
+    *,
+    ollama_model_info: dict | None = None,
+    hf_config: dict | None = None,
+) -> bool:
+    """Single source of truth: does this model accept image input?
+
+    Checks four signals in order, any one is sufficient:
+
+    1. Ollama model_info contains a "vision" capability key (the
+       conventional way Ollama reports VL models).
+    2. HF config.json declares a `vision_config` block, either at the
+       top level or nested under `text_config` (Qwen3.5 family).
+    3. HF config.json's `architectures` list contains a known
+       vision-language architecture name.
+    4. The model's name contains a vision substring (`vl`, `vision`,
+       `vlm`) — last-resort heuristic that matches the Qwen3.5 /
+       Qwen-VL / Llama-VL families when their HF cache hasn't been
+       scanned yet.
+
+    Pass whatever you have. The caller need not collect both ollama
+    and HF signals — one is enough when it matches.
+    """
+    name_lower = (name or "").lower()
+
+    if ollama_model_info:
+        for k, v in ollama_model_info.items():
+            # Ollama exposes architecture metadata as dotted keys, e.g.
+            # `qwen2vl.vision.image_size`, `qwen3.vision_model.config`,
+            # `mllama.vision_*`. Substring match catches all patterns.
+            if "vision" in k:
+                return True
+            if k == "capabilities" and isinstance(v, list) and "vision" in v:
+                return True
+
+    if hf_config:
+        if "vision_config" in hf_config:
+            return True
+        text_cfg = hf_config.get("text_config")
+        if isinstance(text_cfg, dict) and "vision_config" in text_cfg:
+            return True
+        for arch in hf_config.get("architectures", []) or []:
+            arch_lower = str(arch).lower()
+            if any(s in arch_lower for s in ("vl", "vision", "multimodal")):
+                return True
+
+    # Name heuristic — useful when HF cache hasn't been scanned but the
+    # name itself is a strong signal (qwen3.5-fast, qwen3-vl-7b, etc).
+    # Match on word-boundary `vl`/`vlm` so we don't false-positive on
+    # `nemotron`, `phi`, etc.
+    if re.search(r"(?:^|[-_.:/])(?:vl|vlm|vision)(?:[-_.:/]|$)", name_lower):
+        return True
+    if "vision" in name_lower:
+        return True
+
+    return False
+
+
 SPECIAL_TASKS: dict[str, dict[str, Any]] = {
     "vision": {
         "label": "Vision",

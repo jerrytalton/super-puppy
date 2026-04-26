@@ -28,13 +28,22 @@ from mcp.server.fastmcp import FastMCP
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib import activity
+from lib.hf_scanner import (
+    check_wan_snapshot_ready,
+    hf_newest_snapshot,
+    hf_snapshot_dir,
+    read_newest_hf_config,
+)
 from lib.models import (
+    HF_TASK_BACKENDS,
     MCP_PREFS_FILE,
     MLX_SERVER_CONFIG,
     NETWORK_CONF,
     active_params_b,
     mflux_command,
     mflux_is_turbo,
+    model_has_vision,
+    pick_model_from_prefs,
 )
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
@@ -236,10 +245,14 @@ class _gpu_request:
 
     def __enter__(self):
         self.started = time.time()
-        entry = {"description": self.description, "started": self.started}
+        # Hold a reference to *this* call's entry so __exit__ can remove it
+        # by identity. Filtering by description would also remove other
+        # concurrent calls with the same tool:model pair and desync the
+        # list against the counter.
+        self.entry = {"description": self.description, "started": self.started}
         with _gpu_lock:
             _gpu_active[self.backend] += 1
-            _gpu_active_details[self.backend].append(entry)
+            _gpu_active_details[self.backend].append(self.entry)
         return self
 
     def __exit__(self, exc_type, exc_val, _tb):
@@ -250,10 +263,10 @@ class _gpu_request:
         model = ":".join(self.description.split(":")[1:])
         with _gpu_lock:
             _gpu_active[self.backend] -= 1
-            _gpu_active_details[self.backend] = [
-                e for e in _gpu_active_details[self.backend]
-                if e["description"] != self.description
-            ]
+            try:
+                _gpu_active_details[self.backend].remove(self.entry)
+            except ValueError:
+                pass  # already gone — shouldn't happen, but don't crash
             _request_history.append({
                 "description": self.description,
                 "backend": self.backend,
@@ -328,7 +341,7 @@ async def discover_models():
                     )
                     mi = show.json().get("model_info", {})
                     family = show.json().get("details", {}).get("family", "")
-                    has_vision = any("vision" in k for k in mi)
+                    has_vision = model_has_vision(name, ollama_model_info=mi)
                     for k, v in mi.items():
                         if k.endswith(".context_length"):
                             ctx = int(v)
@@ -386,34 +399,19 @@ async def discover_models():
                         _mlx_cfg_map[sn] = mp
             except Exception:
                 pass
-        _hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
         try:
             resp = await client.get(f"{MLX_URL}/v1/models")
             for m in resp.json().get("data", []):
                 mid = m["id"]
-                has_vision = False
-                # Check HuggingFace config.json for vision_config
                 model_path = _mlx_cfg_map.get(mid, mid)
-                cache_dir = _hf_cache / f"models--{model_path.replace('/', '--')}" / "snapshots"
-                if cache_dir.exists():
-                    for snap in sorted(cache_dir.iterdir(), reverse=True):
-                        hf_cfg = snap / "config.json"
-                        if hf_cfg.exists():
-                            try:
-                                hf = json.loads(hf_cfg.read_text())
-                                has_vision = (
-                                    "vision_config" in hf
-                                    or "vision_config" in hf.get("text_config", {})
-                                )
-                            except Exception:
-                                pass
-                            break
                 models[mid] = {
                     "backend": "mlx",
                     "total_params_b": 0,
                     "active_params_b": 0,
                     "context": 0,
-                    "vision": has_vision,
+                    "vision": model_has_vision(
+                        model_path,
+                        hf_config=read_newest_hf_config(model_path)),
                 }
         except Exception as e:
             logging.warning("MLX discovery failed: %s", e)
@@ -421,43 +419,22 @@ async def discover_models():
         # Register on-demand MLX models from config that aren't loaded yet
         for sn, mp in _mlx_cfg_map.items():
             if sn not in models:
-                has_vision = False
-                cache_dir = _hf_cache / f"models--{mp.replace('/', '--')}" / "snapshots"
-                if cache_dir.exists():
-                    for snap in sorted(cache_dir.iterdir(), reverse=True):
-                        hf_cfg = snap / "config.json"
-                        if hf_cfg.exists():
-                            try:
-                                hf = json.loads(hf_cfg.read_text())
-                                has_vision = (
-                                    "vision_config" in hf
-                                    or "vision_config" in hf.get("text_config", {})
-                                )
-                            except Exception:
-                                pass
-                            break
                 models[sn] = {
                     "backend": "mlx",
                     "total_params_b": 0,
                     "active_params_b": 0,
                     "context": 0,
-                    "vision": has_vision,
+                    "vision": model_has_vision(
+                        mp, hf_config=read_newest_hf_config(mp)),
                 }
 
         # HuggingFace cache: TTS, transcription, image_edit, image_gen
-        _TASK_BACKENDS = {
-            "tts": "mlx-audio",
-            "transcription": "mlx",
-            "image_edit": "mflux",
-            "image_gen": "mflux",
-            "video": "mlx-video",
-        }
         from lib.hf_scanner import scan_hf_cache
-        for hf_model in scan_hf_cache(_TASK_BACKENDS.keys()):
+        for hf_model in scan_hf_cache(HF_TASK_BACKENDS.keys()):
             name = hf_model["name"]
             if name not in models:
                 models[name] = {
-                    "backend": _TASK_BACKENDS[hf_model["task"]],
+                    "backend": HF_TASK_BACKENDS[hf_model["task"]],
                     "total_params_b": hf_model["total_params_b"],
                     "active_params_b": hf_model["total_params_b"],
                     "context": 0,
@@ -468,14 +445,31 @@ async def discover_models():
     return models
 
 
+_PREFS_CACHE: dict = {"mtime": 0.0, "data": {}}
+
+
 def load_mcp_prefs() -> dict[str, str | list[str]]:
-    """Load task→model preferences from config file."""
-    if MCP_PREFS_FILE.exists():
+    """Load task→model preferences from config file.
+
+    Cached by mtime — re-reads only when the file changes on disk.
+    The MCP server is the hot path for Claude Code (every tool call
+    runs through pick_model + thinking_enabled), and re-parsing JSON
+    on each dispatch is wasted work.
+    """
+    try:
+        mtime = MCP_PREFS_FILE.stat().st_mtime
+    except FileNotFoundError:
+        if _PREFS_CACHE["mtime"] != 0.0:
+            _PREFS_CACHE["mtime"] = 0.0
+            _PREFS_CACHE["data"] = {}
+        return {}
+    if mtime != _PREFS_CACHE["mtime"]:
         try:
-            return json.loads(MCP_PREFS_FILE.read_text())
+            _PREFS_CACHE["data"] = json.loads(MCP_PREFS_FILE.read_text())
         except Exception:
-            pass
-    return {}
+            _PREFS_CACHE["data"] = {}
+        _PREFS_CACHE["mtime"] = mtime
+    return _PREFS_CACHE["data"]
 
 
 def thinking_enabled(task: str) -> bool:
@@ -507,30 +501,22 @@ def _resolve_model(name: str) -> tuple[str, str] | None:
 def pick_model(task: str, override: str | None = None) -> tuple[str, str]:
     """Pick best model for a task. Returns (model_name, backend).
 
-    Resolution order:
-      1. Explicit override from the tool call
-      2. Preferences from mcp_preferences.json (list or single string)
-      3. 'general' task preferences as last-ditch fallback
-      4. Any available model
+    Walks the shared picker (override → task prefs → general prefs)
+    and falls back to any task-tagged model, then any LLM, before
+    giving up with an actionable error. The MCP server enables
+    `fallback_to_general` so tools without explicit prefs still get
+    *something* picked rather than 500-ing the caller.
     """
-    if override:
-        result = _resolve_model(override)
-        if result:
-            return result
-
     prefs = load_mcp_prefs()
-    for key in (task, "general"):
-        candidates = prefs.get(key, [])
-        if isinstance(candidates, str):
-            candidates = [candidates]
-        for pref in candidates:
-            result = _resolve_model(pref)
-            if result:
-                return result
-        if key == task and candidates:
-            break  # task had preferences but none matched; try general
+    result = pick_model_from_prefs(
+        task, _models, prefs,
+        override=override,
+        fallback_to_general=True,
+    )
+    if result:
+        return result
 
-    # Fall back: models tagged with a specific task, then any LLM
+    # Fall back: models tagged with a specific task, then any LLM.
     for name, info in _models.items():
         if info.get("task") == task:
             return name, info["backend"]
@@ -538,12 +524,11 @@ def pick_model(task: str, override: str | None = None) -> tuple[str, str]:
         if info["backend"] in ("ollama", "mlx"):
             return name, info["backend"]
 
-    # Build actionable error message
+    # Build actionable error message.
     available = [n for n, m in _models.items() if m["backend"] in ("ollama", "mlx")]
     parts = [f"No model available for task '{task}'."]
     if override:
         parts.append(f"Requested model '{override}' not found.")
-    prefs = load_mcp_prefs()
     task_prefs = prefs.get(task, [])
     if task_prefs:
         if isinstance(task_prefs, str):
@@ -1175,30 +1160,14 @@ async def local_video(
         else:
             # Wan2.x via mlx-video — generate_wan wants a filesystem path,
             # so resolve the HF repo id to its local snapshot directory.
-            hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
-            snap_root = hf_cache / f"models--{selected.replace('/', '--')}" / "snapshots"
-            snapshot = None
-            if snap_root.exists():
-                snaps = sorted(snap_root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
-                if snaps:
-                    snapshot = snaps[0]
+            snapshot = hf_newest_snapshot(selected)
             if snapshot is None:
                 return (f"Error: video model {selected} is not downloaded locally. "
                         f"Pull it with `hf download {selected}` or from the profiles page.")
-            # HF only materializes snapshot symlinks after each blob is fully
-            # downloaded, so a partial pull leaves a snapshot dir that's
-            # missing the weight files mlx_video expects.  Verify before we
-            # hand it to the subprocess or it'll die with a cryptic
-            # load_safetensors error.
-            required = ("config.json", "t5_encoder.safetensors", "vae.safetensors")
-            missing = [f for f in required if not (snapshot / f).exists()]
-            layouts = (("model.safetensors",),
-                       ("high_noise_model.safetensors", "low_noise_model.safetensors"))
-            has_model = any(all((snapshot / f).exists() for f in l) for l in layouts)
-            if missing or not has_model:
-                detail = ", ".join(missing) if missing else "model weights"
+            not_ready = check_wan_snapshot_ready(snapshot)
+            if not_ready:
                 return (f"Error: video model {selected} is still downloading "
-                        f"(missing {detail}). Wait for the Downloads panel to hit "
+                        f"({not_ready}). Wait for the Downloads panel to hit "
                         f"100% and try again.")
             cmd = [
                 sys.executable, "-m", "mlx_video.generate_wan",

@@ -1348,14 +1348,20 @@ class LocalModelsApp(rumps.App):
         self.refresh(None)
 
     def _start_services_bg(self):
-        """Background thread: start services, then do first poll inline."""
+        """Background thread: start services, then do first poll inline.
+
+        The post-update health check used to live here, but services
+        (especially MLX) can take 30–60s to warm up — comparing right
+        after spawn would always look like a regression even when the
+        update was fine. The check now runs from `_finish_refresh` once
+        services have settled.
+        """
         self.start_services()
         with self._lock:
             if self.desktop:
                 self._refresh_server_mode()
             else:
                 self._refresh_client_mode()
-        self._post_update_health_check()
         self._main_thread_update()
 
     # -------------------------------------------------------------------
@@ -1875,6 +1881,15 @@ class LocalModelsApp(rumps.App):
             self._schedule_update_check()
         if self._next_woof and time.time() >= self._next_woof:
             self._woof()
+
+        # Run the post-update health check exactly once, on the first
+        # refresh after services have stopped warming up. Comparing while
+        # MLX is still loading would falsely flag every successful update
+        # as a regression.
+        if (not self._health_checked
+                and not getattr(self, "ollama_loading", False)
+                and not getattr(self, "mlx_loading", False)):
+            self._post_update_health_check()
 
         if self.app_ready:
             self._update_menu()
@@ -2427,10 +2442,9 @@ class LocalModelsApp(rumps.App):
                             NSWindowStyleMaskMiniaturizable,
                             NSWindowStyleMaskResizable,
                             NSApplicationActivationPolicyRegular,
-                            NSApplicationActivationPolicyAccessory,
-                            NSApp, NSImage)
-        from WebKit import (WKWebView, WKWebViewConfiguration, WKPreferences,
-                             WKUserScript)
+                            NSApp)
+        from WebKit import (WKWebView, WKWebViewConfiguration,
+                            WKUserScript)
         from Foundation import NSURL, NSMutableURLRequest
 
         self._ensure_profile_server()
@@ -2547,117 +2561,120 @@ class LocalModelsApp(rumps.App):
         window.contentView().addSubview_(webview)
         window._webview = webview
 
-        # Set dock icon with white background (menu bar icon stays template)
-        icon_path = os.path.join(SCRIPT_DIR, "icon.png")
-        if os.path.exists(icon_path):
-            from AppKit import (NSColor, NSCompositingOperationSourceOver,
-                                NSBezierPath)
-            from Foundation import NSMakeRect
-            src = NSImage.alloc().initWithContentsOfFile_(icon_path)
-            sz = 128
-            radius = sz * 0.22  # macOS-style rounded rect
-            dock_icon = NSImage.alloc().initWithSize_((sz, sz))
-            dock_icon.lockFocus()
-            rrect = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-                NSMakeRect(0, 0, sz, sz), radius, radius)
-            rrect.addClip()
-            NSColor.whiteColor().setFill()
-            rrect.fill()
-            src.drawInRect_fromRect_operation_fraction_(
-                NSMakeRect(0, 0, sz, sz), ((0, 0), src.size()),
-                NSCompositingOperationSourceOver, 1.0)
-            dock_icon.unlockFocus()
-            NSApp.setApplicationIconImage_(dock_icon)
+        self._set_rounded_dock_icon()
         NSApp.setActivationPolicy_(NSApplicationActivationPolicyRegular)
         NSApp.activateIgnoringOtherApps_(True)
         window.makeKeyAndOrderFront_(None)
         NSApp.dockTile().display()
         return window
 
-    def open_profiles(self, _):
-        """Open the model profiles pane."""
-        if self.profile_window is not None:
-            self.profile_window.makeKeyAndOrderFront_(None)
-            if hasattr(self.profile_window, '_webview'):
-                self.profile_window._webview.reload_(None)
+    def _set_rounded_dock_icon(self):
+        """Render the menubar icon onto a rounded-rect tile and install it
+        as the Dock icon for any open playground window. The menu bar icon
+        itself stays a template (B/W) image; only the Dock representation
+        gets the white background."""
+        icon_path = os.path.join(SCRIPT_DIR, "icon.png")
+        if not os.path.exists(icon_path):
+            return
+        from AppKit import (NSApp, NSBezierPath, NSColor,
+                            NSCompositingOperationSourceOver, NSImage)
+        from Foundation import NSMakeRect
+        src = NSImage.alloc().initWithContentsOfFile_(icon_path)
+        sz = 128
+        radius = sz * 0.22  # macOS-style rounded rect
+        dock_icon = NSImage.alloc().initWithSize_((sz, sz))
+        dock_icon.lockFocus()
+        rrect = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            NSMakeRect(0, 0, sz, sz), radius, radius)
+        rrect.addClip()
+        NSColor.whiteColor().setFill()
+        rrect.fill()
+        src.drawInRect_fromRect_operation_fraction_(
+            NSMakeRect(0, 0, sz, sz), ((0, 0), src.size()),
+            NSCompositingOperationSourceOver, 1.0)
+        dock_icon.unlockFocus()
+        NSApp.setApplicationIconImage_(dock_icon)
+
+    # Spec table for the playground-style windows. Adding a new pane is
+    # a single entry here plus a one-line `open_*` rumps callback.
+    _WINDOW_SPECS = {
+        "profile":     {"attr": "profile_window",
+                        "delegate_attr": "_win_delegate",
+                        "title": "Models",
+                        "path": "/",
+                        "size": (960, 700)},
+        "tools":       {"attr": "tools_window",
+                        "delegate_attr": "_tools_delegate",
+                        "title": "Playground",
+                        "path": "/tools",
+                        "size": (720, 600)},
+        "activity":    {"attr": "activity_window",
+                        "delegate_attr": "_activity_delegate",
+                        "title": "Activity Log",
+                        "path": "/activity",
+                        "size": (720, 600)},
+        "diagnostics": {"attr": "diagnostics_window",
+                        "delegate_attr": "_diagnostics_delegate",
+                        "title": "Diagnostics",
+                        "path": "/diagnostics",
+                        "size": (640, 520)},
+    }
+
+    def _any_other_window_open(self, key: str) -> bool:
+        """True if any window other than `key` is still open. Used by the
+        close-callback to decide whether to drop activation policy back to
+        Accessory (no Dock icon) when the last playground window closes."""
+        for k, spec in self._WINDOW_SPECS.items():
+            if k == key:
+                continue
+            if getattr(self, spec["attr"], None) is not None:
+                return True
+        return False
+
+    def _open_or_focus(self, key: str):
+        """Open the window for `key`, or focus + reload it if already open.
+
+        Replaces four near-identical `open_*` methods. The per-window
+        differences (attr name, title, path, size) live in _WINDOW_SPECS.
+        """
+        spec = self._WINDOW_SPECS[key]
+        existing = getattr(self, spec["attr"], None)
+        if existing is not None:
+            existing.makeKeyAndOrderFront_(None)
+            if hasattr(existing, "_webview"):
+                existing._webview.reload_(None)
             from AppKit import NSApp
             NSApp.activateIgnoringOtherApps_(True)
             return
 
         from AppKit import NSApp, NSApplicationActivationPolicyAccessory
-        window = self._open_webview("Models", "/")
+        window = self._open_webview(
+            spec["title"], spec["path"], size=spec["size"])
         delegate = _ProfileWindowDelegate.alloc().init()
         delegate.callback = lambda: (
-            setattr(self, 'profile_window', None),
+            setattr(self, spec["attr"], None),
             NSApp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
-            if not self.tools_window and not self.activity_window else None)
-        self._win_delegate = delegate
+            if not self._any_other_window_open(key) else None,
+        )
+        setattr(self, spec["delegate_attr"], delegate)
         window.setDelegate_(delegate)
-        self.profile_window = window
+        setattr(self, spec["attr"], window)
+
+    def open_profiles(self, _):
+        """Open the model profiles pane."""
+        self._open_or_focus("profile")
 
     def open_tools(self, _):
         """Open the tool tester pane."""
-        if self.tools_window is not None:
-            self.tools_window.makeKeyAndOrderFront_(None)
-            if hasattr(self.tools_window, '_webview'):
-                self.tools_window._webview.reload_(None)
-            from AppKit import NSApp
-            NSApp.activateIgnoringOtherApps_(True)
-            return
-
-        from AppKit import NSApp, NSApplicationActivationPolicyAccessory
-        window = self._open_webview("Playground", "/tools", size=(720, 600))
-        delegate = _ProfileWindowDelegate.alloc().init()
-        delegate.callback = lambda: (
-            setattr(self, 'tools_window', None),
-            NSApp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
-            if not self.profile_window and not self.activity_window else None)
-        self._tools_delegate = delegate
-        window.setDelegate_(delegate)
-        self.tools_window = window
+        self._open_or_focus("tools")
 
     def open_activity(self, _):
         """Open the activity dashboard."""
-        if self.activity_window is not None:
-            self.activity_window.makeKeyAndOrderFront_(None)
-            if hasattr(self.activity_window, '_webview'):
-                self.activity_window._webview.reload_(None)
-            from AppKit import NSApp
-            NSApp.activateIgnoringOtherApps_(True)
-            return
-
-        from AppKit import NSApp, NSApplicationActivationPolicyAccessory
-        window = self._open_webview("Activity Log", "/activity", size=(720, 600))
-        delegate = _ProfileWindowDelegate.alloc().init()
-        delegate.callback = lambda: (
-            setattr(self, 'activity_window', None),
-            NSApp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
-            if not self.profile_window and not self.tools_window else None)
-        self._activity_delegate = delegate
-        window.setDelegate_(delegate)
-        self.activity_window = window
+        self._open_or_focus("activity")
 
     def open_diagnostics(self, _):
         """Open the diagnostics pane."""
-        if hasattr(self, 'diagnostics_window') and self.diagnostics_window is not None:
-            self.diagnostics_window.makeKeyAndOrderFront_(None)
-            if hasattr(self.diagnostics_window, '_webview'):
-                self.diagnostics_window._webview.reload_(None)
-            from AppKit import NSApp
-            NSApp.activateIgnoringOtherApps_(True)
-            return
-
-        from AppKit import NSApp, NSApplicationActivationPolicyAccessory
-        window = self._open_webview("Diagnostics", "/diagnostics", size=(640, 520))
-        delegate = _ProfileWindowDelegate.alloc().init()
-        delegate.callback = lambda: (
-            setattr(self, 'diagnostics_window', None),
-            NSApp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
-            if not self.profile_window and not self.tools_window
-            and not self.activity_window else None)
-        self._diagnostics_delegate = delegate
-        window.setDelegate_(delegate)
-        self.diagnostics_window = window
+        self._open_or_focus("diagnostics")
 
     # -------------------------------------------------------------------
     # App update (git)
@@ -2679,6 +2696,20 @@ class LocalModelsApp(rumps.App):
         thread.start()
 
     def _check_for_updates(self):
+        # Don't start a new update while the previous one is still inside
+        # its crash-rollback window. _auto_update overwrites
+        # UPDATE_STARTED_FILE / UPDATE_PRE_HASH_FILE / PRE_UPDATE_HEALTH_FILE,
+        # so a back-to-back update would lose the rollback target for the
+        # *first* update and walk past tags without ever validating any of
+        # them survived UPDATE_CRASH_WINDOW seconds.
+        last = getattr(self, "_last_auto_update_at", 0)
+        if last and time.time() - last < UPDATE_CRASH_WINDOW:
+            logging.debug(
+                "Skipping update check — previous update is still inside "
+                "the %ss crash-rollback window (%.0fs elapsed)",
+                UPDATE_CRASH_WINDOW, time.time() - last)
+            return
+
         behind, remote_tag, remote_hash = check_repo_update_available()
         self.update_available = behind
 
@@ -2745,6 +2776,11 @@ class LocalModelsApp(rumps.App):
             return False
 
     def _auto_update(self, target_tag):
+        # Mark the start of this update so back-to-back update checks know
+        # to skip until the crash-rollback window has elapsed (see
+        # _check_for_updates).
+        self._last_auto_update_at = time.time()
+
         # Save pre-update tag/hash for precise rollback
         pre_hash = self._launch_hash
         try:
@@ -2976,7 +3012,7 @@ class LocalModelsApp(rumps.App):
                 text=True, timeout=5).strip()
             if head != skip_hash:
                 os.unlink(UPDATE_SKIPPED_FILE)
-        except (FileNotFoundError, Exception):
+        except Exception:
             pass
 
     def _post_update_health_check(self):

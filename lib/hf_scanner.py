@@ -47,11 +47,96 @@ _DTYPE_BYTES = {
 }
 
 
+def hf_snapshot_dir(model_path: str) -> Path:
+    """Path to the snapshots/ directory for an HF repo id, regardless of
+    whether it exists yet. Encapsulates the `models--{x}--{y}` mangling
+    that used to be inlined in 6+ places."""
+    return HF_CACHE / f"models--{model_path.replace('/', '--')}" / "snapshots"
+
+
+def hf_newest_snapshot(model_path: str) -> Path | None:
+    """Newest snapshot directory by mtime, or None if nothing exists.
+
+    Use this whenever the caller needs the snapshot the user most
+    recently pulled. Lex sort of HF snapshot hashes is essentially
+    random and was producing inconsistent results across the codebase
+    (vision detection in MCP vs. profile-server reading different
+    snapshots of the same model)."""
+    snapshots = hf_snapshot_dir(model_path)
+    if not snapshots.exists():
+        return None
+    dirs = sorted(snapshots.iterdir(),
+                  key=lambda p: p.stat().st_mtime,
+                  reverse=True)
+    return dirs[0] if dirs else None
+
+
+# Files that must be resolved (i.e. their snapshot symlinks point to a
+# fully-downloaded blob) before mlx_video.generate_wan can load a Wan
+# checkpoint. HF only materializes the symlink after the blob finishes
+# downloading, so a partial pull leaves a snapshot directory that *looks*
+# present but fails with a cryptic load_safetensors error.
+_WAN_REQUIRED_FILES: tuple[str, ...] = (
+    "config.json",
+    "t5_encoder.safetensors",
+    "vae.safetensors",
+)
+_WAN_MODEL_LAYOUTS: tuple[tuple[str, ...], ...] = (
+    # Either a single-model layout or a dual-expert MoE layout.
+    ("model.safetensors",),
+    ("high_noise_model.safetensors", "low_noise_model.safetensors"),
+)
+
+
+def check_wan_snapshot_ready(snapshot: Path) -> str | None:
+    """Verify a Wan MLX snapshot has every weight file resolved.
+
+    Returns None when the snapshot is ready, otherwise a human-readable
+    description of what's missing — caller can drop that straight into
+    a user-facing error message.
+    """
+    missing = [f for f in _WAN_REQUIRED_FILES if not (snapshot / f).exists()]
+    has_complete_layout = any(
+        all((snapshot / f).exists() for f in layout)
+        for layout in _WAN_MODEL_LAYOUTS
+    )
+    if not has_complete_layout:
+        missing.append(
+            "model weights (model.safetensors or "
+            "high_noise_model.safetensors + low_noise_model.safetensors)"
+        )
+    if missing:
+        return "missing " + ", ".join(missing)
+    return None
+
+
+def read_newest_hf_config(model_path: str) -> dict | None:
+    """Parse config.json from the newest HF snapshot. Returns None when
+    nothing is downloaded, the snapshot lacks a config, or the JSON is
+    malformed. Centralizes a pattern repeated across discovery, vision
+    detection, and capability probing."""
+    snap = hf_newest_snapshot(model_path)
+    if snap is None:
+        return None
+    cfg = snap / "config.json"
+    if not cfg.exists():
+        return None
+    try:
+        return json.loads(cfg.read_text())
+    except Exception:
+        return None
+
+
 def _latest_snapshot(model_dir: Path) -> Path | None:
+    """Internal helper used by scan_hf_model. Takes the model's top-level
+    cache dir (containing the `snapshots/` subdir) so it can be reused
+    while iterating HF_CACHE."""
     snapshots = model_dir / "snapshots"
     if not snapshots.exists():
         return None
-    dirs = sorted(snapshots.iterdir(), reverse=True)
+    dirs = sorted(snapshots.iterdir(),
+                  key=lambda p: p.stat().st_mtime,
+                  reverse=True)
     return dirs[0] if dirs else None
 
 

@@ -506,6 +506,30 @@ class TestCheckForUpdates:
 
         mock_update.assert_not_called()
 
+    def test_skips_during_crash_window(self, app_instance, update_dir):
+        """If _auto_update fired less than UPDATE_CRASH_WINDOW seconds ago,
+        a follow-up _check_for_updates must NOT fire — back-to-back updates
+        would overwrite the rollback markers for the first one."""
+        app_instance._last_auto_update_at = time.time() - 30  # 30s < 90s
+        with patch("app.menubar.check_repo_update_available") as mock_check, \
+             patch.object(app_instance, "_auto_update") as mock_update:
+            app_instance._check_for_updates()
+        mock_check.assert_not_called()
+        mock_update.assert_not_called()
+
+    def test_proceeds_after_crash_window(self, app_instance, update_dir):
+        """Once UPDATE_CRASH_WINDOW has elapsed since the last update, the
+        next check is allowed through."""
+        app_instance._last_auto_update_at = (
+            time.time() - menubar.UPDATE_CRASH_WINDOW - 5)
+        with patch("app.menubar.check_repo_update_available",
+                    return_value=(1, "v2.0.0", "newhash")), \
+             patch.object(app_instance, "_mcp_recently_active",
+                          return_value=False), \
+             patch.object(app_instance, "_auto_update") as mock_update:
+            app_instance._check_for_updates()
+        mock_update.assert_called_once_with("v2.0.0")
+
 
 class TestAutoUpdateDisable:
     def test_auto_update_false_skips_check(self, app_instance):

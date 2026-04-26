@@ -33,9 +33,16 @@ from flask import (Flask, Response, after_this_request, jsonify, request,
                      send_file, send_from_directory)
 
 from lib import activity
+from lib.hf_scanner import (
+    check_wan_snapshot_ready,
+    hf_newest_snapshot as _hf_newest_snapshot,
+    hf_snapshot_dir as _hf_snapshot_dir,
+    read_newest_hf_config as _read_newest_hf_config,
+)
 from lib.models import (
     ALWAYS_EXCLUDE,
     DOWNLOAD_ON_DEMAND_TASKS,
+    HF_TASK_BACKENDS as _HF_TASK_BACKENDS,
     KNOWN_ACTIVE_PARAMS,
     MCP_PREFS_FILE,
     MLX_SERVER_CONFIG,
@@ -48,7 +55,9 @@ from lib.models import (
     active_params_b,
     mflux_command,
     mflux_is_turbo,
+    model_has_vision as _model_has_vision,
     model_matches_filter as _model_matches_filter,
+    pick_model_from_prefs as _pick_model_from_prefs,
     validate_network_conf,
 )
 
@@ -690,46 +699,7 @@ def resolve_hf_snapshot(repo_id: str) -> Path | None:
     """Return the newest local snapshot directory for an HF repo id, or None
     if the repo isn't downloaded. CLI tools like mlx_video.generate_wan want a
     filesystem path for --model-dir, not the repo id."""
-    cache_dir = HF_CACHE / f"models--{repo_id.replace('/', '--')}" / "snapshots"
-    if not cache_dir.exists():
-        return None
-    snaps = sorted(cache_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
-    return snaps[0] if snaps else None
-
-
-_WAN_REQUIRED_FILES = (
-    "config.json",
-    "t5_encoder.safetensors",
-    "vae.safetensors",
-)
-_WAN_MODEL_FILES = (
-    # Either a single-model layout or a dual-expert MoE layout.
-    ("model.safetensors",),
-    ("high_noise_model.safetensors", "low_noise_model.safetensors"),
-)
-
-
-def check_wan_snapshot_ready(snapshot: Path) -> str | None:
-    """Verify a Wan MLX snapshot actually has every weight file resolved (HF
-    only materializes snapshot symlinks when the underlying blob finishes
-    downloading, so an in-progress pull leaves a snapshot with missing or
-    dangling entries).  Returns None if ready, otherwise an error string."""
-    missing = []
-    for name in _WAN_REQUIRED_FILES:
-        p = snapshot / name
-        if not p.exists():
-            missing.append(name)
-    # At least one of the model-file layouts must be fully present.
-    has_complete_layout = any(
-        all((snapshot / f).exists() for f in layout)
-        for layout in _WAN_MODEL_FILES
-    )
-    if not has_complete_layout:
-        missing.append("model weights (model.safetensors or "
-                       "high_noise_model.safetensors + low_noise_model.safetensors)")
-    if missing:
-        return "missing " + ", ".join(missing)
-    return None
+    return _hf_newest_snapshot(repo_id)
 
 # Playground request tracking — keyed by thread ID so overlapping requests don't clobber
 _playground_lock = threading.Lock()
@@ -914,18 +884,6 @@ _KNOWN_MLX_PARAMS = {
 
 _HF_CACHE = Path.home() / ".cache" / "huggingface" / "hub"
 
-_HF_TASK_BACKENDS = {
-    "tts": "mlx-audio",
-    "transcription": "mlx",
-    "image_edit": "mflux",
-    "image_gen": "mflux",
-    "video": "mlx-video",
-}
-
-
-def _hf_snapshot_dir(model_path):
-    return _HF_CACHE / f"models--{model_path.replace('/', '--')}" / "snapshots"
-
 
 def _hf_model_downloaded(model_path):
     """True if the HF snapshot has real weights (safetensors/npz/bin/pth) or at
@@ -1029,7 +987,7 @@ def _fetch_ollama_models():
             if k.endswith(".context_length"):
                 ctx = int(v)
                 break
-        has_vision = any("vision" in k for k in mi)
+        has_vision = _model_has_vision(name, ollama_model_info=mi)
 
         if not total_b and disk_bytes:
             total_b = disk_bytes / 2e9  # ~0.5 bytes per param at 4-bit
@@ -1107,25 +1065,14 @@ def _parse_mlx_params(model_path, served_name):
 
 
 def _mlx_model_has_vision(model_path):
-    """Prefer name hints; otherwise check HF config.json for a vision_config key
-    on the newest snapshot that has one."""
-    if "vision" in model_path.lower() or "vl" in model_path.lower():
-        return True
+    """Thin wrapper around the canonical model_has_vision helper for MLX
+    models served by mlx-openai-server. Reads config.json from the
+    newest HF snapshot if one exists, then defers to the shared
+    name-and-config classifier."""
     if not model_path:
         return False
-    cache_dir = _hf_snapshot_dir(model_path)
-    if not cache_dir.exists():
-        return False
-    for snap in sorted(cache_dir.iterdir(), reverse=True):
-        hf_cfg = snap / "config.json"
-        if not hf_cfg.exists():
-            continue
-        try:
-            hf = json.loads(hf_cfg.read_text())
-            return "vision_config" in hf or "vision_config" in hf.get("text_config", {})
-        except Exception:
-            return False
-    return False
+    return _model_has_vision(
+        model_path, hf_config=_read_newest_hf_config(model_path))
 
 
 _QUANT_BYTES_PER_PARAM = (
@@ -1998,23 +1945,26 @@ def _track_playground(tool, model, backend):
 
 
 def _pick_model_for_task(task):
-    """Resolve preferred model for a task. Returns (model_name, backend, warning)."""
+    """Resolve preferred model for a task. Returns (model_name, backend, warning).
+
+    Wraps the shared `pick_model_from_prefs` with the profile-server-
+    specific behaviors: HF download-on-demand is enabled (so a freshly-
+    set profile can dispatch the first call against an unpulled model);
+    no fallback to "general" prefs (the Playground caller has its own
+    higher-level fallback logic).
+    """
     prefs = load_default_prefs()
     models = get_all_models()
     candidates = prefs.get(task, [])
-    for candidate in candidates:
-        if candidate in models:
-            return candidate, models[candidate]["backend"], None
-        for name in models:
-            if name.startswith(candidate + ":"):
-                return name, models[name]["backend"], None
-        # Download-on-demand HF backends (mlx-audio, mflux, mlx-video) fetch
-        # weights on first use. `get_all_models()` only lists what's already
-        # on disk or served, so a profile-assigned model that hasn't been
-        # pulled yet would otherwise fail this lookup — trust the profile's
-        # HF repo id and let the backend download it.
-        if "/" in candidate and task in _HF_TASK_BACKENDS:
-            return candidate, _HF_TASK_BACKENDS[task], None
+    if isinstance(candidates, str):
+        candidates = [candidates]
+    result = _pick_model_from_prefs(
+        task, models, prefs,
+        allow_hf_on_demand=True,
+        fallback_to_general=False,
+    )
+    if result:
+        return result[0], result[1], None
     warning = None
     if candidates:
         warning = (f"Profile models for '{task}' not available: {', '.join(candidates)} "
@@ -2123,7 +2073,14 @@ def _chat(model, backend, messages, timeout=300, tool="chat", image_b64=None, th
 
 
 def _chat_stream(model, backend, messages, think=True, tool="chat"):
-    """Stream chat tokens as SSE events. Yields 'data: {...}\\n\\n' strings."""
+    """Stream chat tokens as SSE events. Yields 'data: {...}\\n\\n' strings.
+
+    The whole body runs inside try/finally so a streaming error
+    (ChunkedEncodingError, ConnectionResetError, the model dying mid-
+    response) still cleans up _playground_active. Otherwise that dict
+    grows unbounded over the profile-server's lifetime and /api/gpu
+    shows phantom in-flight tasks.
+    """
     _stream_tid = threading.get_ident()
     with _playground_lock:
         _playground_active[_stream_tid] = {"tool": tool, "model": model, "backend": backend,
@@ -2133,60 +2090,65 @@ def _chat_stream(model, backend, messages, think=True, tool="chat"):
             body = {"model": model, "messages": messages, "stream": True}
             if not think:
                 body["chat_template_kwargs"] = {"enable_thinking": False}
-            resp = requests.post(f"{MLX_URL}/v1/chat/completions",
-                                 json=body, stream=True, timeout=300)
-            resp.raise_for_status()
-    except requests.RequestException as e:
-        raise RuntimeError(f"Stream ({model} via {backend}): {_requests_error_detail(e)}") from e
-    if backend == "mlx":
-        yield f"data: {json.dumps({'model': model})}\n\n"
-        for line in resp.iter_lines():
-            if not line:
-                continue
-            text = line.decode("utf-8", errors="replace")
-            if text.startswith("data: "):
-                text = text[6:]
-            if text.strip() == "[DONE]":
-                break
             try:
-                chunk = json.loads(text)
-                delta = chunk.get("choices", [{}])[0].get("delta", {})
-                token = delta.get("content", "")
-                if token:
-                    yield f"data: {json.dumps({'token': token})}\n\n"
-            except (json.JSONDecodeError, IndexError, KeyError):
-                pass
-    else:
-        body = {"model": model, "messages": messages, "stream": True,
-                "keep_alive": OLLAMA_KEEP_ALIVE}
-        if not think:
-            body["think"] = False
-        try:
-            resp = requests.post(f"{OLLAMA_URL}/api/chat", json=body,
-                                 stream=True, timeout=300)
-            resp.raise_for_status()
-        except requests.RequestException as e:
-            raise RuntimeError(f"Stream ({model} via {backend}): {_requests_error_detail(e)}") from e
-        yield f"data: {json.dumps({'model': model})}\n\n"
-        for line in resp.iter_lines():
-            if not line:
-                continue
+                resp = requests.post(f"{MLX_URL}/v1/chat/completions",
+                                     json=body, stream=True, timeout=300)
+                resp.raise_for_status()
+                yield f"data: {json.dumps({'model': model})}\n\n"
+                for line in resp.iter_lines():
+                    if not line:
+                        continue
+                    text = line.decode("utf-8", errors="replace")
+                    if text.startswith("data: "):
+                        text = text[6:]
+                    if text.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(text)
+                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        token = delta.get("content", "")
+                        if token:
+                            yield f"data: {json.dumps({'token': token})}\n\n"
+                    except (json.JSONDecodeError, IndexError, KeyError):
+                        pass
+            except requests.RequestException as e:
+                raise RuntimeError(
+                    f"Stream ({model} via {backend}): "
+                    f"{_requests_error_detail(e)}") from e
+        else:
+            body = {"model": model, "messages": messages, "stream": True,
+                    "keep_alive": OLLAMA_KEEP_ALIVE}
+            if not think:
+                body["think"] = False
             try:
-                chunk = json.loads(line)
-                msg = chunk.get("message", {})
-                token = msg.get("content", "")
-                thinking = msg.get("thinking", "")
-                if thinking:
-                    yield f"data: {json.dumps({'thinking': True})}\n\n"
-                if token:
-                    yield f"data: {json.dumps({'token': token})}\n\n"
-                if chunk.get("done"):
-                    break
-            except json.JSONDecodeError:
-                pass
-    yield "data: {\"done\": true}\n\n"
-    with _playground_lock:
-        _playground_active.pop(_stream_tid, None)
+                resp = requests.post(f"{OLLAMA_URL}/api/chat", json=body,
+                                     stream=True, timeout=300)
+                resp.raise_for_status()
+                yield f"data: {json.dumps({'model': model})}\n\n"
+                for line in resp.iter_lines():
+                    if not line:
+                        continue
+                    try:
+                        chunk = json.loads(line)
+                        msg = chunk.get("message", {})
+                        token = msg.get("content", "")
+                        thinking = msg.get("thinking", "")
+                        if thinking:
+                            yield f"data: {json.dumps({'thinking': True})}\n\n"
+                        if token:
+                            yield f"data: {json.dumps({'token': token})}\n\n"
+                        if chunk.get("done"):
+                            break
+                    except json.JSONDecodeError:
+                        pass
+            except requests.RequestException as e:
+                raise RuntimeError(
+                    f"Stream ({model} via {backend}): "
+                    f"{_requests_error_detail(e)}") from e
+        yield "data: {\"done\": true}\n\n"
+    finally:
+        with _playground_lock:
+            _playground_active.pop(_stream_tid, None)
 
 
 STREAM_TOOLS = {"code", "general", "review", "translate", "summarize"}
