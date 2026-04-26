@@ -59,11 +59,13 @@ The app fetches tags every 2 minutes. If a newer tagged release exists:
 
 Users only receive tagged releases, not every push to main. To release: `git tag v1.x.x && git push --tags`.
 
-Crash rollback: if the app dies within 30 seconds of an update, checks out the previous tag. Skipped releases aren't retried until a newer tag lands.
+Crash rollback: if the app dies within 90 seconds of an update (`UPDATE_CRASH_WINDOW` in `app/menubar.py`), checks out the previous tag. Skipped releases aren't retried until a newer tag lands.
 
-### MCP authentication
+Signature verification runs against the *existing* `allowed_signers` before any new trust root from the tag is installed — current trust root must approve the next one. Key rotations therefore have to ride a tag signed by the outgoing key.
 
-The MCP server requires a bearer token (`MCP_AUTH_TOKEN`). The token is stored in `~/.config/local-models/mcp_auth_token` (sourced from 1Password via the wrapper script). **The server refuses to start without a token** (fail-closed). Session IDs from authenticated `/mcp` init requests are tracked; subsequent `/messages` requests are validated against this set.
+### Authentication
+
+Both the **MCP server** and the **profile server** require a bearer token (`MCP_AUTH_TOKEN`) on every request. The token is stored in `~/.config/local-models/mcp_auth_token` (sourced from 1Password via the wrapper script). Both fail closed — they refuse to start without a token. `SP_ALLOW_NO_AUTH=1` is the explicit escape hatch for unit tests and local dev. There is no localhost shortcut: `tailscale serve` proxies remote requests as if they came from `127.0.0.1`, so trusting loopback would silently bypass auth for any tailnet peer. The MCP server tracks session IDs from authenticated `/mcp` init requests; subsequent `/messages` requests are validated against this set.
 
 ### Key files at runtime
 

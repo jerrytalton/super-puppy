@@ -135,7 +135,7 @@ All remote access uses Tailscale — services bind to localhost and are proxied 
 A puppy icon in the menu bar provides:
 
 - **Status** — Ollama/MLX running or down, MCP configured or not
-- **Model Profiles** — preset configurations (Everyday, Desktop, Maximum, Laptop) tuned for different RAM tiers
+- **Model Profiles** — preset configurations (Laptop, Desktop, Everyday, Heavyweight) tuned for different RAM tiers
 - **Task preferences** — pick which model backs each MCP tool
 - **Playground** — web UI to test any tool interactively
 - **Remote Access** — toggle Tailscale-based remote access to the Playground
@@ -214,11 +214,10 @@ The installer picks a profile based on RAM. Change it any time from Model Profil
 
 | RAM | Profile | What fits |
 |-----|---------|-----------|
-| <48GB | — | Ollama only, small models |
-| <64GB | Laptop | Ollama + MLX, up to 32B |
-| <128GB | Desktop | Everything: code, vision, TTS, image gen |
-| <256GB | Server | Plus large MoE (70B+) |
-| 256GB+ | Maximum | Full fleet, 400B+ MoE |
+| 32GB | Laptop | Qwen3.6:27b for everything (code, general, vision), small TTS, light image gen |
+| 64GB | Desktop | Qwen3.6:27b across the board, plus computer-use, image gen / edit, full Voxtral TTS |
+| 256GB+ | Everyday | Qwen3.6 35B-A3B (general/reasoning/long-context/translation), Qwen3.5:122b vision, full multimedia stack |
+| 256GB+ | Heavyweight | Qwen3.5-397B-8bit for everything that benefits — biggest models possible |
 
 | File | What |
 |------|------|
