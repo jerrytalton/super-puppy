@@ -834,7 +834,8 @@ def get_system_info():
         if _is_remote_ollama():
             try:
                 url = f"{_desktop_profile_server_url()}/api/system"
-                data = requests.get(url, timeout=5).json()
+                data = requests.get(
+                    url, headers=_remote_auth_headers(), timeout=5).json()
                 data["mode"] = "client"
                 return data
             except Exception:
@@ -974,11 +975,26 @@ def _hf_model_is_known(model_path):
     return False
 
 
+def _remote_auth_headers():
+    """Headers to use when calling the desktop's profile server. The desktop
+    requires bearer auth on every endpoint (no localhost shortcut), so we
+    always forward the token if we have one."""
+    if _PROFILE_AUTH_TOKEN:
+        return {"Authorization": f"Bearer {_PROFILE_AUTH_TOKEN}"}
+    return {}
+
+
 def _fetch_remote_models():
     """Client mode: fetch the aggregated list from the desktop's profile server."""
     try:
         url = f"{_desktop_profile_server_url()}/api/models"
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(url, headers=_remote_auth_headers(), timeout=10)
+        if resp.status_code != 200:
+            logging.warning(
+                "Desktop profile server returned %s for /api/models — "
+                "check MCP_AUTH_TOKEN matches the desktop's token.",
+                resp.status_code)
+            return None
         return {m["name"]: m for m in resp.json()}
     except Exception as e:
         logging.warning("Failed to fetch models from desktop profile server: %s", e)
@@ -1205,13 +1221,19 @@ def _fetch_hf_cache_models(existing):
 
 
 def _fetch_all_models():
-    if _is_remote_ollama():
+    remote_mode = _is_remote_ollama()
+    if remote_mode:
         remote = _fetch_remote_models()
         if remote is not None:
             return remote
+        # Remote profile server unreachable.  Fall through to a direct fetch
+        # against remote Ollama/MLX (still useful for tags), but DO NOT scan
+        # our local HF cache — those files live on this machine, not the
+        # desktop, and surfacing them as "available" would be a lie.
     models = _fetch_ollama_models()
     models.update(_fetch_mlx_models(existing=models))
-    models.update(_fetch_hf_cache_models(existing=models))
+    if not remote_mode:
+        models.update(_fetch_hf_cache_models(existing=models))
     return models
 
 
@@ -1394,6 +1416,12 @@ app = Flask(__name__)
 # bypass auth for any tailnet peer.
 
 _PROFILE_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "")
+# SP_ALLOW_NO_AUTH=1 is the explicit escape hatch for unit tests and local
+# dev. Production startup (__main__) refuses to launch without either a
+# token or this flag. Defense in depth: _check_auth also denies when both
+# are absent, so a future refactor that runs Flask without going through
+# __main__ stays fail-closed.
+_ALLOW_NO_AUTH = os.environ.get("SP_ALLOW_NO_AUTH") == "1"
 
 # Routes that are intentionally exempt from auth.  /api/identity returns
 # only a pid + a per-launch random token used by the menubar to confirm
@@ -1408,7 +1436,9 @@ def _check_auth():
     _last_request = time.time()
 
     if not _PROFILE_AUTH_TOKEN:
-        return  # no token configured — allow all (dev/local-only mode)
+        if _ALLOW_NO_AUTH:
+            return  # explicit dev/test mode
+        return jsonify({"error": "auth not configured"}), 503
 
     if request.path in _AUTH_EXEMPT_PATHS:
         return
@@ -3053,6 +3083,12 @@ if __name__ == "__main__":
         sys.exit(_run_pull_worker(
             _worker_args.kind, _worker_args.name,
             _worker_args.total or None))
+
+    if not _PROFILE_AUTH_TOKEN and not _ALLOW_NO_AUTH:
+        print("profile-server: ERROR: MCP_AUTH_TOKEN not set. "
+              "Refusing to start without auth. Set SP_ALLOW_NO_AUTH=1 "
+              "to override for local dev.", file=sys.stderr, flush=True)
+        sys.exit(1)
 
     validate_network_conf(logger=logging.getLogger())
     activity.init_db()

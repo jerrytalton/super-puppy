@@ -27,6 +27,7 @@ import os
 os.environ.setdefault("OLLAMA_URL", "http://localhost:11434")
 os.environ.setdefault("MLX_URL", "http://localhost:8000")
 os.environ["PROFILE_IDLE_TIMEOUT"] = "0"  # disable idle shutdown
+os.environ["SP_ALLOW_NO_AUTH"] = "1"  # tests run without a real token
 
 # Stub hf_scanner to avoid scanning the real HF cache
 hf_scanner_mock = MagicMock()
@@ -126,6 +127,70 @@ class TestIsRemoteOllama:
     def test_remote(self):
         with patch.object(ps, "OLLAMA_URL", "http://100.64.0.2:11434"):
             assert ps._is_remote_ollama() is True
+
+
+class TestRemoteFetchAuth:
+    """Client-mode fetches against the desktop must forward the bearer
+    token — otherwise the desktop's auth-required profile server 403s."""
+
+    def test_fetch_remote_models_forwards_auth(self):
+        captured = {}
+        def fake_get(url, headers=None, timeout=None):
+            captured["url"] = url
+            captured["headers"] = headers
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = []
+            return resp
+        with patch.object(ps, "_PROFILE_AUTH_TOKEN", "shared-secret"), \
+             patch.object(ps, "OLLAMA_URL", "https://desk.tail.ts.net:11434"), \
+             patch.object(ps.requests, "get", side_effect=fake_get):
+            ps._fetch_remote_models()
+        assert captured["url"].endswith("/api/models")
+        assert captured["url"].startswith("https://"), (
+            "tailscale serve only listens on https — http would always fail")
+        assert captured["headers"] == {"Authorization": "Bearer shared-secret"}
+
+    def test_fetch_remote_models_returns_none_on_403(self):
+        """403 means we have no token / wrong token; don't pretend success."""
+        def fake_get(url, headers=None, timeout=None):
+            resp = MagicMock()
+            resp.status_code = 403
+            return resp
+        with patch.object(ps, "_PROFILE_AUTH_TOKEN", "wrong"), \
+             patch.object(ps, "OLLAMA_URL", "https://desk.tail.ts.net:11434"), \
+             patch.object(ps.requests, "get", side_effect=fake_get):
+            assert ps._fetch_remote_models() is None
+
+    def test_fetch_all_models_skips_local_hf_cache_in_remote_mode(self):
+        """The laptop's HF cache is for the laptop, not the desktop. When
+        we're routing to the desktop, surfacing local-only HF models as if
+        they were available on the desktop misleads the user."""
+        ollama_called = []
+        mlx_called = []
+        hf_called = []
+        with patch.object(ps, "OLLAMA_URL", "https://desk.tail.ts.net:11434"), \
+             patch.object(ps, "_fetch_remote_models", return_value=None), \
+             patch.object(ps, "_fetch_ollama_models",
+                          side_effect=lambda: (ollama_called.append(1) or {})), \
+             patch.object(ps, "_fetch_mlx_models",
+                          side_effect=lambda existing: (mlx_called.append(1) or {})), \
+             patch.object(ps, "_fetch_hf_cache_models",
+                          side_effect=lambda existing: (hf_called.append(1) or {})):
+            ps._fetch_all_models()
+        assert ollama_called and mlx_called
+        assert not hf_called, (
+            "Remote-mode fallback must not scan the local HF cache.")
+
+    def test_fetch_all_models_includes_local_hf_in_offline_mode(self):
+        called = []
+        with patch.object(ps, "OLLAMA_URL", "http://localhost:11434"), \
+             patch.object(ps, "_fetch_ollama_models", return_value={}), \
+             patch.object(ps, "_fetch_mlx_models", return_value={}), \
+             patch.object(ps, "_fetch_hf_cache_models",
+                          side_effect=lambda existing: (called.append(1) or {})):
+            ps._fetch_all_models()
+        assert called, "Local mode should still scan local HF cache."
 
 
 class TestRequestsErrorDetail:
@@ -602,9 +667,21 @@ class TestProfileServerAuth:
                 environ_base={"REMOTE_ADDR": "100.64.0.5"})
         assert resp.status_code == 403
 
-    def test_no_token_configured_allows_all(self, client):
-        """When no token is set, all requests are allowed (dev mode)."""
-        with patch.object(ps, "_PROFILE_AUTH_TOKEN", ""):
+    def test_no_token_configured_fails_closed(self, client):
+        """When no token is set and SP_ALLOW_NO_AUTH is not enabled, every
+        request gets 503 (refused).  Production startup also exits before
+        reaching this state — this is the runtime defense."""
+        with patch.object(ps, "_PROFILE_AUTH_TOKEN", ""), \
+             patch.object(ps, "_ALLOW_NO_AUTH", False):
+            resp = client.get("/api/system",
+                              environ_base={"REMOTE_ADDR": "100.64.0.5"})
+        assert resp.status_code == 503
+
+    def test_no_token_configured_with_explicit_dev_flag_allows_all(self, client):
+        """SP_ALLOW_NO_AUTH=1 is the explicit escape hatch for unit tests
+        and local dev."""
+        with patch.object(ps, "_PROFILE_AUTH_TOKEN", ""), \
+             patch.object(ps, "_ALLOW_NO_AUTH", True):
             resp = client.get("/api/system",
                               environ_base={"REMOTE_ADDR": "100.64.0.5"})
         assert resp.status_code == 200

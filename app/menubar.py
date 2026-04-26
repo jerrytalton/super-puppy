@@ -563,10 +563,14 @@ def verify_tag_signature(tag):
 
 
 def _update_allowed_signers(target_ref):
-    """Fetch allowed_signers from a tag/ref without checking it out.
+    """Install allowed_signers from a verified tag/ref.
 
-    Handles signing key rotation: if the new release ships a new key,
-    we install it before verifying the tag so old installs aren't bricked.
+    MUST be called AFTER verify_tag_signature succeeds against the existing
+    trust root. Calling this beforehand inverts the trust model: any pushed
+    tag could ship its own allowed_signers and self-approve.
+
+    Key rotations should ship in a tag signed by the outgoing key. Old
+    installs upgrade through that tag, then the new key is installed.
     """
     try:
         result = subprocess.run(
@@ -590,19 +594,21 @@ def _update_allowed_signers(target_ref):
 def apply_repo_update(target_tag):
     """Check out a tagged release. Returns (success, output).
 
-    Verifies the tag signature, force-checks out the tag (detached HEAD),
-    and cleans untracked files. End users don't have local changes to
-    preserve — the repo IS the installed app.
+    Verifies the tag signature against the *existing* allowed_signers,
+    then installs any new allowed_signers from the verified tag, then
+    force-checks out the tag (detached HEAD) and cleans untracked files.
+    End users don't have local changes to preserve — the repo IS the
+    installed app.
     """
     try:
-        # Update allowed_signers from the new tag before verification,
-        # so signing key rotations don't brick old installs.
-        _update_allowed_signers(target_tag)
-
         sig_ok, sig_detail = verify_tag_signature(target_tag)
         if not sig_ok:
             logging.warning("Refusing unsigned update %s: %s", target_tag, sig_detail)
             return False, f"Tag signature verification failed: {sig_detail}"
+
+        # Tag is trusted under the current allowed_signers. Now it's safe
+        # to roll forward any signing-key rotation it carries.
+        _update_allowed_signers(target_tag)
 
         checkout = subprocess.run(
             ["git", "-C", REPO_DIR, "checkout", "--force", target_tag],

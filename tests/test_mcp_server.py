@@ -38,9 +38,13 @@ for mod_name in (
         else:
             sys.modules[mod_name] = MagicMock()
 
-# Make FastMCP return a mock that records tool registrations
-_fastmcp_mock = MagicMock()
-_fastmcp_mock.return_value = MagicMock()
+# Make FastMCP return a mock whose .tool() decorator returns the function
+# unchanged — that way @mcp.tool()-decorated functions remain callable from
+# tests instead of being replaced with a MagicMock. Other attribute access
+# falls through to MagicMock as before.
+_fastmcp_instance = MagicMock()
+_fastmcp_instance.tool = lambda *a, **kw: (lambda fn: fn)
+_fastmcp_mock = MagicMock(return_value=_fastmcp_instance)
 sys.modules["mcp.server.fastmcp"].FastMCP = _fastmcp_mock
 sys.modules["mcp.server.transport_security"].TransportSecuritySettings = MagicMock()
 
@@ -509,6 +513,87 @@ class TestPathValidation:
                 good, allowed_exts=server._IMAGE_EXTS) is None
         finally:
             Path(good).unlink()
+
+    def test_text_exts_rejects_secret_files(self):
+        """Tools that ingest arbitrary files (translate, summarize, embed,
+        etc.) gate on _TEXT_EXTS so a prompt-injected call can't read e.g.
+        ~/.ssh/id_rsa or ~/.aws/credentials and feed contents to the model."""
+        import tempfile
+        # Files an attacker would target — extensionless or non-text ext.
+        targets = [
+            ("id_rsa", ""),         # ssh private key (no ext)
+            ("credentials", ""),    # .aws/credentials (no ext)
+            ("Cookies.binarycookies", ".binarycookies"),
+            ("passwd", ""),         # /etc/passwd-style (we have to use $HOME)
+        ]
+        for name, suffix in targets:
+            with tempfile.NamedTemporaryFile(
+                    dir="/tmp", prefix=name + "_", suffix=suffix,
+                    delete=False) as f:
+                f.write(b"secret\n")
+                path = f.name
+            try:
+                err = server._validate_path(
+                    path, allowed_exts=server._TEXT_EXTS)
+                assert err is not None, f"{name} should have been rejected"
+                assert "extension" in err.lower()
+            finally:
+                Path(path).unlink()
+
+    def test_text_exts_accepts_common_code_and_docs(self):
+        """The allowlist must cover everything a developer actually wants
+        to summarize/embed, otherwise users will set SP_ALLOW_NO_AUTH-style
+        escapes and we lose the gate."""
+        import tempfile
+        for suffix in (".py", ".md", ".json", ".yaml", ".sql", ".ts",
+                       ".rs", ".go", ".log", ".txt"):
+            with tempfile.NamedTemporaryFile(
+                    dir="/tmp", suffix=suffix, delete=False) as f:
+                f.write(b"hello\n")
+                path = f.name
+            try:
+                err = server._validate_path(
+                    path, allowed_exts=server._TEXT_EXTS)
+                assert err is None, (
+                    f"{suffix} should be permitted but got: {err}")
+            finally:
+                Path(path).unlink()
+
+
+class TestComputerUseScreenshotRequired:
+    """local_computer_use must NOT auto-capture the screen. Auto-capture
+    on the tailnet means one stolen token = silent screen harvesting."""
+
+    def test_silent_screencapture_helper_removed(self):
+        """_take_screenshot was the silent-capture helper.  Make sure it's
+        gone — its presence (even unused) is a footgun."""
+        assert not hasattr(server, "_take_screenshot"), (
+            "Silent screen capture must not be reachable from MCP code.")
+
+    def test_empty_screenshot_path_rejected(self):
+        """The runtime guard catches empty strings even though the type
+        annotation already forbids missing args at the schema level."""
+        import asyncio
+        result = asyncio.run(server.local_computer_use(
+            intent="click submit", screenshot_path=""))
+        assert "screenshot_path is required" in result.lower()
+
+    def test_screenshot_path_extension_gated(self):
+        """Even when the file exists and is under $HOME, a non-image
+        extension is rejected — same threat as the text-tool case."""
+        import asyncio
+        import tempfile
+        with tempfile.NamedTemporaryFile(
+                dir="/tmp", suffix=".txt", delete=False) as f:
+            f.write(b"not really an image")
+            sketchy = f.name
+        try:
+            result = asyncio.run(server.local_computer_use(
+                intent="click submit", screenshot_path=sketchy))
+            assert "extension" in result.lower(), (
+                f"expected extension rejection, got: {result!r}")
+        finally:
+            Path(sketchy).unlink()
 
 
 class TestConfigurablePathRestrictions:

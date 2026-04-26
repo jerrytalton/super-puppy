@@ -29,6 +29,7 @@ import importlib.util
 os.environ.setdefault("OLLAMA_URL", "http://localhost:11434")
 os.environ.setdefault("MLX_URL", "http://localhost:8000")
 os.environ["PROFILE_IDLE_TIMEOUT"] = "0"
+os.environ["SP_ALLOW_NO_AUTH"] = "1"  # tests run without a real token
 
 hf_scanner_mock = MagicMock()
 hf_scanner_mock.scan_hf_cache = MagicMock(return_value=[])
