@@ -1983,34 +1983,46 @@ class LocalModelsApp(rumps.App):
             self.mode = "stopped"
 
     def _refresh_client_mode(self):
-        # Always probe desktop so the menu shows accurate availability
+        # Always probe desktop so the menu shows accurate availability.
+        # The TCP probe is necessary but NOT sufficient: tailscale serve
+        # listens on 8100/8101 even when the backend MCP / profile server
+        # is dead, so a successful connect tells us nothing about whether
+        # the desktop is actually serving. We confirm by fetching the
+        # model list before declaring remote reachable.
         desktop_up = self.ts_hostname and self._resolve_desktop()
         was_remote = self.remote_reachable
-        self.remote_reachable = desktop_up
 
-        # Use remote only if available AND user hasn't forced local
         if desktop_up and not self.force_local:
-            self.mode = "client"
-            self.ollama_ok = False
-            self.mlx_ok = False
-            self.ollama_models = []
-            self.mlx_models = []
-            # Get full model list from desktop's profile server
             desktop_host = self.desktop_fqdn or self.desktop_ip
             desktop_ps = f"https://{desktop_host}:8101"
             all_models = http_get_json(f"{desktop_ps}/api/models", timeout=5)
             if all_models and isinstance(all_models, list):
-                self.mcp_models = [m["name"] for m in all_models]
+                mcp_models = [m["name"] for m in all_models]
             else:
-                self.mcp_models = get_mcp_models(
+                mcp_models = get_mcp_models(
                     f"https://{desktop_host}:8100" if self.desktop_fqdn
                     else f"http://{self.desktop_ip}:8100")
-            if not was_remote:
-                self._notify_connection("Connected to desktop",
-                                        f"via Tailscale ({self.desktop_ip})")
-            return
 
-        if was_remote:
+            if mcp_models:
+                self.remote_reachable = True
+                self.mode = "client"
+                self.ollama_ok = False
+                self.mlx_ok = False
+                self.ollama_models = []
+                self.mlx_models = []
+                self.mcp_models = mcp_models
+                if not was_remote:
+                    self._notify_connection("Connected to desktop",
+                                            f"via Tailscale ({self.desktop_ip})")
+                return
+
+            if was_remote:
+                self._notify_connection(
+                    "Desktop MCP unavailable",
+                    "Backend not responding — using local models")
+
+        self.remote_reachable = False
+        if was_remote and not (desktop_up and not self.force_local):
             self._notify_connection("Desktop unreachable",
                                     "Using local models")
 
@@ -2130,10 +2142,8 @@ class LocalModelsApp(rumps.App):
         if self.desktop:
             if self.remote_access_enabled:
                 self.menu_remote_access.title = "\u2705 Remote Access"
-                self.menu_share_url.set_callback(self._copy_playground_url)
             else:
                 self.menu_remote_access.title = "\u274c Remote Access"
-                self.menu_share_url.set_callback(None)
 
         self._styled_menu(self.menu_profiles, "", "Models", profile)
 
@@ -2195,9 +2205,6 @@ class LocalModelsApp(rumps.App):
         # ── Version ──
         self.menu_version.title = self.app_version
         self.menu_version.set_callback(None)
-
-        # ── Restart (always available) ──
-        self.menu_restart.set_callback(self.restart_app)
 
     # -------------------------------------------------------------------
     # Profile viewer (native WKWebView window)
