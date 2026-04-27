@@ -836,13 +836,15 @@ async def local_computer_use(
     screenshot_path: str,
     model: str | None = None,
 ) -> str:
-    """Analyze a screenshot and return structured GUI actions for an intent.
+    """Analyze a screenshot and return the next GUI action(s) for an intent.
 
     Reads the screenshot at screenshot_path, sends it to a GUI-aware vision
-    model (UI-TARS, Fara), and returns a JSON array of actions (click,
-    type, scroll, key, wait) to accomplish the intent.
+    model (Holo3 default; UI-TARS, Fara as alternatives), and returns a
+    JSON array of actions (click, type, scroll, key, wait). Holo3 returns
+    one action per call (observe → act loop); UI-TARS returns multi-step
+    plans. Either way the result is wrapped in a JSON array.
 
-    The tool observes and plans — it does NOT execute the actions.
+    The tool observes — it does NOT execute the actions.
 
     The caller MUST capture the screenshot. The MCP server runs over the
     tailnet; auto-capturing on every call would let any tailnet peer with
@@ -887,7 +889,8 @@ async def local_computer_use(
                                 {"role": "system", "content": _COMPUTER_USE_SYSTEM},
                                 {"role": "user", "content": content},
                             ],
-                            "max_tokens": 4096, "stream": False}
+                            "max_tokens": 4096, "stream": False,
+                            "chat_template_kwargs": {"enable_thinking": False}}
                     resp = await client.post(
                         f"{MLX_URL}/v1/chat/completions", json=body)
                     resp.raise_for_status()
@@ -900,12 +903,13 @@ async def local_computer_use(
         except httpx.TimeoutException:
             return f"Error: Computer use ({model_name}): timed out after 300s"
 
-    # Try to validate the response is JSON
     try:
         actions = json.loads(result)
+        if isinstance(actions, dict):
+            actions = [actions]
         result = json.dumps(actions, indent=2)
     except json.JSONDecodeError:
-        pass  # model returned text instead of JSON — return as-is
+        pass
 
     warning = _gpu_contention_warning(backend)
     meta = f"[{model_name} via {backend}]"

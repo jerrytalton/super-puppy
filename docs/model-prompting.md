@@ -67,6 +67,28 @@ On dense vertical stacks (inputs + button), y undershoots by ~20–40 px — cli
 
 ---
 
+## Holo3 (`holo3-35b`)
+
+GUI grounding for `local_computer_use` (default). Screenshot in, next-action JSON out. Fine-tune of Qwen3.5-35B-A3B.
+
+### Output format — single JSON object
+
+```json
+{"action":"click","x":248,"y":432}
+```
+
+Same action schema as the existing `_COMPUTER_USE_SYSTEM` prompt: `click {x,y}`, `type {text}`, `scroll {direction, amount}`, `key {key}`, `wait {seconds}`, with optional `description`. Absolute pixel coordinates from the top-left.
+
+Holo3 always returns one object — never a multi-step array, even when prompted for one. The wrapper wraps `dict` results in a list before returning so the tool's array contract holds; direct `/v1/chat/completions` callers must handle dict-or-list.
+
+### Prompting
+
+- **System**: `_COMPUTER_USE_SYSTEM` works as-is.
+- **`chat_template_kwargs.enable_thinking: false`** is required. Without it, the response starts with a `</think>`-terminated reasoning block and JSON parsing fails. See playbook entry.
+- **max_tokens**: 1024 is plenty (typical output ~30–80 chars).
+
+---
+
 ## Qwen3.5 wrapper notes
 
 These apply when wrapping Qwen3.5 (or other thinking VLMs returning structured output) for downstream consumers. General Qwen3.5 prompting (token budgets, suppressing thinking, structured-output penalty params) stays in `~/.claude/model-playbook.md`.

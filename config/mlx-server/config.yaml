@@ -63,6 +63,14 @@ models:
     on_demand: true
     on_demand_idle_timeout: 300
 
+  # Computer use (Holo3) — default for computer_use; OSWorld-tuned, ~37GB at 8bit
+  - model_path: mlx-community/Holo3-35B-A3B-8bit
+    model_type: multimodal
+    served_model_name: holo3-35b
+    context_length: 32768
+    on_demand: true
+    on_demand_idle_timeout: 300
+
   # Speech-to-text — on demand (CACHED)
   - model_path: mlx-community/whisper-large-v3-mlx
     model_type: whisper
