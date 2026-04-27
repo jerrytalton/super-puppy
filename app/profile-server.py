@@ -1225,7 +1225,7 @@ def get_eligible_tasks(name, model_info):
 
 # ── Profiles ─────────────────────────────────────────────────────────
 
-PROFILES_VERSION = 22  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 23  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -1273,15 +1273,15 @@ DEFAULT_PROFILES = {
         },
         "maximum": {
             "label": "Heavyweight",
-            "description": "Biggest models for everything, damn the RAM",
-            "max_ram_gb": 512,
+            "description": "Frontier-tier reasoning and long context, at the cost of throughput",
+            "max_ram_gb": 0,
             "tasks": {
                 "code": "qwen3.6:27b-coding-bf16",
                 "general": "qwen3.5-397b-8bit",
                 "reasoning": "qwen3.5-397b-8bit",
                 "long_context": "qwen3.5-397b-8bit",
-                "translation": "qwen3.5-397b-8bit",
-                "vision": "qwen3.5-397b-8bit",
+                "translation": "qwen3.6-35b-bf16",
+                "vision": "qwen3.5:122b",
                 "image_gen": "x/z-image-turbo:bf16",
                 "image_edit": "black-forest-labs/FLUX.1-Kontext-dev",
                 "transcription": "whisper-v3",

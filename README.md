@@ -217,7 +217,7 @@ The installer picks a profile based on RAM. Change it any time from Model Profil
 | 32GB | Laptop | Qwen3.6:27b for everything (code, general, vision), small TTS, light image gen |
 | 64GB | Desktop | Qwen3.6:27b across the board, plus computer-use, image gen / edit, full Voxtral TTS |
 | 256GB+ | Everyday | Qwen3.6 35B-A3B (general/reasoning/long-context/translation), Qwen3.5:122b vision, full multimedia stack |
-| 256GB+ | Heavyweight | Qwen3.5-397B-8bit for everything that benefits — biggest models possible |
+| Opt-in | Heavyweight | Qwen3.5-397B-8bit for general/reasoning/long-context only; rest tracks Everyday. Slow but frontier-tier on the hardest reasoning and 1M-token contexts. |
 
 | File | What |
 |------|------|
