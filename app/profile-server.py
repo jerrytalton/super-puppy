@@ -1225,7 +1225,7 @@ def get_eligible_tasks(name, model_info):
 
 # ── Profiles ─────────────────────────────────────────────────────────
 
-PROFILES_VERSION = 23  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 24  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -1248,7 +1248,7 @@ DEFAULT_PROFILES = {
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
                 "embedding": "qwen3-embedding:8b",
                 "unfiltered": "dolphin3:8b",
-                "computer_use": "ui-tars-72b",
+                "computer_use": "holo3-35b",
                 "video": "AITRADER/Wan2.2-T2V-A14B-mlx-bf16",
             },
         },
@@ -1288,7 +1288,7 @@ DEFAULT_PROFILES = {
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
                 "embedding": "qwen3-embedding:8b",
                 "unfiltered": "dolphin3:8b",
-                "computer_use": "ui-tars-72b",
+                "computer_use": "holo3-35b",
                 "video": "AITRADER/Wan2.2-T2V-A14B-mlx-bf16",
             },
         },

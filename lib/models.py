@@ -342,7 +342,7 @@ SPECIAL_TASKS: dict[str, dict[str, Any]] = {
     },
     "computer_use": {
         "label": "Computer Use",
-        "prefixes": ["ui-tars", "fara"],
+        "prefixes": ["ui-tars", "fara", "holo"],
     },
     "video": {
         "label": "Video",
