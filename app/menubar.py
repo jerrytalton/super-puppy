@@ -316,11 +316,14 @@ def is_desktop():
     return get_ram_gb() >= 256
 
 
-def http_get_json(url: str, timeout: int = 3) -> dict | list | None:
+def http_get_json(url: str, timeout: int = 3,
+                  auth_token: str | None = None) -> dict | list | None:
     """Fetch JSON from a URL, return None on failure."""
     try:
         req = urllib.request.Request(url)
         req.add_header("User-Agent", "LocalModelsMenubar/1.0")
+        if auth_token:
+            req.add_header("Authorization", f"Bearer {auth_token}")
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())
     except Exception:
@@ -415,9 +418,11 @@ def get_mlx_models(base_url: str, timeout: int = 3) -> list[str]:
     return []
 
 
-def get_mcp_models(mcp_url: str = "http://127.0.0.1:8100", timeout: int = 3) -> list[str]:
+def get_mcp_models(mcp_url: str = "http://127.0.0.1:8100", timeout: int = 3,
+                   auth_token: str | None = None) -> list[str]:
     """Get HF-backed model names from the MCP server."""
-    data = http_get_json(f"{mcp_url}/api/mcp-models", timeout=timeout)
+    data = http_get_json(f"{mcp_url}/api/mcp-models", timeout=timeout,
+                         auth_token=auth_token)
     if data and "models" in data:
         return data["models"]
     return []
@@ -2055,13 +2060,15 @@ class LocalModelsApp(rumps.App):
         if desktop_up:
             desktop_host = self.desktop_fqdn or self.desktop_ip
             desktop_ps = f"https://{desktop_host}:8101"
-            all_models = http_get_json(f"{desktop_ps}/api/models", timeout=5)
+            all_models = http_get_json(f"{desktop_ps}/api/models", timeout=5,
+                                       auth_token=_AUTH_TOKEN)
             if all_models and isinstance(all_models, list):
                 mcp_models = [m["name"] for m in all_models]
             else:
                 mcp_models = get_mcp_models(
                     f"https://{desktop_host}:8100" if self.desktop_fqdn
-                    else f"http://{self.desktop_ip}:8100")
+                    else f"http://{self.desktop_ip}:8100",
+                    auth_token=_AUTH_TOKEN)
 
         self.remote_reachable = bool(mcp_models)
 
