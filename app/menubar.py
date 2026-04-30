@@ -1750,8 +1750,14 @@ class LocalModelsApp(rumps.App):
         self.force_local = False
         save_force_local(False)
         self._activate_profile("everyday")
-        self._restart_mcp(_)
-        self.refresh(None)
+        # _start_mcp_server handles the Remote-mode branch (stop local +
+        # repoint Claude). The previous _restart_mcp wrapper added a
+        # gratuitous stop+sleep+start cycle that just widened the
+        # SSE-disconnect window for any active session.
+        def _do():
+            self._start_mcp_server()
+            self.refresh(None)
+        threading.Thread(target=_do, daemon=True).start()
 
     def _select_local(self, _):
         """User selected Local mode."""
@@ -1763,8 +1769,13 @@ class LocalModelsApp(rumps.App):
             self._activate_profile(best)
         if not self.servers_started:
             self._start_local_servers()
-        self._restart_mcp(_)
-        self.refresh(None)
+        # _start_mcp_server adopts a healthy local MCP if one is already
+        # running, or spawns a fresh one. No need for the stop+sleep+start
+        # _restart_mcp wrapper here either.
+        def _do():
+            self._start_mcp_server()
+            self.refresh(None)
+        threading.Thread(target=_do, daemon=True).start()
 
     def _activate_profile(self, name):
         """Set the active profile and update MCP preferences to match."""
