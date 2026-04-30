@@ -1475,17 +1475,39 @@ class LocalModelsApp(rumps.App):
         if getattr(self, '_mcp_proc', None) is not None:
             if self._mcp_proc.poll() is None:
                 return
-        # Kill any orphaned process holding port 8100
+        # Look for an existing process on 8100. If it's our MCP and it's
+        # serving requests, adopt it instead of restarting — every restart
+        # drops every active SSE stream and Claude Code (every connected
+        # session, on every machine) exits when its transport sees the
+        # abrupt EOF. The most common trigger is auto-update: the menubar
+        # exits, launchd respawns it, the new instance used to come up and
+        # SIGTERM the still-healthy MCP its predecessor spawned. With
+        # adoption the MCP keeps running across menubar restarts and the
+        # connected sessions survive.
+        orphan_pid = None
         try:
             out = subprocess.check_output(
                 ["lsof", "-ti", "tcp:8100"], text=True, stderr=subprocess.DEVNULL)
             for pid_str in out.strip().split():
                 pid = int(pid_str)
                 if pid != os.getpid():
-                    os.kill(pid, signal.SIGTERM)
-            time.sleep(0.5)
+                    orphan_pid = pid
+                    break
         except (subprocess.CalledProcessError, ValueError):
             pass
+        if orphan_pid is not None:
+            if get_mcp_models("http://127.0.0.1:8100", timeout=2):
+                self._mcp_proc_pid = orphan_pid
+                self._configure_claude_mcp("http://127.0.0.1:8100/mcp")
+                logging.info(
+                    "Adopted existing local MCP server pid=%d on port 8100",
+                    orphan_pid)
+                return
+            try:
+                os.kill(orphan_pid, signal.SIGTERM)
+                time.sleep(0.5)
+            except OSError:
+                pass
         env = os.environ.copy()
         if "/opt/homebrew/bin" not in env.get("PATH", ""):
             env["PATH"] = f"/opt/homebrew/bin:{env.get('PATH', '')}"
@@ -1677,7 +1699,8 @@ class LocalModelsApp(rumps.App):
         rumps.notification("Super Puppy", "URL copied", url)
 
     def _stop_mcp_server(self):
-        """Stop the MCP server."""
+        """Stop the MCP server (whether spawned by us or adopted from a
+        previous menubar instance)."""
         proc = getattr(self, '_mcp_proc', None)
         if proc is not None and proc.poll() is None:
             proc.terminate()
@@ -1686,7 +1709,26 @@ class LocalModelsApp(rumps.App):
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait()
+        elif getattr(self, '_mcp_proc_pid', None):
+            # Adopted MCP — no Popen handle, manage by PID
+            pid = self._mcp_proc_pid
+            try:
+                os.kill(pid, signal.SIGTERM)
+                for _ in range(50):  # up to 5s grace
+                    time.sleep(0.1)
+                    try:
+                        os.kill(pid, 0)
+                    except OSError:
+                        break
+                else:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+            except OSError:
+                pass
         self._mcp_proc = None
+        self._mcp_proc_pid = None
         log_fh = getattr(self, '_mcp_log', None)
         if log_fh and not log_fh.closed:
             log_fh.close()
