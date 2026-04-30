@@ -149,3 +149,76 @@ class TestStartMcpServerAdoptsHealthyOrphan:
 
         os_kill.assert_not_called()
         popen.assert_called_once()
+
+
+class _SyncThread:
+    """Stand-in for threading.Thread that runs target synchronously."""
+
+    def __init__(self, target=None, daemon=None, **_):
+        self._target = target
+
+    def start(self):
+        if self._target is not None:
+            self._target()
+
+
+class TestToggleHandlersDoNotCallRestartMcp:
+    """`_restart_mcp` does stop → sleep(1) → start. For Local↔Remote toggles
+    the sleep+restart wrapping is gratuitous: in the Remote case we just want
+    to stop the local server and re-point Claude; in the Local case we just
+    want to ensure the local server is running. Going via the full restart
+    path adds an extra dead-window for any active connection, with no
+    upside. Both handlers should call `_start_mcp_server` directly (which
+    handles both modes correctly via the mode-detection branch at the top).
+    """
+
+    def _toggle_app(self, **overrides):
+        inst = object.__new__(menubar.LocalModelsApp)
+        inst.desktop = False
+        inst.force_local = False
+        inst.remote_reachable = True
+        inst.ram_gb = 64
+        inst.servers_started = True
+        inst._mcp_proc = None
+        inst._mcp_proc_pid = None
+        inst._mcp_log = None
+        inst.ts_hostname = "super-puppy"
+        inst.desktop_fqdn = "super-puppy.tailnet.ts.net"
+        inst.desktop_ip = "100.64.0.1"
+        inst.__dict__.update(overrides)
+        return inst
+
+    def test_select_remote_does_not_call_restart_mcp(self):
+        app = self._toggle_app(force_local=True, remote_reachable=True)
+        restart_mcp = MagicMock()
+        start_mcp = MagicMock()
+        with patch("app.menubar.save_force_local", MagicMock()), \
+             patch("app.menubar.threading.Thread", _SyncThread), \
+             patch.object(menubar.LocalModelsApp, "_restart_mcp", restart_mcp), \
+             patch.object(menubar.LocalModelsApp, "_start_mcp_server", start_mcp), \
+             patch.object(menubar.LocalModelsApp, "_activate_profile",
+                          MagicMock()), \
+             patch.object(menubar.LocalModelsApp, "refresh", MagicMock()):
+            app._select_remote(None)
+        restart_mcp.assert_not_called()
+        start_mcp.assert_called_once()
+
+    def test_select_local_does_not_call_restart_mcp(self):
+        app = self._toggle_app(force_local=False)
+        restart_mcp = MagicMock()
+        start_mcp = MagicMock()
+        with patch("app.menubar.save_force_local", MagicMock()), \
+             patch("app.menubar.load_profiles",
+                   return_value={"active": None, "profiles": {}}), \
+             patch("app.menubar.pick_profile_for_ram", return_value=None), \
+             patch("app.menubar.threading.Thread", _SyncThread), \
+             patch.object(menubar.LocalModelsApp, "_restart_mcp", restart_mcp), \
+             patch.object(menubar.LocalModelsApp, "_start_mcp_server", start_mcp), \
+             patch.object(menubar.LocalModelsApp, "_activate_profile",
+                          MagicMock()), \
+             patch.object(menubar.LocalModelsApp, "_start_local_servers",
+                          MagicMock()), \
+             patch.object(menubar.LocalModelsApp, "refresh", MagicMock()):
+            app._select_local(None)
+        restart_mcp.assert_not_called()
+        start_mcp.assert_called_once()
