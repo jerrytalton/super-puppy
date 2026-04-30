@@ -1874,6 +1874,25 @@ async def _mcp_models(request):
 
 
 
+# Bound the uvicorn graceful-shutdown drain. Default is None (wait forever),
+# which never completes for SSE long-polls — the menubar then SIGKILLs after
+# 5s and Claude Code exits cleanly when its transport sees the abrupt EOF.
+# A finite timeout lets uvicorn close connections itself within a defined
+# window and still trip the lifespan shutdown so FastMCP's session_manager
+# can clean up at the application layer.
+_GRACEFUL_SHUTDOWN_TIMEOUT_S = 3
+
+
+def _build_uvicorn_config(app, host, port, log_level):
+    """Construct the uvicorn Config used by main()."""
+    import uvicorn
+    return uvicorn.Config(
+        app, host=host, port=port, log_level=log_level,
+        proxy_headers=True, forwarded_allow_ips="*",
+        timeout_graceful_shutdown=_GRACEFUL_SHUTDOWN_TIMEOUT_S,
+    )
+
+
 def main():
     asyncio.run(_startup())
     if MCP_AUTH_TOKEN:
@@ -1885,10 +1904,9 @@ def main():
         app.routes.append(Route("/gpu", _gpu_status))
         app.routes.append(Route("/activity", _activity_status))
         app.routes.append(Route("/api/mcp-models", _mcp_models))
-        config = uvicorn.Config(
-            app, host=mcp.settings.host, port=mcp.settings.port,
-            log_level=mcp.settings.log_level.lower(),
-            proxy_headers=True, forwarded_allow_ips="*")
+        config = _build_uvicorn_config(
+            app, mcp.settings.host, mcp.settings.port,
+            mcp.settings.log_level.lower())
         anyio.run(uvicorn.Server(config).serve)
     else:
         mcp.run(transport="streamable-http")

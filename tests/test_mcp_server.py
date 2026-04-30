@@ -643,3 +643,45 @@ class TestConfigurablePathRestrictions:
             roots = server._load_allowed_roots()
         assert Path.home() in roots
         assert Path("/tmp") in roots
+
+
+class TestUvicornGracefulShutdown:
+    """The MCP server runs under uvicorn. On SIGTERM, uvicorn's default is to
+    wait forever for in-flight requests — which never completes for the SSE
+    long-poll Claude Code holds open. The menubar then SIGKILLs after 5s,
+    yanking the SSE stream mid-byte. Claude's transport hits the unhandled
+    error path and the CLI exits cleanly without an error.
+
+    Setting timeout_graceful_shutdown bounds the drain window so uvicorn
+    closes the connection itself (still abrupt from the wire's perspective,
+    but with a defined boundary) and runs the lifespan shutdown — which
+    triggers FastMCP's session_manager.__aexit__ for any application-level
+    session cleanup.
+    """
+
+    def test_build_uvicorn_config_sets_graceful_shutdown_timeout(self):
+        captured = {}
+
+        def fake_config(*args, **kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        fake_uvicorn = MagicMock()
+        fake_uvicorn.Config = fake_config
+        with patch.dict(sys.modules, {"uvicorn": fake_uvicorn}):
+            server._build_uvicorn_config(MagicMock(), "127.0.0.1", 8100, "info")
+
+        assert "timeout_graceful_shutdown" in captured, \
+            "uvicorn.Config must be built with a finite graceful-shutdown timeout"
+        timeout = captured["timeout_graceful_shutdown"]
+        assert isinstance(timeout, (int, float)) and 1 <= timeout <= 10, \
+            f"timeout_graceful_shutdown should be 1..10s, got {timeout}"
+
+    def test_main_wires_through_build_uvicorn_config(self):
+        """main() must use the helper — otherwise the timeout drifts away
+        the next time someone edits the inline uvicorn.Config call."""
+        import inspect
+        src = inspect.getsource(server.main)
+        assert "_build_uvicorn_config" in src, \
+            "main() must call _build_uvicorn_config so the graceful-shutdown " \
+            "timeout stays wired in"
