@@ -1983,16 +1983,23 @@ class LocalModelsApp(rumps.App):
             self.mode = "stopped"
 
     def _refresh_client_mode(self):
-        # Always probe desktop so the menu shows accurate availability.
+        # Always probe the desktop so the menu shows accurate availability.
         # The TCP probe is necessary but NOT sufficient: tailscale serve
         # listens on 8100/8101 even when the backend MCP / profile server
         # is dead, so a successful connect tells us nothing about whether
         # the desktop is actually serving. We confirm by fetching the
         # model list before declaring remote reachable.
+        #
+        # force_local controls whether we *use* the desktop, not whether we
+        # know it's there: the Remote toggle is the only UI path that clears
+        # FORCE_LOCAL=true, and it greys out when remote_reachable is False.
+        # Skipping the probe under force_local would trap the user in local
+        # override with no escape.
         desktop_up = self.ts_hostname and self._resolve_desktop()
         was_remote = self.remote_reachable
+        mcp_models = []
 
-        if desktop_up and not self.force_local:
+        if desktop_up:
             desktop_host = self.desktop_fqdn or self.desktop_ip
             desktop_ps = f"https://{desktop_host}:8101"
             all_models = http_get_json(f"{desktop_ps}/api/models", timeout=5)
@@ -2003,28 +2010,28 @@ class LocalModelsApp(rumps.App):
                     f"https://{desktop_host}:8100" if self.desktop_fqdn
                     else f"http://{self.desktop_ip}:8100")
 
-            if mcp_models:
-                self.remote_reachable = True
-                self.mode = "client"
-                self.ollama_ok = False
-                self.mlx_ok = False
-                self.ollama_models = []
-                self.mlx_models = []
-                self.mcp_models = mcp_models
-                if not was_remote:
-                    self._notify_connection("Connected to desktop",
-                                            f"via Tailscale ({self.desktop_ip})")
-                return
+        self.remote_reachable = bool(mcp_models)
 
-            if was_remote:
+        if self.remote_reachable and not self.force_local:
+            self.mode = "client"
+            self.ollama_ok = False
+            self.mlx_ok = False
+            self.ollama_models = []
+            self.mlx_models = []
+            self.mcp_models = mcp_models
+            if not was_remote:
+                self._notify_connection("Connected to desktop",
+                                        f"via Tailscale ({self.desktop_ip})")
+            return
+
+        if was_remote and not self.force_local:
+            if desktop_up and not mcp_models:
                 self._notify_connection(
                     "Desktop MCP unavailable",
                     "Backend not responding — using local models")
-
-        self.remote_reachable = False
-        if was_remote and not (desktop_up and not self.force_local):
-            self._notify_connection("Desktop unreachable",
-                                    "Using local models")
+            elif not desktop_up:
+                self._notify_connection("Desktop unreachable",
+                                        "Using local models")
 
         self.ollama_ok = probe_service(OLLAMA_LOCAL, 2)
         self.mlx_ok = probe_service(MLX_LOCAL, 2)

@@ -180,3 +180,73 @@ class TestRemoteReachabilityRequiresLiveBackend:
         assert app.remote_reachable is True
         assert app.mode == "client"
         assert app.mcp_models == ["qwen3.6:27b", "tinyllama"]
+
+
+class TestForceLocalDoesNotTrapTheUser:
+    """The Remote toggle is the only UI path that clears FORCE_LOCAL=true.
+    `_select_remote` early-returns when `remote_reachable` is False, and the
+    menu greys the toggle for the same reason. So if `_refresh_client_mode`
+    skips the desktop probe whenever `force_local` is True, the laptop ends
+    up in a state where the user *can never get out of local override*: the
+    probe is gated on `not force_local`, which makes `remote_reachable=False`,
+    which disables the toggle that would have cleared `force_local`. One-way
+    trap, no UI escape. force_local should control whether we *use* the
+    desktop, not whether we know it's there.
+    """
+
+    def test_force_local_with_live_desktop_still_marks_remote_reachable(self):
+        """force_local=True + healthy desktop → remote_reachable=True, mode≠client."""
+        app = object.__new__(menubar.LocalModelsApp)
+        app.ts_hostname = "super-puppy"
+        app.force_local = True  # the trap
+        app.remote_reachable = False
+        app.servers_started = True
+        app.desktop = False
+        app.desktop_ip = "100.64.0.1"
+        app.desktop_fqdn = "super-puppy.tailnet.ts.net"
+        app.mode = "offline"
+        app.ollama_ok = False
+        app.mlx_ok = False
+        app.ollama_models = []
+        app.mlx_models = []
+        app.mcp_models = []
+
+        live_models = [{"name": "qwen3.6:27b"}, {"name": "tinyllama"}]
+        with patch.object(menubar.LocalModelsApp, "_resolve_desktop",
+                          return_value=True), \
+             patch("app.menubar.http_get_json", return_value=live_models), \
+             patch("app.menubar.probe_service", return_value=False), \
+             patch.object(menubar.LocalModelsApp, "_notify_connection",
+                          lambda *a, **kw: None):
+            app._refresh_client_mode()
+
+        assert app.remote_reachable is True, \
+            "Healthy desktop must register as reachable even under force_local"
+        assert app.mode != "client", \
+            "force_local must still keep us out of client mode"
+
+    def test_force_local_with_dead_desktop_keeps_remote_unreachable(self):
+        """force_local=True + dead desktop → remote_reachable=False (no false positive)."""
+        app = object.__new__(menubar.LocalModelsApp)
+        app.ts_hostname = "super-puppy"
+        app.force_local = True
+        app.remote_reachable = False
+        app.servers_started = True
+        app.desktop = False
+        app.desktop_ip = ""
+        app.desktop_fqdn = ""
+        app.mode = "offline"
+        app.ollama_ok = False
+        app.mlx_ok = False
+        app.ollama_models = []
+        app.mlx_models = []
+        app.mcp_models = []
+
+        with patch.object(menubar.LocalModelsApp, "_resolve_desktop",
+                          return_value=False), \
+             patch("app.menubar.probe_service", return_value=False), \
+             patch.object(menubar.LocalModelsApp, "_notify_connection",
+                          lambda *a, **kw: None):
+            app._refresh_client_mode()
+
+        assert app.remote_reachable is False
