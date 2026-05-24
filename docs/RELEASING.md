@@ -26,7 +26,7 @@ Tailscale-Host, `/api/mcp-models`, the `:8101` proxy-hop guard).
 **Compatibility rule:** the wire contract is **additive-only**. Adding fields,
 endpoints, or tools is fine; changing or removing what an existing peer relies
 on is a breaking change and must not ship without a deliberate contract-version
-bump (see the runtime-handshake spec, track #2). The gate checks only the
+bump (this needs the planned runtime-handshake work — track #2 — which is not yet built). The gate checks only the
 adjacent prior version; transitivity across older fleet members depends on this
 rule holding.
 

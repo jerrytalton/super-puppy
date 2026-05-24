@@ -57,7 +57,7 @@ The app fetches tags every 2 minutes. If a newer tagged release exists:
 2. Checks out the new tag (detached HEAD)
 3. Exits non-zero so launchd's KeepAlive restarts the app on new code
 
-Users only receive tagged releases, not every push to main. To release: `git tag v1.x.x && git push --tags`.
+Users only receive tagged releases, not every push to main. To cut a release, use `bin/release.sh vX.Y.Z` (gated on tests + cross-version compat, then signed, verified, and pushed) — see `docs/RELEASING.md`.
 
 Crash rollback: if the app dies within 90 seconds of an update (`UPDATE_CRASH_WINDOW` in `app/menubar.py`), checks out the previous tag. Skipped releases aren't retried until a newer tag lands.
 
