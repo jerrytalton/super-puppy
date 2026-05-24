@@ -99,6 +99,32 @@ def check_mcp_models_shape(base):
         raise ContractFailure(f"/api/mcp-models missing list 'models': {data!r}")
 
 
+def check_proxy_hop_guard(profile_base, token):
+    """A proxied request already at the hop limit must be refused (502 loop
+    detected), not forwarded — the loop-prevention contract between paired
+    profile servers.
+
+    Uses GET /api/gpu, which calls _proxy_to_desktop before any upstream
+    contact.  The guard fires even when the upstream desktop is unreachable,
+    so the profile server under test only needs to be in client/remote mode
+    (OLLAMA_URL pointing at a non-localhost host).  _MAX_PROXY_HOPS is 3;
+    sending X-SP-Proxy-Hops: 99 guarantees the guard trips regardless of
+    future adjustments to that constant, as long as it stays < 99.
+    """
+    req = urllib.request.Request(f"{profile_base}/api/gpu")
+    req.add_header("X-SP-Proxy-Hops", "99")  # >= _MAX_PROXY_HOPS (currently 3)
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            status, body = r.status, r.read()
+    except urllib.error.HTTPError as e:
+        status, body = e.code, e.read()
+    if status != 502 or b"loop" not in body.lower():
+        raise ContractFailure(
+            f"proxy hop guard: expected 502 loop-detected, got {status}; body={body[:160]!r}")
+
+
 CHECKS = [
     ("mcp_fqdn_host", lambda a: check_mcp_fqdn_host(a.base, a.token, a.host_header)),
     ("mcp_initialize_session", lambda a: check_mcp_initialize_session(a.base, a.token, a.host_header)),
@@ -112,7 +138,15 @@ def main():
     p.add_argument("--base", required=True, help="e.g. http://127.0.0.1:8199")
     p.add_argument("--token", required=True)
     p.add_argument("--host-header", required=True, help="e.g. test.fqdn:8100")
+    p.add_argument("--profile-base", default=None,
+                   help="Profile server base URL (e.g. http://127.0.0.1:8101). "
+                        "When provided, also runs the proxy-hop loop-guard check "
+                        "against a profile server forced into client/remote mode.")
     args = p.parse_args()
+
+    if args.profile_base:
+        CHECKS.append(("proxy_hop_guard",
+                        lambda a: check_proxy_hop_guard(a.profile_base, a.token)))
 
     failures = []
     for name, fn in CHECKS:
