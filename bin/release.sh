@@ -24,6 +24,11 @@ if [ -n "$PREV" ] && [ "$(printf '%s\n%s\n' "$PREV" "$VERSION" | sort -V | tail 
     exit 2
 fi
 
+if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+    echo "refusing: tag $VERSION already exists locally (latest is ${PREV:-none}); if it's a stale --dry-run artifact, remove it: git tag -d $VERSION" >&2
+    exit 2
+fi
+
 echo "== preconditions =="
 [ -z "$(git status --porcelain)" ] || { echo "working tree not clean" >&2; exit 1; }
 [ "$(git rev-parse --abbrev-ref HEAD)" = "main" ] || { echo "not on main" >&2; exit 1; }
