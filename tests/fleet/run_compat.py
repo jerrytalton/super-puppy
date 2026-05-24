@@ -23,7 +23,7 @@ REPO = Path(__file__).resolve().parent.parent.parent
 TOKEN = "fleet-compat-test-token"
 FQDN = "test.fqdn"
 HOST_HEADER = f"{FQDN}:8100"
-PORT = 8199
+PORT = 8199  # offset from production MCP port (8100) to avoid colliding with a running instance
 
 
 def _latest_tag() -> str:
@@ -41,31 +41,56 @@ def _server(server_repo: Path):
     launch env, yield once /api/mcp-models answers, always tear down."""
     env = {**os.environ, "MCP_AUTH_TOKEN": TOKEN, "MCP_HOST": "127.0.0.1",
            "MCP_PORT": str(PORT), "MCP_ALLOWED_HOSTS": f"{FQDN}:*"}
+    stderr_f = tempfile.NamedTemporaryFile(
+        mode="w+", prefix="sp-compat-srv-", suffix=".log", delete=False)
     proc = subprocess.Popen(
         ["uv", "run", "mcp/local-models-server.py"],
         cwd=str(server_repo), env=env,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        stdout=subprocess.DEVNULL, stderr=stderr_f)
+
+    def _stderr_tail(n=20):
+        try:
+            stderr_f.flush()
+            with open(stderr_f.name) as fh:
+                return "".join(fh.readlines()[-n:]).strip()
+        except Exception:
+            return "(stderr unavailable)"
+
     try:
         # Generous: the prev-tag worktree's FIRST `uv run` does a cold dep
         # resolve (downloads the mcp SDK, uvicorn, …). 180s covers a cold cache.
         deadline = time.time() + 180
+        ready = False
         while time.time() < deadline:
+            if proc.poll() is not None:
+                raise SystemExit(
+                    f"server from {server_repo} exited during startup "
+                    f"(rc={proc.returncode}):\n{_stderr_tail()}")
             try:
                 with urllib.request.urlopen(
                         f"http://127.0.0.1:{PORT}/api/mcp-models", timeout=2) as r:
                     if r.status == 200:
+                        ready = True
                         break
             except Exception:
-                time.sleep(0.5)
-            if proc.poll() is not None:
-                raise SystemExit(f"server from {server_repo} exited during startup")
-        else:
-            raise SystemExit(f"server from {server_repo} not ready within 180s")
+                pass
+            time.sleep(0.5)
+        if not ready:
+            raise SystemExit(
+                f"server from {server_repo} not ready within 180s "
+                f"(rc={proc.poll()}):\n{_stderr_tail()}")
         yield
     finally:
         proc.terminate()
-        with contextlib.suppress(Exception):
+        try:
             proc.wait(timeout=10)
+        except Exception:
+            proc.kill()
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=5)
+        with contextlib.suppress(Exception):
+            stderr_f.close()
+            os.unlink(stderr_f.name)
 
 
 def _run_probe(probe_repo: Path) -> int:
