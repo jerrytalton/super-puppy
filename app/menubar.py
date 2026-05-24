@@ -428,6 +428,48 @@ def get_mcp_models(mcp_url: str = "http://127.0.0.1:8100", timeout: int = 3,
     return []
 
 
+def mcp_accepts_host(host_header: str, timeout: int = 2) -> bool:
+    """True if the local MCP accepts a /mcp request whose Host header is *host_header*.
+
+    tailscale serve forwards the original Host (the Tailscale FQDN); the MCP
+    SDK's DNS-rebinding protection answers 421 "Invalid Host header" for any
+    Host outside its allowlist. /api/mcp-models can't reveal this — it's a plain
+    Starlette route outside the transport, so the check never runs there. Only
+    /mcp enforces it, and the check fires ahead of session and body handling, so
+    a session-free `ping` reaches it without making the server create a session:
+    bad Host → 421, good Host → 400 "missing session". Auth runs before the
+    check, so we send the bearer token.
+
+    Returns False ONLY on a definite 421. Anything else — a 403 we can't see
+    past, or a transport error — returns True (and logs why), so an unverifiable
+    probe never tears down a healthy server that adoption exists to preserve,
+    while a misconfigured orphan that truly 421s is still caught.
+    """
+    body = b'{"jsonrpc":"2.0","id":0,"method":"ping"}'
+    req = urllib.request.Request(
+        "http://127.0.0.1:8100/mcp", data=body, method="POST")
+    req.add_header("Host", host_header)
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Accept", "application/json, text/event-stream")
+    if _AUTH_TOKEN:
+        req.add_header("Authorization", f"Bearer {_AUTH_TOKEN}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status != 421
+    except urllib.error.HTTPError as e:
+        if e.code == 421:
+            return False
+        if e.code == 403:
+            logging.warning(
+                "MCP host-probe unauthorized; cannot verify Host %s, assuming OK",
+                host_header)
+        return True
+    except OSError as e:
+        logging.warning("MCP host-probe error for Host %s: %s; assuming OK",
+                        host_header, e)
+        return True
+
+
 # ---------------------------------------------------------------------------
 # MCP tool preferences
 # ---------------------------------------------------------------------------
@@ -1489,6 +1531,14 @@ class LocalModelsApp(rumps.App):
         # SIGTERM the still-healthy MCP its predecessor spawned. With
         # adoption the MCP keeps running across menubar restarts and the
         # connected sessions survive.
+        # The Tailscale FQDN must be in the MCP's Host allowlist or every
+        # tailscale-serve-proxied request is 421'd by the SDK's DNS-rebinding
+        # protection. Compute it once: it gates adoption below and seeds
+        # MCP_ALLOWED_HOSTS on a fresh spawn.
+        ts_fqdn = ""
+        if self.ts_hostname:
+            ts_fqdn = getattr(self, 'desktop_fqdn', '') or self._get_own_fqdn()
+
         orphan_pid = None
         try:
             out = subprocess.check_output(
@@ -1501,13 +1551,23 @@ class LocalModelsApp(rumps.App):
         except (subprocess.CalledProcessError, ValueError):
             pass
         if orphan_pid is not None:
-            if get_mcp_models("http://127.0.0.1:8100", timeout=2):
+            # Only adopt an orphan that's healthy locally AND honors the current
+            # Tailscale FQDN. An orphan started without MCP_ALLOWED_HOSTS (e.g.
+            # before the FQDN resolved, or under an older release) answers
+            # /api/mcp-models fine but 421s every proxied /mcp request — adopting
+            # it would strand remote clients forever, so relaunch it instead.
+            # `:8100` is the serve port; it's matched by the `{fqdn}:*` allowlist
+            # glob a correct launch installs, so a healthy orphan never fails it.
+            if get_mcp_models("http://127.0.0.1:8100", timeout=2) and (
+                    not ts_fqdn or mcp_accepts_host(f"{ts_fqdn}:8100")):
                 self._mcp_proc_pid = orphan_pid
                 self._configure_claude_mcp("http://127.0.0.1:8100/mcp")
                 logging.info(
                     "Adopted existing local MCP server pid=%d on port 8100",
                     orphan_pid)
                 return
+            logging.info(
+                "Orphan MCP pid=%d failed adoption checks; relaunching", orphan_pid)
             try:
                 os.kill(orphan_pid, signal.SIGTERM)
                 time.sleep(0.5)
@@ -1518,10 +1578,8 @@ class LocalModelsApp(rumps.App):
             env["PATH"] = f"/opt/homebrew/bin:{env.get('PATH', '')}"
         # MCP always binds localhost; Tailscale serve handles remote access.
         # Allow Tailscale FQDN in Host header for proxied requests.
-        if self.ts_hostname:
-            ts_fqdn = getattr(self, 'desktop_fqdn', '') or self._get_own_fqdn()
-            if ts_fqdn:
-                env["MCP_ALLOWED_HOSTS"] = f"{ts_fqdn}:*"
+        if ts_fqdn:
+            env["MCP_ALLOWED_HOSTS"] = f"{ts_fqdn}:*"
         self._mcp_log = open("/tmp/local-models-mcp.log", "w")
         self._mcp_proc = subprocess.Popen(
             [os.path.expanduser("~/.local/bin/local-models-mcp-detect")],
