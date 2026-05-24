@@ -1,0 +1,37 @@
+# Releasing Super Puppy
+
+Releases ship to the fleet via signed git tags; every machine auto-updates to
+the latest tag within ~2 minutes. **A bad tag is live almost immediately**, so
+releases go through `bin/release.sh`, which gates on tests + cross-version
+compatibility *before* the tag is pushed.
+
+## Cut a release
+
+```bash
+bin/release.sh v1.0.22            # full release: gate, sign, verify, push
+bin/release.sh v1.0.22 --dry-run  # everything except the push
+```
+
+The script will refuse unless: the tree is clean, you're on `main`, `main` is
+in sync with `origin/main`, the test suite passes, and the fleet compat gate
+passes.
+
+## The fleet compat gate
+
+`tests/fleet/run_compat.py` worktrees the previous tag and checks both
+directions of version skew using `tests/fleet/contract_probe.py` — the
+executable definition of the cross-machine wire contract (`/mcp` auth +
+Tailscale-Host, `/api/mcp-models`, the `:8101` proxy-hop guard).
+
+**Compatibility rule:** the wire contract is **additive-only**. Adding fields,
+endpoints, or tools is fine; changing or removing what an existing peer relies
+on is a breaking change and must not ship without a deliberate contract-version
+bump (see the runtime-handshake spec, track #2). The gate checks only the
+adjacent prior version; transitivity across older fleet members depends on this
+rule holding.
+
+## Signing
+
+Tags are SSH-signed; the trusted key lives in `config/git/allowed_signers`.
+A new key must ride a tag signed by the *outgoing* key (the running fleet
+verifies the next tag against the key it already trusts).
