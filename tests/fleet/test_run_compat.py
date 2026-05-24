@@ -1,7 +1,10 @@
 """Smoke test for the fleet compat orchestrator's failure handling."""
 import contextlib
+import http.server
 import subprocess
-from pathlib import Path
+import threading
+
+import pytest
 
 import tests.fleet.run_compat as rc
 
@@ -35,3 +38,36 @@ def test_worktree_is_removed_even_when_a_probe_fails(monkeypatch):
     rc_code = rc.main()
     assert rc_code == 1, "gate must fail when a probe fails"
     assert removed["called"], "worktree must be removed even on probe failure"
+
+
+class _FakeMcp(http.server.BaseHTTPRequestHandler):
+    """Stands in for a stale MCP server left on PORT by a crashed prior run:
+    answers 200 on /api/mcp-models so a naive readiness poll thinks it's ready."""
+
+    def do_GET(self):
+        body = b'{"models": []}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *a):  # silence the test server
+        pass
+
+
+def test_server_refuses_when_port_is_already_in_use():
+    """If something is already serving on PORT (a leftover server from a crashed
+    run), _server() must refuse — adopting it would run the probe against the
+    wrong version and false-pass. The fix is a pre-flight port check; without it,
+    the readiness poll gets 200 from the squatter and yields a false 'ready'."""
+    squatter = http.server.HTTPServer(("127.0.0.1", rc.PORT), _FakeMcp)
+    t = threading.Thread(target=squatter.serve_forever, daemon=True)
+    t.start()
+    try:
+        with pytest.raises(SystemExit):
+            with rc._server(rc.REPO):
+                pass
+    finally:
+        squatter.shutdown()
+        squatter.server_close()

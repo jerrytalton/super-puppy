@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import os
 import shutil
+import socket
 import subprocess
 import tempfile
 import time
@@ -39,6 +40,14 @@ def _latest_tag() -> str:
 def _server(server_repo: Path):
     """Start that worktree's MCP server on PORT with a correct (FQDN-allowlisted)
     launch env, yield once /api/mcp-models answers, always tear down."""
+    # Refuse if PORT is already serving: a leftover server from a crashed prior
+    # run would answer the readiness poll, and the probe would run against THAT
+    # (wrong-version) server — a false pass, the worst outcome for the gate.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _probe:
+        if _probe.connect_ex(("127.0.0.1", PORT)) == 0:
+            raise SystemExit(
+                f"port {PORT} is already in use — a leftover compat server would "
+                f"cause a false pass; kill it before re-running the gate")
     env = {**os.environ, "MCP_AUTH_TOKEN": TOKEN, "MCP_HOST": "127.0.0.1",
            "MCP_PORT": str(PORT), "MCP_ALLOWED_HOSTS": f"{FQDN}:*",
            "OLLAMA_URL": "http://127.0.0.1:1", "MLX_URL": "http://127.0.0.1:1"}
