@@ -40,7 +40,8 @@ def _server(server_repo: Path):
     """Start that worktree's MCP server on PORT with a correct (FQDN-allowlisted)
     launch env, yield once /api/mcp-models answers, always tear down."""
     env = {**os.environ, "MCP_AUTH_TOKEN": TOKEN, "MCP_HOST": "127.0.0.1",
-           "MCP_PORT": str(PORT), "MCP_ALLOWED_HOSTS": f"{FQDN}:*"}
+           "MCP_PORT": str(PORT), "MCP_ALLOWED_HOSTS": f"{FQDN}:*",
+           "OLLAMA_URL": "http://127.0.0.1:1", "MLX_URL": "http://127.0.0.1:1"}
     stderr_f = tempfile.NamedTemporaryFile(
         mode="w+", prefix="sp-compat-srv-", suffix=".log", delete=False)
     proc = subprocess.Popen(
