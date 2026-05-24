@@ -1281,6 +1281,8 @@ class LocalModelsApp(rumps.App):
 
         # State (protected by _lock for cross-thread access)
         self._lock = threading.Lock()
+        # Serializes MCP launches; held only across _start_mcp_server.
+        self._mcp_lifecycle_lock = threading.Lock()
         self.mode = "unknown"          # server, client, offline, stopped
         self.ollama_ok = False
         self.mlx_ok = False
@@ -1510,6 +1512,20 @@ class LocalModelsApp(rumps.App):
             self._caffeinate = None
 
     def _start_mcp_server(self):
+        """Serialize MCP launches so concurrent callers (auto-update respawn,
+        Local/Remote toggles, the status refresh) can't both lsof→kill→Popen and
+        race two servers for port 8100. Non-blocking on purpose: the refresh path
+        can run on the main thread, so a start already in flight is skipped, not
+        waited on."""
+        if not self._mcp_lifecycle_lock.acquire(blocking=False):
+            logging.info("_start_mcp_server already in progress; skipping concurrent call")
+            return
+        try:
+            self._start_mcp_server_locked()
+        finally:
+            self._mcp_lifecycle_lock.release()
+
+    def _start_mcp_server_locked(self):
         """Launch the local MCP server, or point Claude Code at the desktop's."""
         if not self.desktop and not self.force_local and self.remote_reachable:
             # Remote mode: don't run a local server, point at the desktop

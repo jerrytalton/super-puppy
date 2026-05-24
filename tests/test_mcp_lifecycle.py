@@ -14,6 +14,7 @@ look broken.
 
 import sys
 import subprocess
+import threading
 import urllib.error
 from unittest.mock import MagicMock, patch
 
@@ -50,6 +51,7 @@ def _mcp_app(**overrides):
     inst._mcp_log = None
     inst.ts_hostname = ""
     inst.desktop_fqdn = ""
+    inst._mcp_lifecycle_lock = threading.Lock()
     inst.__dict__.update(overrides)
     return inst
 
@@ -171,6 +173,42 @@ class TestStartMcpServerAdoptsHealthyOrphan:
         assert (9999, menubar.signal.SIGTERM) in kill_calls, \
             "_stop_mcp_server must SIGTERM the adopted PID"
         assert app._mcp_proc_pid is None, "PID must be cleared after stop"
+
+    def test_concurrent_start_does_not_double_spawn(self):
+        """Two threads in _start_mcp_server must not both lsof→kill→Popen. The
+        auto-update respawn timer and a Local/Remote toggle can fire it at once;
+        a double spawn races two servers for port 8100 and can SIGTERM the very
+        orphan adoption exists to preserve. A non-blocking lifecycle guard makes
+        the second, concurrent entry a no-op. Simulated here by re-entering
+        _start_mcp_server from inside the first Popen call (same lock, so a plain
+        non-reentrant Lock rejects it exactly as a second thread would)."""
+        app = _mcp_app()
+        check_output = MagicMock(
+            side_effect=subprocess.CalledProcessError(1, ["lsof"]))  # no orphan
+        configure_claude = MagicMock()
+
+        popen_calls = {"n": 0}
+
+        def popen_side_effect(*a, **k):
+            popen_calls["n"] += 1
+            if popen_calls["n"] == 1:
+                app._start_mcp_server()  # concurrent entry mid-spawn
+            return MagicMock(pid=12345)
+
+        with patch("app.menubar.subprocess.check_output", check_output), \
+             patch("app.menubar.get_mcp_models", MagicMock(return_value=[])), \
+             patch("app.menubar.os.kill", MagicMock()), \
+             patch("app.menubar.os.getpid", return_value=1), \
+             patch("app.menubar.subprocess.Popen",
+                   MagicMock(side_effect=popen_side_effect)), \
+             patch("app.menubar.time.sleep", lambda *a, **k: None), \
+             patch("builtins.open", MagicMock()), \
+             patch.object(menubar.LocalModelsApp, "_configure_claude_mcp",
+                          configure_claude):
+            app._start_mcp_server()
+
+        assert popen_calls["n"] == 1, \
+            f"concurrent _start_mcp_server must not double-spawn (got {popen_calls['n']} Popen calls)"
 
     def test_no_orphan_just_spawns(self):
         """lsof returns nothing → no kill, just spawn fresh."""
