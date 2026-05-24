@@ -4,7 +4,7 @@
 
 Cloud AI providers are tightening what you can do with a subscription. Anthropic just [cut off third-party tool access](https://news.ycombinator.com/item?id=47633396) from Claude subscriptions. OpenAI has rate-limited power users before them. The pattern is clear: if your workflow depends on someone else's capacity, your workflow is at their mercy.
 
-Your Mac has a GPU that can run serious AI models — probably while it's sitting idle. Super Puppy turns it into a managed local model server: LLMs, vision, image generation, transcription, translation, text-to-speech, embeddings. Controlled from the menu bar, accessible over standard APIs, available to any tool on your network. No one can throttle it, reprice it, or take it away.
+Your Mac has a GPU that can run serious AI models — probably while it's sitting idle. Super Puppy turns it into a managed local model server: LLMs, vision, image and video generation, transcription, translation, text-to-speech, embeddings. Controlled from the menu bar, accessible over standard APIs, available to any tool on your network. No one can throttle it, reprice it, or take it away.
 
 It works as a **server** or a **client** — and every client is also a server. Install it on a beefy desktop and it serves models over Tailscale. Install it on a laptop and it auto-discovers the desktop, routing requests to the bigger machine's GPU. When the desktop is unreachable — you're on a plane, at a coffee shop, whatever — the same tools keep working against local models on the laptop itself. Your code, your scripts, your Claude Code workflows never have to care which machine is doing the work. They hit the same APIs either way; Super Puppy handles the routing.
 
@@ -106,6 +106,7 @@ If you use Claude Code, Super Puppy exposes all of its capabilities as MCP tools
 | `local_computer_use` | Plan GUI actions from a screenshot (observe only, no execution) |
 | `local_image` | Generate images locally with a diffusion model |
 | `local_image_edit` | Edit an existing image with a text prompt |
+| `local_video` | Generate video locally (Wan2.2 / LTX-2), optionally with synced audio |
 | `local_transcribe` | Audio to text |
 | `local_speak` | Text to speech with voice presets or voice cloning |
 | `local_translate` | Translate text or files |
@@ -255,7 +256,8 @@ super-puppy/
 │   ├── local-models-mcp-detect  # MCP wrapper with Tailscale discovery
 │   ├── local-models-mcp-auth    # MCP auth token management
 │   ├── tailscale-status         # Tailscale connectivity check
-│   └── post-update.sh           # Post-update hook for auto-update
+│   ├── post-update.sh           # Post-update hook for auto-update
+│   └── release.sh               # Cut a gated, signed release (see docs/RELEASING.md)
 ├── config/
 │   ├── mlx-server/              # MLX configs (high-memory + lightweight)
 │   ├── local-models/            # Network config, preferences
@@ -263,9 +265,9 @@ super-puppy/
 ├── lib/
 │   ├── models.py                # Shared model constants
 │   └── hf_scanner.py            # HuggingFace model discovery
-├── tests/                       # pytest unit + end-to-end tests
+├── tests/                       # pytest unit, e2e, and cross-version fleet-compat tests
 ├── web/                         # Marketing site
-├── docs/                        # Setup documentation
+├── docs/                        # Setup docs, RELEASING.md, and design specs/plans
 ├── install.sh                   # Interactive installer
 ├── uninstall.sh                 # Clean removal (keeps deps and models)
 └── LICENSE                      # GPLv3
