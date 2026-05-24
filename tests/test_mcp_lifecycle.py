@@ -14,6 +14,7 @@ look broken.
 
 import sys
 import subprocess
+import urllib.error
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -85,6 +86,52 @@ class TestStartMcpServerAdoptsHealthyOrphan:
         assert app._mcp_proc_pid == 9999, \
             "Adopted PID must be recorded so _stop_mcp_server can find it later"
         configure_claude.assert_called_once_with("http://127.0.0.1:8100/mcp")
+
+    def test_orphan_that_421s_on_tailscale_host_is_not_adopted(self):
+        """Healthy on localhost (/api/mcp-models returns models) but rejects the
+        Tailscale FQDN Host on /mcp with 421 'Invalid Host header' — i.e. it was
+        started without MCP_ALLOWED_HOSTS. Adopting it would 421 every
+        tailscale-serve-proxied request forever, so it must be killed and
+        respawned (fresh launch sets MCP_ALLOWED_HOSTS). The /api/mcp-models
+        probe alone can't see this: the DNS-rebinding check lives only inside
+        the /mcp transport, not the custom status routes."""
+        app = _mcp_app(ts_hostname="super-puppy",
+                       desktop_fqdn="super-puppy.tail208613.ts.net")
+        check_output = MagicMock(return_value="9999\n")
+        get_models = MagicMock(return_value=["qwen3.5"])  # healthy on localhost
+        os_kill = MagicMock()
+        popen_proc = MagicMock(pid=12345)
+        popen = MagicMock(return_value=popen_proc)
+        configure_claude = MagicMock()
+
+        def fake_urlopen(req, timeout=None):
+            host = req.get_header("Host", "")
+            if host.startswith("super-puppy.tail208613.ts.net"):
+                raise urllib.error.HTTPError(
+                    req.full_url, 421, "Invalid Host header", {}, None)
+            cm = MagicMock()
+            cm.__enter__.return_value = MagicMock(status=200)
+            cm.__exit__.return_value = False
+            return cm
+
+        with patch("app.menubar.subprocess.check_output", check_output), \
+             patch("app.menubar.get_mcp_models", get_models), \
+             patch("app.menubar.urllib.request.urlopen", side_effect=fake_urlopen), \
+             patch("app.menubar.os.kill", os_kill), \
+             patch("app.menubar.os.getpid", return_value=1), \
+             patch("app.menubar.subprocess.Popen", popen), \
+             patch("app.menubar.time.sleep", lambda *a, **k: None), \
+             patch("builtins.open", MagicMock()), \
+             patch.object(menubar.LocalModelsApp, "_get_own_fqdn",
+                          MagicMock(return_value="super-puppy.tail208613.ts.net")), \
+             patch.object(menubar.LocalModelsApp, "_configure_claude_mcp",
+                          configure_claude):
+            app._start_mcp_server()
+
+        assert any(c.args and c.args[0] == 9999 for c in os_kill.call_args_list), \
+            "Orphan that 421s on the Tailscale Host must be SIGTERM'd, not adopted"
+        popen.assert_called_once()
+        assert app._mcp_proc is popen_proc
 
     def test_unhealthy_orphan_is_killed_and_replaced(self):
         """lsof finds pid 9999, /api/mcp-models returns [] → SIGTERM, then spawn."""
