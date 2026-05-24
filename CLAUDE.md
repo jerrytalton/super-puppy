@@ -145,3 +145,4 @@ Smoke tests intentionally **do not mock** `requests`/`subprocess` — they're th
 - The compiled binary and .icns icon in `SuperPuppy.app` are gitignored — `install.sh` builds them. Only the C source (`app/super-puppy.c`) and Info.plist are tracked.
 - If you change `app/super-puppy.c`, re-run `install.sh` or manually: `cc -o app/SuperPuppy.app/Contents/MacOS/super-puppy app/super-puppy.c && codesign --sign - --force app/SuperPuppy.app`.
 - Run tests before pushing: `uv run --with pytest pytest tests/ -v`
+- Cut releases with `bin/release.sh vX.Y.Z` (never a bare `git tag`); it gates on the suite + the fleet cross-version compat check before pushing. See `docs/RELEASING.md`.
