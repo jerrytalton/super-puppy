@@ -14,14 +14,18 @@ bin/release.sh v1.0.22 --dry-run  # everything except the push
 
 The script will refuse unless: the tree is clean, you're on `main`, `main` is
 in sync with `origin/main`, the test suite passes, and the fleet compat gate
-passes.
+passes. The suite excludes live-service e2e tests (`-m "not slow and not e2e"`)
+so `bin/release.sh` runs from any clean checkout; verifying a live stack is
+healthy is a separate concern.
 
 ## The fleet compat gate
 
 `tests/fleet/run_compat.py` worktrees the previous tag and checks both
 directions of version skew using `tests/fleet/contract_probe.py` — the
 executable definition of the cross-machine wire contract (`/mcp` auth +
-Tailscale-Host, `/api/mcp-models`, the `:8101` proxy-hop guard).
+Tailscale-Host, `/api/mcp-models`). The `:8101` proxy-hop loop guard is
+defined in `contract_probe.py` (opt-in via `--profile-base`) but is not yet
+wired into the orchestrator; exercising it is a planned follow-up.
 
 **Compatibility rule:** the wire contract is **additive-only**. Adding fields,
 endpoints, or tools is fine; changing or removing what an existing peer relies

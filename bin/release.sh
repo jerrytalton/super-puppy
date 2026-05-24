@@ -17,6 +17,10 @@ if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo "usage: bin/release.sh vX.Y.Z [--dry-run]" >&2
     exit 2
 fi
+if [ -n "$DRY_RUN" ] && [ "$DRY_RUN" != "--dry-run" ]; then
+    echo "unknown argument: '$DRY_RUN' (the only optional 2nd arg is --dry-run)" >&2
+    exit 2
+fi
 
 PREV="$(git tag --sort=-v:refname | head -1)"
 if [ -n "$PREV" ] && [ "$(printf '%s\n%s\n' "$PREV" "$VERSION" | sort -V | tail -1)" != "$VERSION" ]; then
@@ -37,7 +41,7 @@ git fetch --quiet origin
 
 echo "== test suite =="
 uv run --with pytest --with flask --with pyyaml --with requests --with mlx-audio \
-    pytest tests/ -q -m "not slow"
+    pytest tests/ -q -m "not slow and not e2e"
 
 echo "== fleet compat gate (vs $PREV) =="
 uv run tests/fleet/run_compat.py
