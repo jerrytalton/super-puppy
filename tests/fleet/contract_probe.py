@@ -57,8 +57,53 @@ def check_mcp_fqdn_host(base, token, host_header):
             f"body={body[:160]!r}")
 
 
+def _get(base, path, token=None, host_header=None, timeout=15):
+    req = urllib.request.Request(f"{base}{path}")
+    if host_header:
+        req.add_header("Host", host_header)
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+
+
+def check_mcp_initialize_session(base, token, host_header):
+    """initialize returns 200 and an mcp-session-id header (session contract)."""
+    status, headers, body = _post(base, "/mcp", token, host_header, _INIT)
+    if status != 200:
+        raise ContractFailure(f"/mcp initialize expected 200, got {status}")
+    if not headers.get("mcp-session-id"):
+        raise ContractFailure("/mcp initialize response missing mcp-session-id header")
+
+
+def check_mcp_requires_auth(base, host_header):
+    """No bearer token → 403 before anything else (auth contract)."""
+    status, _, _ = _post(base, "/mcp", None, host_header, _INIT)
+    if status != 403:
+        raise ContractFailure(f"/mcp without auth expected 403, got {status}")
+
+
+def check_mcp_models_shape(base):
+    """/api/mcp-models is reachable, auth-exempt, and returns {'models': [...]}."""
+    status, body = _get(base, "/api/mcp-models")
+    if status != 200:
+        raise ContractFailure(f"/api/mcp-models expected 200, got {status}")
+    try:
+        data = json.loads(body)
+    except ValueError:
+        raise ContractFailure(f"/api/mcp-models returned non-JSON: {body[:160]!r}")
+    if not isinstance(data.get("models"), list):
+        raise ContractFailure(f"/api/mcp-models missing list 'models': {data!r}")
+
+
 CHECKS = [
     ("mcp_fqdn_host", lambda a: check_mcp_fqdn_host(a.base, a.token, a.host_header)),
+    ("mcp_initialize_session", lambda a: check_mcp_initialize_session(a.base, a.token, a.host_header)),
+    ("mcp_requires_auth", lambda a: check_mcp_requires_auth(a.base, a.host_header)),
+    ("mcp_models_shape", lambda a: check_mcp_models_shape(a.base)),
 ]
 
 
