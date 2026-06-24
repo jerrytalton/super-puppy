@@ -4,6 +4,54 @@ Operational issues observed in the wild and how to fix them. Each entry is dated
 
 ---
 
+## Install finished but Ollama / MLX never got installed (no models)
+
+**2026-06-24 — install.sh.**
+
+After `./install.sh`, the menu bar app is running and `~/.config/local-models/` is populated, but `command -v ollama` / `mlx-openai-server` come back empty and no models were pulled.
+
+Cause: `install.sh` runs under `set -euo pipefail`. The dependency-install block (`brew install ollama`, `uv tool install mlx-openai-server`) sits near the end, and it used to `exit 1` the instant any runtime was missing — *before* the model-pull step. A single flaky `brew`/`uv` download therefore aborted the whole installer, leaving a half-installed state. Because the menu bar app is kept alive by launchd from a prior run, everything *looked* fine.
+
+**Diagnose:**
+
+```bash
+for b in ollama mlx-openai-server uv; do printf '%-20s' "$b:"; command -v "$b" || echo MISSING; done
+```
+
+**Fix:** the installer now reports missing runtimes loudly and finishes instead of aborting, and re-prints the punch-list as its last output. Install whatever it lists, then re-run — `install.sh` is idempotent:
+
+```bash
+brew install ollama
+uv tool install --python 3.12 mlx-openai-server
+./install.sh           # re-runs cleanly; pulls models for your profile
+```
+
+---
+
+## Installer pulled zero models / `OLLAMA_MODELS[@]: unbound variable`
+
+**2026-06-24 — install.sh.**
+
+The installer printed `Pulling models for '<profile>' profile...`, then either hung silently for 30s or crashed with `line NNN: OLLAMA_MODELS[@]: unbound variable`.
+
+Root cause was a cascade. `install.sh` derived its model list from `~/.config/local-models/profiles.json`, which is seeded from `DEFAULT_PROFILES`. That file was only ever written by the **profile server**, which the menu bar app starts **only when remote access is enabled** (`if self.desktop and self.remote_access_enabled` in `menubar.py`). A fresh install with remote access off therefore never got `profiles.json`. The installer waited 30s **silently** (no progress), then `OLLAMA_MODELS` stayed empty and `"${OLLAMA_MODELS[@]}"` aborted under `set -u` on bash 3.2 (macOS default), where expanding an empty array is an "unbound variable" error. A stale `menubar.lock` (dead PID) blocking the app from starting made it worse.
+
+**Fixes:**
+- `DEFAULT_PROFILES`/`PROFILES_VERSION` moved to `lib/models.py` (shared).
+- Menu bar app seeds `profiles.json` on startup via `seed_profiles_if_missing()`, regardless of remote access.
+- `install.sh` seeds `profiles.json` directly from `lib.models` before pulling, so it no longer races the app; the leftover wait is a fallback and now shows a countdown.
+- All empty-array expansions guarded for bash 3.2 + `set -u`.
+
+**If you hit the stale-lock symptom** (`Already running (pid NNNN). Exiting.` looping in `/tmp/local-models-menubar.log` with that PID dead):
+
+```bash
+rm -f ~/.config/local-models/menubar.lock
+launchctl unload ~/Library/LaunchAgents/com.local-models.menubar.plist
+launchctl load   ~/Library/LaunchAgents/com.local-models.menubar.plist
+```
+
+---
+
 ## Ollama MLX image runner: `libmlxc.dylib not found`
 
 **2026-04-16 — Ollama 0.20.7, M3 Ultra.**
