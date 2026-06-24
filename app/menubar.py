@@ -478,7 +478,7 @@ from lib.models import (
     STANDARD_TASKS, SPECIAL_TASKS, TASK_FILTERS, KNOWN_ACTIVE_PARAMS,
     ALWAYS_EXCLUDE, active_params_b, model_matches_filter,
     MCP_PREFS_FILE as _MCP_PREFS_PATH, CLAUDE_CONFIG_FILE,
-    validate_network_conf,
+    validate_network_conf, DEFAULT_PROFILES,
 )
 MCP_PREFS_FILE = str(_MCP_PREFS_PATH)
 
@@ -724,6 +724,20 @@ def save_profiles(data):
     os.makedirs(os.path.dirname(PROFILES_FILE), exist_ok=True)
     with open(PROFILES_FILE, "w") as f:
         json.dump(data, f, indent=2)
+
+
+def seed_profiles_if_missing():
+    """Write the preset profiles if profiles.json is absent or has no profiles.
+
+    The profile server normally owns this file, but it only starts when remote
+    access is enabled — so a fresh install with remote access off would
+    otherwise never have it, and the installer's model-pull step would resolve
+    zero models. Returns True if seeding occurred.
+    """
+    if load_profiles().get("profiles"):
+        return False
+    save_profiles({**DEFAULT_PROFILES})
+    return True
 
 
 def pick_profile_for_ram(ram_gb, profiles):
@@ -1457,7 +1471,15 @@ class LocalModelsApp(rumps.App):
             self._start_tailscale_serve()
 
     def _ensure_active_profile(self):
-        """Make sure a valid profile is active on startup."""
+        """Make sure a valid profile is active on startup.
+
+        Seeds the preset profiles if profiles.json is missing or empty. The
+        profile server normally owns profiles.json, but it only starts when
+        remote access is enabled — so a fresh install with remote access off
+        would otherwise never have the file, and the installer's model-pull
+        step would resolve zero models.
+        """
+        seed_profiles_if_missing()
         data = load_profiles()
         active = data.get("active")
         profiles = data.get("profiles", {})

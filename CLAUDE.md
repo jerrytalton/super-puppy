@@ -99,6 +99,7 @@ Qwen3.5 models (served via MLX) ARE vision-capable. The MCP server must detect t
 Single source of truth for constants and logic used by menubar, MCP server, and profile server:
 - `KNOWN_ACTIVE_PARAMS` — MoE active parameter lookup table
 - `STANDARD_TASKS`, `SPECIAL_TASKS`, `TASK_FILTERS` — task definitions and model filtering
+- `DEFAULT_PROFILES`, `PROFILES_VERSION` — preset profile definitions (task→model maps). Seeded by the menu bar app on startup (`seed_profiles_if_missing()`), migrated/served by the profile server, and read by `install.sh` to know which models to pull. Bump `PROFILES_VERSION` to force-refresh presets on all machines.
 - `active_params_b()` — 4-strategy MoE active parameter computation (AXB parse → known table → FFN subtraction → ratio fallback)
 - `model_matches_filter()` — check if a model qualifies for a task
 - Config path constants (`PROFILES_FILE`, `MCP_PREFS_FILE`, `CLAUDE_CONFIG_FILE`, etc.)

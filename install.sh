@@ -559,7 +559,8 @@ fi
 
 if ! command -v mlx-openai-server > /dev/null; then
     echo "  Installing mlx-openai-server..."
-    uv tool install --python 3.12 mlx-openai-server
+    uv tool install --python 3.12 mlx-openai-server \
+        || echo "  Warning: mlx-openai-server install failed (MLX models will be unavailable)"
 fi
 
 # mflux for image generation/editing (optional, needs 32GB+ RAM)
@@ -579,16 +580,35 @@ if ! command -v ffmpeg > /dev/null; then
     fi
 fi
 
-missing=()
-command -v uv > /dev/null || missing+=("uv")
-command -v ollama > /dev/null || missing+=("ollama")
-command -v mlx-openai-server > /dev/null || missing+=("mlx-openai-server")
+# Record any runtimes that failed to install. We do NOT abort here: one
+# failed runtime (e.g. a flaky brew download) must not leave the install
+# half-finished with no menu bar app and no signal. Instead we report loudly,
+# remember what's missing, and finish — the user gets a running app plus an
+# actionable punch-list, and re-running install.sh is idempotent.
+MISSING_RUNTIMES=()
+command -v uv > /dev/null || MISSING_RUNTIMES+=("uv")
+command -v ollama > /dev/null || MISSING_RUNTIMES+=("ollama")
+command -v mlx-openai-server > /dev/null || MISSING_RUNTIMES+=("mlx-openai-server")
 
-if [ ${#missing[@]} -eq 0 ]; then
+remediation_for() {
+    case "$1" in
+        ollama)            echo "brew install ollama" ;;
+        mlx-openai-server) echo "uv tool install --python 3.12 mlx-openai-server" ;;
+        uv)                echo "curl -LsSf https://astral.sh/uv/install.sh | sh" ;;
+        *)                 echo "(see https://github.com/jerrytalton/super-puppy)" ;;
+    esac
+}
+
+if [ ${#MISSING_RUNTIMES[@]} -eq 0 ]; then
     echo "  All dependencies installed."
 else
-    echo "  ERROR: Failed to install: ${missing[*]}"
-    exit 1
+    echo ""
+    echo "  ⚠  WARNING: some runtimes did not install: ${MISSING_RUNTIMES[*]}"
+    echo "     Super Puppy will still start, but tools needing these won't work"
+    echo "     until you install them and re-run install.sh:"
+    for dep in "${MISSING_RUNTIMES[@]}"; do
+        printf '       %-18s → %s\n' "$dep" "$(remediation_for "$dep")"
+    done
 fi
 
 # Start the menu bar app
@@ -668,12 +688,31 @@ else
     # Models with neither (e.g. "qwen3.5-fast") are MLX served names, already
     # covered by the MLX config parse above.
     #
-    # Wait for profiles.json — the menu bar app (started above) writes it on launch.
+    # Ensure profiles.json exists. Seed the presets directly from lib.models so
+    # the model list never depends on the menu bar app having started: the
+    # profile server normally owns this file, but it only runs when remote
+    # access is enabled, so a fresh install would otherwise have no profiles.
     OLLAMA_MODELS=()
-    for i in $(seq 1 30); do
-        [ -f "$PROFILES_FILE" ] && break
-        sleep 1
-    done
+    if [ ! -f "$PROFILES_FILE" ]; then
+        echo "  Seeding default model profiles..."
+        python3 -c '
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from lib.models import DEFAULT_PROFILES, PROFILES_FILE
+PROFILES_FILE.parent.mkdir(parents=True, exist_ok=True)
+PROFILES_FILE.write_text(json.dumps(DEFAULT_PROFILES, indent=2))
+' "$REPO_DIR" 2>/dev/null || true
+    fi
+    # Fallback: if seeding failed, give the menu bar app a chance to write it.
+    if [ ! -f "$PROFILES_FILE" ]; then
+        printf "  Waiting up to 30s for the menu bar app to publish model profiles"
+        for i in $(seq 1 30); do
+            [ -f "$PROFILES_FILE" ] && break
+            printf "."
+            sleep 1
+        done
+        printf "\n"
+    fi
     if [ -f "$PROFILES_FILE" ]; then
         while IFS= read -r model; do
             HF_MODELS+=("$model")
@@ -703,23 +742,35 @@ for model in profile.get('tasks', {}).values():
         echo "  WARNING: profiles.json not found after 30s — pulling MLX models only"
     fi
 
-    # Deduplicate HF_MODELS
-    HF_MODELS=($(printf '%s\n' "${HF_MODELS[@]}" | awk '!seen[$0]++'))
+    # Deduplicate HF_MODELS. Guard the expansion: on bash 3.2 (macOS default),
+    # "${arr[@]}" on an empty array aborts under `set -u`.
+    if [ ${#HF_MODELS[@]} -gt 0 ]; then
+        HF_MODELS=($(printf '%s\n' "${HF_MODELS[@]}" | awk '!seen[$0]++'))
+    fi
 
-    total=${#OLLAMA_MODELS[@]}
-    current=0
-    for model in "${OLLAMA_MODELS[@]}"; do
-        current=$((current + 1))
-        echo "  [$current/$total] ollama: $model"
-        ollama pull "$model"
-    done
+    if [ ${#OLLAMA_MODELS[@]} -eq 0 ]; then
+        echo "  No Ollama models resolved for the '$PROFILE_NAME' profile"
+        echo "  (the menu bar app never published profiles.json — see warning above)."
+    elif ! command -v ollama > /dev/null; then
+        echo "  Skipping Ollama model pulls — ollama is not installed."
+    else
+        total=${#OLLAMA_MODELS[@]}
+        current=0
+        for model in "${OLLAMA_MODELS[@]}"; do
+            current=$((current + 1))
+            echo "  [$current/$total] ollama: $model"
+            ollama pull "$model" || echo "    WARNING: failed to pull $model"
+        done
+    fi
 
     # Download HuggingFace models
     if ! command -v hf > /dev/null; then
         echo "  Installing hf..."
         brew install hf 2>/dev/null || true
     fi
-    if command -v hf > /dev/null; then
+    if [ ${#HF_MODELS[@]} -eq 0 ]; then
+        echo "  No HuggingFace/MLX models to download for the '$PROFILE_NAME' profile."
+    elif command -v hf > /dev/null; then
         total=${#HF_MODELS[@]}
         current=0
         for model in "${HF_MODELS[@]}"; do
@@ -745,3 +796,12 @@ echo ""
 echo "Done! Next steps:"
 echo "  1. start-local-models           # start servers"
 echo "  2. claude                        # start coding (local-models MCP auto-connects)"
+
+if [ ${#MISSING_RUNTIMES[@]} -ne 0 ]; then
+    echo ""
+    echo "  ⚠  Install incomplete — these runtimes are still missing:"
+    for dep in "${MISSING_RUNTIMES[@]}"; do
+        printf '       %-18s → %s\n' "$dep" "$(remediation_for "$dep")"
+    done
+    echo "     Install them, then re-run ./install.sh to finish setup."
+fi

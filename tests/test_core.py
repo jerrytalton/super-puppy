@@ -418,3 +418,45 @@ class TestVideoTask:
         classify = self._real_classify_model()
         config = {}
         assert classify(config, "Wan2.1-T2V-1.3B") == "video"
+
+
+class TestDefaultProfilesSeeding:
+    """The installer and the menu bar app both seed profiles.json from
+    DEFAULT_PROFILES (the profile server only runs when remote access is on).
+    These guard the shared data contract and the menu bar seed path."""
+
+    def test_every_preset_resolves_pullable_models(self):
+        """Each preset must yield at least one Ollama (':') or HuggingFace
+        ('/' without ':') model — otherwise the installer's model-pull step
+        would silently resolve nothing for that profile."""
+        for name, prof in menubar.DEFAULT_PROFILES["profiles"].items():
+            tasks = prof.get("tasks", {})
+            assert tasks, f"profile {name} has no tasks"
+            pullable = [m for m in tasks.values()
+                        if ":" in m or ("/" in m and ":" not in m)]
+            assert pullable, f"profile {name} resolves no pullable models"
+
+    def test_seed_writes_presets_when_missing(self, tmp_path):
+        """A fresh machine with no profiles.json gets the presets seeded, so
+        the installer can resolve models even with the profile server down.
+        This is the regression guard for the install bug."""
+        prof_path = tmp_path / "profiles.json"
+        with patch.object(menubar, "PROFILES_FILE", str(prof_path)):
+            assert not prof_path.exists()
+            assert menubar.seed_profiles_if_missing() is True
+            seeded = json.loads(prof_path.read_text())
+        assert set(seeded["profiles"]) == set(menubar.DEFAULT_PROFILES["profiles"])
+        assert seeded["active"] == menubar.DEFAULT_PROFILES["active"]
+
+    def test_seed_leaves_existing_profiles_untouched(self, tmp_path):
+        """If profiles.json already has profiles, seeding must be a no-op and
+        not clobber them with the presets."""
+        prof_path = tmp_path / "profiles.json"
+        custom = {"active": "mine",
+                  "profiles": {"mine": {"label": "Mine", "max_ram_gb": 16,
+                                        "tasks": {"code": "custom:7b"}}}}
+        prof_path.write_text(json.dumps(custom))
+        with patch.object(menubar, "PROFILES_FILE", str(prof_path)):
+            assert menubar.seed_profiles_if_missing() is False
+            result = json.loads(prof_path.read_text())
+        assert result == custom

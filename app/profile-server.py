@@ -41,6 +41,7 @@ from lib.hf_scanner import (
 )
 from lib.models import (
     ALWAYS_EXCLUDE,
+    DEFAULT_PROFILES,
     DOWNLOAD_ON_DEMAND_TASKS,
     HF_TASK_BACKENDS as _HF_TASK_BACKENDS,
     KNOWN_ACTIVE_PARAMS,
@@ -48,6 +49,7 @@ from lib.models import (
     MLX_SERVER_CONFIG,
     NETWORK_CONF,
     PROFILES_FILE,
+    PROFILES_VERSION,
     SPECIAL_TASKS,
     STANDARD_TASKS,
     TASK_FILTERS,
@@ -1224,98 +1226,6 @@ def get_eligible_tasks(name, model_info):
 
 
 # ── Profiles ─────────────────────────────────────────────────────────
-
-PROFILES_VERSION = 24  # bump to force-refresh preset profiles on all machines
-
-DEFAULT_PROFILES = {
-    "version": PROFILES_VERSION,
-    "active": "everyday",
-    "profiles": {
-        "everyday": {
-            "label": "Everyday",
-            "description": "Best balance for high-memory machines (256GB+)",
-            "max_ram_gb": 512,
-            "tasks": {
-                "code": "qwen3.6:27b-coding-bf16",
-                "general": "qwen3.6-35b-bf16",
-                "reasoning": "qwen3.6-35b-bf16",
-                "long_context": "qwen3.6-35b-bf16",
-                "translation": "qwen3.6-35b-bf16",
-                "vision": "qwen3.5:122b",
-                "image_gen": "x/z-image-turbo:bf16",
-                "image_edit": "black-forest-labs/FLUX.1-Kontext-dev",
-                "transcription": "whisper-v3",
-                "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
-                "embedding": "qwen3-embedding:8b",
-                "unfiltered": "dolphin3:8b",
-                "computer_use": "holo3-35b",
-                "video": "AITRADER/Wan2.2-T2V-A14B-mlx-bf16",
-            },
-        },
-        "desktop": {
-            "label": "Desktop",
-            "description": "Fits in 64GB",
-            "max_ram_gb": 64,
-            "tasks": {
-                "code": "qwen3.6:27b",
-                "general": "qwen3.6:27b",
-                "reasoning": "qwen3.6:27b",
-                "long_context": "qwen3.6:27b",
-                "translation": "qwen3.6:27b",
-                "vision": "qwen3.6:27b",
-                "image_gen": "x/flux2-klein:latest",
-                "transcription": "whisper-v3",
-                "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
-                "embedding": "qwen3-embedding:8b",
-                "unfiltered": "dolphin3:8b",
-                "computer_use": "maternion/fara:7b",
-            },
-        },
-        "maximum": {
-            "label": "Heavyweight",
-            "description": "Frontier-tier reasoning and long context, at the cost of throughput",
-            "max_ram_gb": 0,
-            "tasks": {
-                "code": "qwen3.6:27b-coding-bf16",
-                "general": "qwen3.5-397b-8bit",
-                "reasoning": "qwen3.5-397b-8bit",
-                "long_context": "qwen3.5-397b-8bit",
-                "translation": "qwen3.6-35b-bf16",
-                "vision": "qwen3.5:122b",
-                "image_gen": "x/z-image-turbo:bf16",
-                "image_edit": "black-forest-labs/FLUX.1-Kontext-dev",
-                "transcription": "whisper-v3",
-                "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
-                "embedding": "qwen3-embedding:8b",
-                "unfiltered": "dolphin3:8b",
-                "computer_use": "holo3-35b",
-                "video": "AITRADER/Wan2.2-T2V-A14B-mlx-bf16",
-            },
-        },
-        "laptop": {
-            "label": "Laptop",
-            "description": "Fits in 32GB",
-            "max_ram_gb": 32,
-            "tasks": {
-                # unfiltered (dolphin3:8b, ~6GB) and computer_use (fara:7b,
-                # ~7GB) dropped: including them pushed the static-weights sum
-                # past the 32GB cap by ~8GB. Both specialists are more useful
-                # on the desktop/everyday tiers where RAM actually allows.
-                "code": "qwen3.6:27b",
-                "general": "qwen3.6:27b",
-                "reasoning": "qwen3.6:27b",
-                "long_context": "qwen3.6:27b",
-                "translation": "qwen3.6:27b",
-                "vision": "qwen3.6:27b",
-                "image_gen": "x/flux2-klein:latest",
-                "transcription": "whisper-v3",
-                "tts": "mlx-community/Kokoro-82M-bf16",
-                "embedding": "nomic-embed-text:latest",
-            },
-        },
-    },
-}
-
 
 def load_profiles():
     if PROFILES_FILE.exists():
