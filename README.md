@@ -197,6 +197,15 @@ The installer handles core dependencies (uv, Ollama, MLX). These optional tools 
 
 The installer installs both automatically on machines with 32GB+ RAM and Homebrew available. If you skipped them or installed Super Puppy before this was added, install manually with the commands above.
 
+### HuggingFace authentication
+
+Before downloading models, the installer ensures you're authenticated to HuggingFace — some repos are gated (e.g. FLUX) and auth also avoids anonymous rate limits. Resolution order:
+
+1. An existing `hf auth login` → used as-is.
+2. The standard `HF_TOKEN` environment variable → logged in non-interactively (CI / `curl` installs).
+3. An interactive terminal → prompts you to log in once (`hf auth login`).
+4. Otherwise (non-interactive, no token) → warns and downloads anonymously; gated repos will 401.
+
 ## Network Transparency
 
 All inference runs locally — model input and output never leave your machine. However, Super Puppy does make network calls in these cases:
