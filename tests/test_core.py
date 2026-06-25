@@ -499,3 +499,28 @@ class TestDefaultProfilesSeeding:
     def test_pick_profile_fallback_is_32gb(self):
         # no profile fits 8GB and none named in fallback set except presets
         assert menubar.pick_profile_for_ram(8, menubar.DEFAULT_PROFILES["profiles"]) == "32gb"
+
+    def test_every_preset_has_valid_warm_keys(self):
+        for name, prof in menubar.DEFAULT_PROFILES["profiles"].items():
+            warm = prof.get("warm")
+            assert warm == ["general", "embedding"], f"{name} warm={warm}"
+            for key in warm:
+                assert key in prof["tasks"], f"{name} warm key {key} not in tasks"
+
+    def test_warm_model_names_resolves_active(self):
+        from lib.models import warm_model_names, DEFAULT_PROFILES
+        data = {"active": "128gb", "profiles": DEFAULT_PROFILES["profiles"]}
+        names = warm_model_names(data)
+        tasks = DEFAULT_PROFILES["profiles"]["128gb"]["tasks"]
+        assert names == {tasks["general"], tasks["embedding"]}
+
+    def test_warm_model_names_no_active(self):
+        from lib.models import warm_model_names
+        assert warm_model_names({"active": None, "profiles": {}}) == set()
+
+    def test_migrate_adds_warm_to_presets_custom_absent(self):
+        from lib.models import migrate_profiles
+        out = migrate_profiles({"version": 26, "active": "64gb",
+                                "profiles": {"mine": {"max_ram_gb": 8, "tasks": {"code": "c:1b"}}}})
+        assert out["profiles"]["64gb"]["warm"] == ["general", "embedding"]
+        assert "warm" not in out["profiles"]["mine"]   # custom untouched; absent ⇒ on-demand
