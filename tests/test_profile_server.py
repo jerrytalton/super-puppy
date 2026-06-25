@@ -467,7 +467,8 @@ class TestRoutes:
         assert payload["model"] == "qwen3:8b"
         assert payload["messages"] == [{"role": "user", "content": "say hi"}]
         assert payload["stream"] is False
-        assert payload["keep_alive"] == "30m"
+        # qwen3:8b is not in the warm set for this test, so keep_alive is short
+        assert payload["keep_alive"] == "30s"
 
     def test_api_test_override_round_trip(self, client):
         """Override model flows all the way through to the HTTP request."""
@@ -1009,3 +1010,14 @@ class TestUploadHardening:
             # Anything left over should be small (from other tests), not the big payload
             assert p.stat().st_size <= ps._UPLOAD_MAX_BYTES, \
                 f"oversize file {p} was not cleaned up"
+
+
+class TestKeepAliveFor:
+    """keep_alive_for returns long keep_alive for warm models, short otherwise."""
+
+    def test_keep_alive_for_warm_vs_on_demand(self):
+        prof = {"warm": ["general"], "tasks": {"general": "w:bf16", "code": "c:bf16"}}
+        with patch.object(ps, "load_profiles", return_value={"active": "t", "profiles": {"t": prof}}):
+            assert ps.keep_alive_for("w:bf16") == "30m"
+            assert ps.keep_alive_for("c:bf16") == "30s"
+            assert ps.keep_alive_for("unknown:1b") == "30s"
