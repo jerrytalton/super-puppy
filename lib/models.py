@@ -392,8 +392,16 @@ TASK_FILTERS: dict[str, dict[str, Any]] = {
 # Single source of truth for preset profiles. Consumed by profile-server
 # (serves/migrates them), the menu bar app (seeds them on startup), and
 # install.sh (seeds them before pulling models, via lib.models).
+#
+# qwen3.6 tasks use Ollama's MLX tags (-mlx / -mxfp8) where RAM allows: on
+# Apple Silicon the MLX backend is ~20-40% faster than GGUF. Tradeoff verified
+# 2026-06-24: MLX honors `think:false` but NOT Ollama `format` JSON-schema
+# (grammar-constrained decoding is llama.cpp-only). The MCP server returns free
+# text and doesn't use `format`, so this is safe here; custom agent loops that
+# need schema-constrained output should pin a GGUF tag. Laptop stays GGUF (32GB
+# is the MLX floor with no headroom); maximum code stays bf16 (quality > speed).
 
-PROFILES_VERSION = 24  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 25  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -404,7 +412,7 @@ DEFAULT_PROFILES = {
             "description": "Best balance for high-memory machines (256GB+)",
             "max_ram_gb": 512,
             "tasks": {
-                "code": "qwen3.6:27b-coding-bf16",
+                "code": "qwen3.6:27b-coding-mxfp8",
                 "general": "qwen3.6-35b-bf16",
                 "reasoning": "qwen3.6-35b-bf16",
                 "long_context": "qwen3.6-35b-bf16",
@@ -425,12 +433,12 @@ DEFAULT_PROFILES = {
             "description": "Fits in 64GB",
             "max_ram_gb": 64,
             "tasks": {
-                "code": "qwen3.6:27b",
-                "general": "qwen3.6:27b",
-                "reasoning": "qwen3.6:27b",
-                "long_context": "qwen3.6:27b",
-                "translation": "qwen3.6:27b",
-                "vision": "qwen3.6:27b",
+                "code": "qwen3.6:27b-mlx",
+                "general": "qwen3.6:27b-mlx",
+                "reasoning": "qwen3.6:27b-mlx",
+                "long_context": "qwen3.6:27b-mlx",
+                "translation": "qwen3.6:27b-mlx",
+                "vision": "qwen3.6:27b-mlx",
                 "image_gen": "x/flux2-klein:latest",
                 "transcription": "whisper-v3",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
