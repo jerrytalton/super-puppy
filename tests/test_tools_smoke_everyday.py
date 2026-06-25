@@ -23,19 +23,19 @@ require_local_services()
 
 
 EVERYDAY = {
-    "code":          "qwen3.6:27b-coding-mxfp8",
-    "general":       "qwen3.6-35b-bf16",
-    "reasoning":     "qwen3.6-35b-bf16",
-    "long_context":  "qwen3.6-35b-bf16",
-    "translation":   "qwen3.6-35b-bf16",
+    "code":          "qwen3-coder-next:latest",
+    "general":       "glm-5.2",
+    "reasoning":     "glm-5.2",
+    "long_context":  "glm-5.2",
+    "translation":   "glm-5.2",
     "vision":        "qwen3.5:122b",
-    "image_gen":     "x/z-image-turbo:bf16",
-    "image_edit":    "black-forest-labs/FLUX.1-Kontext-dev",
-    "transcription": "whisper-v3",
-    "tts":           "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
+    "transcription": "whisper-v3-turbo",
+    "tts":           "mlx-community/fishaudio-s2-pro-8bit-mlx",
     "embedding":     "qwen3-embedding:8b",
     "unfiltered":    "dolphin3:8b",
-    "computer_use":  "ui-tars-72b",
+    "computer_use":  "ui-venus",
+    "image_gen":     "x/z-image-turbo:bf16",
+    "image_edit":    "black-forest-labs/FLUX.1-Kontext-dev",
     "video":         "AITRADER/Wan2.2-T2V-A14B-mlx-bf16",
 }
 
