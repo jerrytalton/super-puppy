@@ -29,17 +29,17 @@ pytestmark = pytest.mark.smoke
 
 
 LAPTOP = {
-    "code":          "qwen3.6:27b",
-    "general":       "qwen3.6:27b",
-    "reasoning":     "qwen3.6:27b",
-    "long_context":  "qwen3.6:27b",
-    "translation":   "qwen3.6:27b",
-    "vision":        "qwen3.6:27b",
-    "image_gen":     "x/flux2-klein:latest",
-    "transcription": "whisper-v3",
+    "code":          "qwen3.5-small",
+    "general":       "qwen3.5-small",
+    "reasoning":     "qwen3.5-small",
+    "long_context":  "qwen3.5-small",
+    "translation":   "qwen3.5-small",
+    "vision":        "qwen3.5-small",
+    "transcription": "whisper-v3-turbo",
     "tts":           "mlx-community/Kokoro-82M-bf16",
-    "embedding":     "nomic-embed-text:latest",
-    # unfiltered and computer_use intentionally absent — see DEFAULT_PROFILES.
+    "embedding":     "embeddinggemma:300m",
+    "image_gen":     "x/flux2-klein:latest",
+    # unfiltered, computer_use, image_edit, video intentionally absent — see DEFAULT_PROFILES.
     # Cases parametrized against missing keys skip cleanly via run_fixture_case.
 }
 
