@@ -460,3 +460,27 @@ class TestDefaultProfilesSeeding:
             assert menubar.seed_profiles_if_missing() is False
             result = json.loads(prof_path.read_text())
         assert result == custom
+
+    def test_tiers_present_and_capped(self):
+        profs = menubar.DEFAULT_PROFILES["profiles"]
+        assert set(profs) == {"32gb", "64gb", "128gb", "512gb"}
+        assert [profs[k]["max_ram_gb"] for k in ("32gb", "64gb", "128gb", "512gb")] == [32, 64, 128, 512]
+        assert menubar.DEFAULT_PROFILES["active"] == "64gb"
+
+    def test_migrate_drops_retired_presets_and_fixes_active(self):
+        from lib.models import migrate_profiles, PROFILES_VERSION
+        old = {"version": 25, "active": "everyday",
+               "profiles": {"everyday": {"tasks": {"code": "x:1b"}},
+                            "mine": {"label": "Mine", "max_ram_gb": 16, "tasks": {"code": "c:1b"}}}}
+        out = migrate_profiles(old)
+        assert out["version"] == PROFILES_VERSION
+        assert "everyday" not in out["profiles"]          # retired preset dropped
+        assert "mine" in out["profiles"]                  # real custom kept
+        assert set(out["profiles"]) >= {"32gb", "64gb", "128gb", "512gb"}
+        assert out["active"] in out["profiles"]           # active repaired (was "everyday")
+
+    def test_migrate_preserves_valid_active(self):
+        from lib.models import migrate_profiles
+        out = migrate_profiles({"version": 25, "active": "mine",
+                                "profiles": {"mine": {"max_ram_gb": 8, "tasks": {}}}})
+        assert out["active"] == "mine"
