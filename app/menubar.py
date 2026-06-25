@@ -478,7 +478,7 @@ from lib.models import (
     STANDARD_TASKS, SPECIAL_TASKS, TASK_FILTERS, KNOWN_ACTIVE_PARAMS,
     ALWAYS_EXCLUDE, active_params_b, model_matches_filter,
     MCP_PREFS_FILE as _MCP_PREFS_PATH, CLAUDE_CONFIG_FILE,
-    validate_network_conf, DEFAULT_PROFILES,
+    validate_network_conf, DEFAULT_PROFILES, PROFILES_VERSION, migrate_profiles,
 )
 MCP_PREFS_FILE = str(_MCP_PREFS_PATH)
 
@@ -727,17 +727,21 @@ def save_profiles(data):
 
 
 def seed_profiles_if_missing():
-    """Write the preset profiles if profiles.json is absent or has no profiles.
+    """Seed presets if profiles.json is absent/empty, or migrate a stale version.
 
     The profile server normally owns this file, but it only starts when remote
-    access is enabled — so a fresh install with remote access off would
-    otherwise never have it, and the installer's model-pull step would resolve
-    zero models. Returns True if seeding occurred.
+    access is enabled — so on a non-server machine the menu bar must seed and
+    migrate, or the installer's model-pull resolves nothing / stale models.
+    Returns True if it wrote.
     """
-    if load_profiles().get("profiles"):
-        return False
-    save_profiles({**DEFAULT_PROFILES})
-    return True
+    data = load_profiles()
+    if not data.get("profiles"):
+        save_profiles({**DEFAULT_PROFILES})
+        return True
+    if data.get("version") != PROFILES_VERSION:
+        save_profiles(migrate_profiles(data))
+        return True
+    return False
 
 
 def pick_profile_for_ram(ram_gb, profiles):
@@ -754,7 +758,7 @@ def pick_profile_for_ram(ram_gb, profiles):
     if candidates:
         candidates.sort(reverse=True)
         return candidates[0][1]
-    return "laptop" if "laptop" in profiles else next(iter(profiles), None)
+    return "32gb" if "32gb" in profiles else next(iter(profiles), None)
 
 
 def save_mcp_prefs(prefs):
