@@ -54,6 +54,7 @@ from lib.models import (
     STANDARD_TASKS,
     TASK_FILTERS,
     THINK_CAPABLE_TASKS,
+    WARM_BUDGET_FRACTION,
     active_params_b,
     migrate_profiles,
     mflux_command,
@@ -1810,6 +1811,57 @@ def api_profiles_warm(name):
 
     _model_cache["data"] = None
     return jsonify({"ok": True, "loaded": loaded})
+
+
+@app.route("/api/profiles/<name>/memory", methods=["GET"])
+def api_profiles_memory(name):
+    """Residency math for the memory bar: warm set vs budget, transient peak, state."""
+    proxied = _proxy_to_desktop(f"/api/profiles/{name}/memory")
+    if proxied is not None:
+        return proxied
+    data = load_profiles()
+    profile = data.get("profiles", {}).get(name)
+    if not profile:
+        return jsonify({"error": f"Profile '{name}' not found"}), 404
+
+    models = get_all_models()
+    tasks = profile.get("tasks", {})
+    warm_keys = profile.get("warm", [])
+
+    def size_of(model):
+        info = models.get(model) or {}
+        return int(info.get("vram_bytes") or info.get("disk_bytes") or 0)
+
+    warm_names = list(dict.fromkeys(tasks[k] for k in warm_keys if k in tasks))
+    warm_set = set(warm_names)
+    on_names = list(dict.fromkeys(
+        m for k, m in tasks.items() if k not in warm_keys and m not in warm_set))
+
+    def task_for(model):
+        return next((k for k, m in tasks.items() if m == model), None)
+
+    warm = [{"name": m, "task": task_for(m), "bytes": size_of(m)} for m in warm_names]
+    on_demand = [{"name": m, "task": task_for(m), "bytes": size_of(m)} for m in on_names]
+
+    cap_bytes = int(profile.get("max_ram_gb", 0)) << 30
+    budget_bytes = int(cap_bytes * WARM_BUDGET_FRACTION)
+    warm_bytes = sum(x["bytes"] for x in warm)
+    largest_on_demand = max((x["bytes"] for x in on_demand), default=0)
+    peak_bytes = warm_bytes + largest_on_demand
+
+    if warm_bytes > cap_bytes:
+        state = "thrash"
+    elif warm_bytes > budget_bytes or peak_bytes > cap_bytes:
+        state = "tight"
+    else:
+        state = "ok"
+
+    return jsonify({
+        "cap_bytes": cap_bytes, "budget_bytes": budget_bytes,
+        "warm": warm, "warm_bytes": warm_bytes,
+        "on_demand": on_demand, "largest_on_demand_bytes": largest_on_demand,
+        "peak_bytes": peak_bytes, "state": state,
+    })
 
 
 # ── Tool tester ──────────────────────────────────────────────────────
