@@ -66,6 +66,10 @@ Backend is inferred from the string (existing convention): `:` → Ollama tag; `
 1. **`lib/models.py`** — rewrite `DEFAULT_PROFILES` to the four tiers above; bump `PROFILES_VERSION`; update the explanatory comment. `active` default = a safe middle (`64gb`); the app re-selects by RAM at runtime via `pick_profile_for_ram`, whose fallback changes `laptop` → `32gb`.
 2. **MLX config** — collapse `config/mlx-server/config.yaml` + `config-laptop.yaml` into **one** config where every served model is `on_demand: true`. Add the new served-names (`whisper-v3-turbo`, `ui-venus`, `glm-5.2`). The profile, not the config, decides what's pulled/used; on-demand means a 32GB machine never loads the 397B/GLM-5.2.
 3. **`install.sh`** — update the RAM→suggested-tier mapping and the profile prompt list (`32gb 64gb 128gb 512gb skip`); drop the per-profile `MLX_CONFIG` case (one config now). The per-profile served-name → model_path resolution (already added) handles the rest.
+   - **Download only what's missing for the chosen profile.** Before pulling, check what's already present and skip it — never re-download or re-prompt for a model the machine already has:
+     - Ollama tags: present if listed by `ollama list` (match the exact tag).
+     - HF repos: present if already materialized in the HF cache (no incomplete blobs).
+     Compute the chosen profile's full model set, subtract what's present, and pull only the remainder — reporting counts ("N of M already present, pulling K"). Re-running `install.sh` on a configured machine, or switching to a profile that overlaps the current one, should download nothing it already has.
 4. **Migration** — on the `PROFILES_VERSION` jump, the profile-server `load_profiles` migration drops the old preset names (`laptop`/`desktop`/`everyday`/`maximum`) cleanly rather than preserving them as fake "custom" profiles, and resets `active` to a valid tier if it pointed at an old name.
 5. **Tests** — rename the smoke-test model maps to the new tiers; keep the contract test (every preset resolves ≥1 pullable model); add/adjust migration tests for the drop-old-presets behavior.
 
