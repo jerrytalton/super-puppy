@@ -55,6 +55,7 @@ from lib.models import (
     TASK_FILTERS,
     THINK_CAPABLE_TASKS,
     active_params_b,
+    migrate_profiles,
     mflux_command,
     mflux_is_turbo,
     model_has_vision as _model_has_vision,
@@ -1233,16 +1234,7 @@ def load_profiles():
             data = json.loads(PROFILES_FILE.read_text())
             if data.get("version", 0) == PROFILES_VERSION:
                 return data
-            # Version bump: refresh presets but preserve custom profiles
-            active = data.get("active", DEFAULT_PROFILES["active"])
-            refreshed = {**DEFAULT_PROFILES, "active": active}
-            old_profiles = data.get("profiles", {})
-            for name, profile in old_profiles.items():
-                if name not in DEFAULT_PROFILES["profiles"]:
-                    refreshed["profiles"][name] = profile
-            if active not in refreshed["profiles"]:
-                active = DEFAULT_PROFILES["active"]
-            refreshed["active"] = active
+            refreshed = migrate_profiles(data)
             save_profiles(refreshed)
             return refreshed
         except Exception:
