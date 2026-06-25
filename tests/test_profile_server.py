@@ -306,8 +306,6 @@ class TestProfilesCRUD:
         assert loaded["active"] == ps.DEFAULT_PROFILES["active"]
 
     def test_load_profiles_migration_drops_retired(self, tmp_path):
-        import json
-        from pathlib import Path
         path = tmp_path / "profiles.json"
         path.write_text(json.dumps({"version": 25, "active": "everyday",
                                     "profiles": {"everyday": {"tasks": {}},

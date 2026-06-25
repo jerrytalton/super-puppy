@@ -748,7 +748,7 @@ def pick_profile_for_ram(ram_gb, profiles):
     """Pick the best profile for the given RAM.
 
     Uses max_ram_gb from each profile and picks the largest that fits.
-    Falls back to 'laptop' or the first profile.
+    Falls back to '32gb' or the first profile.
     """
     candidates = []
     for name, prof in profiles.items():
@@ -1854,7 +1854,10 @@ class LocalModelsApp(rumps.App):
             return
         self.force_local = False
         save_force_local(False)
-        self._activate_profile("everyday")
+        data = load_profiles()
+        best = pick_profile_for_ram(self.ram_gb, data.get("profiles", {}))
+        if best:
+            self._activate_profile(best)
         # _start_mcp_server handles the Remote-mode branch (stop local +
         # repoint Claude). The previous _restart_mcp wrapper added a
         # gratuitous stop+sleep+start cycle that just widened the
@@ -1975,9 +1978,6 @@ class LocalModelsApp(rumps.App):
                 time.sleep(1)
 
                 mlx_config = os.path.expanduser("~/.config/mlx-server/config.yaml")
-                if self.ram_gb < 48:
-                    mlx_config = os.path.expanduser(
-                        "~/.config/mlx-server/config-laptop.yaml")
                 if hasattr(self, '_mlx_log') and self._mlx_log and not self._mlx_log.closed:
                     self._mlx_log.close()
                 self._mlx_log = open("/tmp/local-models-mlx-restart.log", "w")
