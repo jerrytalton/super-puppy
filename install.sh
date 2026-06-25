@@ -799,6 +799,29 @@ for nm in served:
     if [ ${#HF_MODELS[@]} -eq 0 ]; then
         echo "  No HuggingFace/MLX models to download for the '$PROFILE_NAME' profile."
     elif command -v hf > /dev/null; then
+        # Authenticate to HuggingFace before downloading: some repos are gated
+        # (e.g. FLUX) and auth also avoids anonymous rate limits. Use HF's own
+        # conventions — an existing login, or the standard HF_TOKEN env var.
+        if hf auth whoami > /dev/null 2>&1; then
+            echo "  HuggingFace: already logged in."
+        elif [ -n "${HF_TOKEN:-}" ]; then
+            # Non-interactive path (CI, curl pipe): use the standard env var.
+            if hf auth login --token "$HF_TOKEN" > /dev/null 2>&1; then
+                echo "  HuggingFace: logged in via HF_TOKEN."
+            else
+                echo "  WARNING: HF_TOKEN was set but login failed — gated repos may 401."
+            fi
+        elif [ -t 0 ]; then
+            # Interactive terminal: prompt for a one-time login so downloads
+            # aren't silently anonymous/rate-limited.
+            echo "  Not logged in to HuggingFace — starting login"
+            echo "  (create a token at https://huggingface.co/settings/tokens):"
+            hf auth login || echo "  WARNING: login skipped/failed — gated repos will 401."
+        else
+            echo "  WARNING: not logged in to HuggingFace and no HF_TOKEN set — downloads"
+            echo "           will be anonymous (gated repos like FLUX will 401). Run"
+            echo "           'hf auth login' or set HF_TOKEN to enable them." >&2
+        fi
         total=${#HF_MODELS[@]}
         current=0
         for model in "${HF_MODELS[@]}"; do
