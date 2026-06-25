@@ -569,6 +569,53 @@ class TestRoutes:
         assert warmed == {"work:bf16", "embed:8b"}      # general + embedding only
         assert "coder:bf16" not in warmed and "x/img:latest" not in warmed
 
+    def _mem(self, client, max_ram_gb, tasks, warm, sizes):
+        prof = {"max_ram_gb": max_ram_gb, "warm": warm, "tasks": tasks}
+        models = {n: {"backend": "ollama", "vram_bytes": b, "disk_bytes": b}
+                  for n, b in sizes.items()}
+        with patch.object(ps, "load_profiles", return_value={"active": "t", "profiles": {"t": prof}}), \
+             patch.object(ps, "get_all_models", return_value=models):
+            return client.get("/api/profiles/t/memory").get_json()
+
+    def test_memory_ok(self, client):
+        GB = 1 << 30
+        d = self._mem(client, 128,
+                      {"general": "w", "embedding": "e", "code": "c"},
+                      ["general", "embedding"],
+                      {"w": 55 * GB, "e": 8 * GB, "c": 52 * GB})
+        assert d["warm_bytes"] == 63 * GB
+        assert d["largest_on_demand_bytes"] == 52 * GB
+        assert d["peak_bytes"] == 115 * GB           # 63 + 52 ≤ 128
+        assert d["state"] == "ok"
+
+    def test_memory_tight_dominant_over_budget(self, client):
+        GB = 1 << 30
+        d = self._mem(client, 512,
+                      {"general": "glm", "embedding": "e", "vision": "v"},
+                      ["general", "embedding"],
+                      {"glm": 418 * GB, "e": 8 * GB, "v": 95 * GB})
+        assert d["warm_bytes"] == 426 * GB           # > 333 budget, ≤ 512 cap
+        assert d["peak_bytes"] == 521 * GB           # 426 + 95 > 512 cap
+        assert d["state"] == "tight"
+
+    def test_memory_thrash_warm_exceeds_cap(self, client):
+        GB = 1 << 30
+        d = self._mem(client, 64,
+                      {"general": "a", "embedding": "b"},
+                      ["general", "embedding"],
+                      {"a": 50 * GB, "b": 30 * GB})   # warm 80 > 64 cap
+        assert d["state"] == "thrash"
+
+    def test_memory_dedup_shared_model_not_double_counted(self, client):
+        GB = 1 << 30
+        d = self._mem(client, 32,
+                      {"general": "s", "code": "s", "embedding": "e", "image_gen": "img"},
+                      ["general", "embedding"],
+                      {"s": 5 * GB, "e": 1 * GB, "img": 6 * GB})
+        # 's' backs warm general AND non-warm code → counted warm only, not on-demand
+        assert {m["name"] for m in d["on_demand"]} == {"img"}
+        assert d["warm_bytes"] == 6 * GB
+
 
 class TestReadServerRamGb:
     def test_reads_value(self, tmp_path):
