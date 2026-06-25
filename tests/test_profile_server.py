@@ -552,6 +552,23 @@ class TestRoutes:
         resp = client.get("/tools")
         assert resp.status_code == 200
 
+    def test_warm_loads_only_warm_set(self, client):
+        prof = {"max_ram_gb": 128, "warm": ["general", "embedding"],
+                "tasks": {"general": "work:bf16", "code": "coder:bf16",
+                          "embedding": "embed:8b", "image_gen": "x/img:latest"}}
+        with patch.object(ps, "load_profiles", return_value={"active": "t", "profiles": {"t": prof}}), \
+             patch.object(ps, "get_all_models", return_value={
+                 "work:bf16": {"backend": "ollama"}, "coder:bf16": {"backend": "ollama"},
+                 "embed:8b": {"backend": "ollama"}, "x/img:latest": {"backend": "ollama"}}), \
+             patch.object(ps, "ollama_get", return_value={"models": []}), \
+             patch("requests.post") as post:
+            post.return_value.status_code = 200
+            r = client.post("/api/profiles/t/warm")
+        assert r.status_code == 200
+        warmed = {c.kwargs["json"]["model"] for c in post.call_args_list}
+        assert warmed == {"work:bf16", "embed:8b"}      # general + embedding only
+        assert "coder:bf16" not in warmed and "x/img:latest" not in warmed
+
 
 class TestReadServerRamGb:
     def test_reads_value(self, tmp_path):
