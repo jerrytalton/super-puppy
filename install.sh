@@ -640,24 +640,18 @@ echo ""
 # Pick the profile that best fits this machine's RAM
 # Use the user's MLX config (post-update.sh already copied it from the repo default)
 MLX_CONF_DIR="$HOME/.config/mlx-server"
-if [ "$RAM_GB" -ge 256 ]; then
-    SUGGESTED_PROFILE="everyday"
-    SUGGESTED_LABEL="Everyday (best balance for 256GB+ machines)"
-    MLX_CONFIG="$MLX_CONF_DIR/config.yaml"
-elif [ "$RAM_GB" -ge 48 ]; then
-    SUGGESTED_PROFILE="desktop"
-    SUGGESTED_LABEL="Desktop (fits in 64GB)"
-    MLX_CONFIG="$MLX_CONF_DIR/config.yaml"
-else
-    SUGGESTED_PROFILE="laptop"
-    SUGGESTED_LABEL="Laptop (lightweight models)"
-    MLX_CONFIG="$MLX_CONF_DIR/config-laptop.yaml"
+MLX_CONFIG="$MLX_CONF_DIR/config.yaml"
+if   [ "$RAM_GB" -ge 512 ]; then SUGGESTED_PROFILE="512gb"
+elif [ "$RAM_GB" -ge 128 ]; then SUGGESTED_PROFILE="128gb"
+elif [ "$RAM_GB" -ge 64  ]; then SUGGESTED_PROFILE="64gb"
+else                              SUGGESTED_PROFILE="32gb"
 fi
+SUGGESTED_LABEL="${SUGGESTED_PROFILE/gb/ GB}"
 
 echo "This machine has ${RAM_GB}GB RAM."
 echo "  Suggested profile: $SUGGESTED_LABEL"
 echo ""
-echo "  Available profiles: everyday, desktop, maximum, laptop, skip"
+echo "  Available profiles: 32gb, 64gb, 128gb, 512gb, skip"
 printf "  Pull models for which profile? [%s] " "$SUGGESTED_PROFILE"
 read -r chosen_profile
 PROFILE_NAME="${chosen_profile:-$SUGGESTED_PROFILE}"
@@ -667,13 +661,6 @@ if [ "$PROFILE_NAME" = "skip" ]; then
 else
     echo ""
     echo "Pulling models for '$PROFILE_NAME' profile..."
-
-    # Override MLX config for high-memory profiles
-    case "$PROFILE_NAME" in
-        everyday|maximum) MLX_CONFIG="$MLX_CONF_DIR/config.yaml" ;;
-        laptop)           MLX_CONFIG="$MLX_CONF_DIR/config-laptop.yaml" ;;
-        desktop)          MLX_CONFIG="$MLX_CONF_DIR/config.yaml" ;;
-    esac
 
     PROFILES_FILE="$HOME/.config/local-models/profiles.json"
 
@@ -776,19 +763,27 @@ for nm in served:
         HF_MODELS=($(printf '%s\n' "${HF_MODELS[@]}" | awk '!seen[$0]++'))
     fi
 
+    # Build the set of already-present Ollama tags once.
+    PRESENT_OLLAMA=""
+    command -v ollama > /dev/null && PRESENT_OLLAMA=$(ollama list 2>/dev/null | awk 'NR>1{print $1}')
+
     if [ ${#OLLAMA_MODELS[@]} -eq 0 ]; then
-        echo "  No Ollama models resolved for the '$PROFILE_NAME' profile"
-        echo "  (the menu bar app never published profiles.json — see warning above)."
+        echo "  No Ollama models for the '$PROFILE_NAME' profile."
     elif ! command -v ollama > /dev/null; then
         echo "  Skipping Ollama model pulls — ollama is not installed."
     else
-        total=${#OLLAMA_MODELS[@]}
-        current=0
+        total=${#OLLAMA_MODELS[@]}; current=0; pulled=0
         for model in "${OLLAMA_MODELS[@]}"; do
             current=$((current + 1))
-            echo "  [$current/$total] ollama: $model"
+            if printf '%s\n' "$PRESENT_OLLAMA" | grep -qx "$model"; then
+                echo "  [$current/$total] ollama: $model — already present, skipping"
+                continue
+            fi
+            echo "  [$current/$total] ollama: $model — pulling"
             ollama pull "$model" || echo "    WARNING: failed to pull $model"
+            pulled=$((pulled + 1))
         done
+        echo "  Ollama: $pulled pulled, $((total - pulled)) already present."
     fi
 
     # Download HuggingFace models
@@ -822,13 +817,21 @@ for nm in served:
             echo "           will be anonymous (gated repos like FLUX will 401). Run"
             echo "           'hf auth login' or set HF_TOKEN to enable them." >&2
         fi
-        total=${#HF_MODELS[@]}
-        current=0
+        HF_CACHE="$HOME/.cache/huggingface/hub"
+        total=${#HF_MODELS[@]}; current=0; pulled=0
         for model in "${HF_MODELS[@]}"; do
             current=$((current + 1))
-            echo "  [$current/$total] huggingface: $model"
+            cache_name="models--${model//\//--}"
+            if [ -d "$HF_CACHE/$cache_name/snapshots" ] && \
+               [ -z "$(find "$HF_CACHE/$cache_name/blobs" -name '*.incomplete' 2>/dev/null)" ]; then
+                echo "  [$current/$total] huggingface: $model — already present, skipping"
+                continue
+            fi
+            echo "  [$current/$total] huggingface: $model — downloading"
             hf download "$model" || true
+            pulled=$((pulled + 1))
         done
+        echo "  HuggingFace: $pulled downloaded, $((total - pulled)) already present."
     else
         echo "  WARNING: hf install failed. HuggingFace models will download on first use."
     fi
