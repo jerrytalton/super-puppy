@@ -449,10 +449,10 @@ class TestDefaultProfilesSeeding:
         assert seeded["active"] == menubar.DEFAULT_PROFILES["active"]
 
     def test_seed_leaves_existing_profiles_untouched(self, tmp_path):
-        """If profiles.json already has profiles, seeding must be a no-op and
-        not clobber them with the presets."""
+        """If profiles.json is already at the current version, seeding must be
+        a no-op and not clobber existing profiles."""
         prof_path = tmp_path / "profiles.json"
-        custom = {"active": "mine",
+        custom = {"version": menubar.PROFILES_VERSION, "active": "mine",
                   "profiles": {"mine": {"label": "Mine", "max_ram_gb": 16,
                                         "tasks": {"code": "custom:7b"}}}}
         prof_path.write_text(json.dumps(custom))
@@ -484,3 +484,18 @@ class TestDefaultProfilesSeeding:
         out = migrate_profiles({"version": 25, "active": "mine",
                                 "profiles": {"mine": {"max_ram_gb": 8, "tasks": {}}}})
         assert out["active"] == "mine"
+
+    def test_seed_migrates_stale_version(self, tmp_path):
+        prof = tmp_path / "profiles.json"
+        prof.write_text(json.dumps({"version": 1, "active": "laptop",
+                                    "profiles": {"laptop": {"tasks": {}}}}))
+        with patch.object(menubar, "PROFILES_FILE", str(prof)):
+            assert menubar.seed_profiles_if_missing() is True
+            out = json.loads(prof.read_text())
+        assert out["version"] == menubar.PROFILES_VERSION
+        assert "laptop" not in out["profiles"]
+        assert "64gb" in out["profiles"]
+
+    def test_pick_profile_fallback_is_32gb(self):
+        # no profile fits 8GB and none named in fallback set except presets
+        assert menubar.pick_profile_for_ram(8, menubar.DEFAULT_PROFILES["profiles"]) == "32gb"
