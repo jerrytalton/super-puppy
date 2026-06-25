@@ -677,11 +677,12 @@ else
 
     PROFILES_FILE="$HOME/.config/local-models/profiles.json"
 
-    # MLX models from server config
+    # MLX served-model repos are resolved per-profile below, NOT harvested
+    # wholesale from the config — the config lists the entire server catalog
+    # (e.g. the 397B, ~400GB), so a blanket pull would download hundreds of GB
+    # a profile never uses. We map only the profile's served-names to their
+    # model_path repos.
     HF_MODELS=()
-    while IFS= read -r path; do
-        HF_MODELS+=("$path")
-    done < <(grep 'model_path:' "$MLX_CONFIG" | sed 's/.*model_path: *//')
 
     # Parse profile tasks into Ollama models (contain ":") and HuggingFace repos
     # (contain "/" but not ":" — distinguishes "org/model" from "ollama/ns:tag").
@@ -738,8 +739,35 @@ for model in profile.get('tasks', {}).values():
         seen.add(model)
         print(model)
 ")
+        # Resolve the profile's MLX served-names (no ':' and no '/') to their
+        # model_path repos via the MLX server config, and pull only those.
+        while IFS= read -r path; do
+            HF_MODELS+=("$path")
+        done < <(python3 -c "
+import json, pathlib
+data = json.loads(pathlib.Path('$PROFILES_FILE').read_text())
+profile = data.get('profiles', {}).get('$PROFILE_NAME', {})
+served = {m for m in profile.get('tasks', {}).values()
+          if m and ':' not in m and '/' not in m}
+name_to_path, cur_path = {}, None
+for line in pathlib.Path('$MLX_CONFIG').read_text().splitlines():
+    s = line.strip()
+    if 'model_path:' in s:
+        cur_path = s.split('model_path:', 1)[1].strip()
+    elif 'served_model_name:' in s and cur_path:
+        name_to_path[s.split('served_model_name:', 1)[1].strip()] = cur_path
+import sys
+seen = set()
+for nm in served:
+    path = name_to_path.get(nm)
+    if not path:
+        print(f'  NOTE: served-name {nm!r} has no model_path in the MLX config — not pre-pulled', file=sys.stderr)
+    elif path not in seen:
+        seen.add(path)
+        print(path)
+")
     else
-        echo "  WARNING: profiles.json not found after 30s — pulling MLX models only"
+        echo "  WARNING: profiles.json not found — no models resolved, skipping pull"
     fi
 
     # Deduplicate HF_MODELS. Guard the expansion: on bash 3.2 (macOS default),
