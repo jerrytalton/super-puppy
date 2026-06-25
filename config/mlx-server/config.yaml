@@ -1,10 +1,6 @@
 # MLX-OpenAI-Server configuration
-# Serves MLX-optimized models via an OpenAI-compatible API on port 8000.
-# Each model runs in an isolated subprocess (no Metal/GPU semaphore leaks).
-#
-# High-memory config (used when system RAM >= 256GB). For smaller machines,
-# use config-laptop.yaml instead. The start-local-models script
-# auto-selects based on system memory.
+# All models are on_demand: true — the profile decides what gets used/pulled.
+# A small machine never loads a large model; the first request triggers download.
 #
 # Install:  uv pip install mlx-openai-server
 # Run:      mlx-openai-server launch --config ~/.config/mlx-server/config.yaml
@@ -21,7 +17,7 @@ models:
     served_model_name: llama-3b
     context_length: 8192
 
-  # Fast general-purpose MoE — on demand (downloading)
+  # Fast general-purpose MoE — on demand (~2GB active params, ~8GB weight)
   - model_path: mlx-community/Qwen3.5-35B-A3B-4bit
     model_type: lm
     served_model_name: qwen3.5-fast
@@ -30,68 +26,36 @@ models:
     on_demand: true
     on_demand_idle_timeout: 300
 
-  # Small model for quick subtasks — on demand (downloads on first use)
+  # Small workhorse for the 32gb tier (text + vision) — on demand.
+  # multimodal: Qwen3.5-9B is natively multimodal, and the 32gb profile reuses
+  # this served name for the vision task. (Confirm the 4-bit MLX conversion
+  # actually serves images on first use; if not, point 32gb vision elsewhere.)
   - model_path: mlx-community/Qwen3.5-9B-4bit
-    model_type: lm
+    model_type: multimodal
     served_model_name: qwen3.5-small
     context_length: 32768
     on_demand: true
     on_demand_idle_timeout: 300
 
-  # Agentic reasoning — on demand (downloads on first use, ~51GB)
-  - model_path: MoringLabs/Nemotron-3-Super-120B-A12B-MLX-3.6bit
-    model_type: lm
-    served_model_name: nemotron-super
-    context_length: 65536
-    prompt_cache_size: 10
+  # Speech-to-text (turbo) — ~6x faster than v3, near-identical accuracy
+  - model_path: mlx-community/whisper-large-v3-turbo
+    model_type: whisper
+    served_model_name: whisper-v3-turbo
     on_demand: true
     on_demand_idle_timeout: 300
 
-  # Flagship reasoning — on demand (CACHED)
-  - model_path: mlx-community/Qwen3.5-397B-A17B-8bit-gs32
-    model_type: lm
-    served_model_name: qwen3.5-397b-8bit
-    context_length: 65536
-    on_demand: true
-    on_demand_idle_timeout: 300
-
-  # Computer use — on demand (CACHED, ~40GB)
-  - model_path: mlx-community/UI-TARS-72B-DPO-4bit
+  # Computer use (UI-Venus) — GUI grounding, ~8B
+  - model_path: mlx-community/UI-Venus-1.5-8B-bf16
     model_type: multimodal
-    served_model_name: ui-tars-72b
-    context_length: 8192
-    on_demand: true
-    on_demand_idle_timeout: 300
-
-  # Computer use (Holo3) — default for computer_use; OSWorld-tuned, ~37GB at 8bit
-  - model_path: mlx-community/Holo3-35B-A3B-8bit
-    model_type: multimodal
-    served_model_name: holo3-35b
+    served_model_name: ui-venus
     context_length: 32768
     on_demand: true
     on_demand_idle_timeout: 300
 
-  # Speech-to-text — on demand (CACHED)
-  - model_path: mlx-community/whisper-large-v3-mlx
-    model_type: whisper
-    served_model_name: whisper-v3
-    on_demand: true
-    on_demand_idle_timeout: 300
-
-  # Next-gen fast MoE — on demand (~70GB bf16, 262K native ctx)
-  - model_path: mlx-community/Qwen3.6-35B-A3B-bf16
-    model_type: multimodal
-    served_model_name: qwen3.6-35b-bf16
-    context_length: 262144
-    prompt_cache_size: 10
-    on_demand: true
-    on_demand_idle_timeout: 300
-
-  # Same model at 4-bit for desktop/laptop profiles (~20GB)
-  - model_path: mlx-community/Qwen3.6-35B-A3B-4bit
-    model_type: multimodal
-    served_model_name: qwen3.6-35b-4bit
+  # Frontier (512GB tier) — GLM-5.2, ~418GB at 4-bit
+  - model_path: mlx-community/GLM-5.2-4bit
+    model_type: lm
+    served_model_name: glm-5.2
     context_length: 131072
-    prompt_cache_size: 10
     on_demand: true
     on_demand_idle_timeout: 300

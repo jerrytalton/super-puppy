@@ -449,10 +449,10 @@ class TestDefaultProfilesSeeding:
         assert seeded["active"] == menubar.DEFAULT_PROFILES["active"]
 
     def test_seed_leaves_existing_profiles_untouched(self, tmp_path):
-        """If profiles.json already has profiles, seeding must be a no-op and
-        not clobber them with the presets."""
+        """If profiles.json is already at the current version, seeding must be
+        a no-op and not clobber existing profiles."""
         prof_path = tmp_path / "profiles.json"
-        custom = {"active": "mine",
+        custom = {"version": menubar.PROFILES_VERSION, "active": "mine",
                   "profiles": {"mine": {"label": "Mine", "max_ram_gb": 16,
                                         "tasks": {"code": "custom:7b"}}}}
         prof_path.write_text(json.dumps(custom))
@@ -460,3 +460,42 @@ class TestDefaultProfilesSeeding:
             assert menubar.seed_profiles_if_missing() is False
             result = json.loads(prof_path.read_text())
         assert result == custom
+
+    def test_tiers_present_and_capped(self):
+        profs = menubar.DEFAULT_PROFILES["profiles"]
+        assert set(profs) == {"32gb", "64gb", "128gb", "512gb"}
+        assert [profs[k]["max_ram_gb"] for k in ("32gb", "64gb", "128gb", "512gb")] == [32, 64, 128, 512]
+        assert menubar.DEFAULT_PROFILES["active"] == "64gb"
+
+    def test_migrate_drops_retired_presets_and_fixes_active(self):
+        from lib.models import migrate_profiles, PROFILES_VERSION
+        old = {"version": 25, "active": "everyday",
+               "profiles": {"everyday": {"tasks": {"code": "x:1b"}},
+                            "mine": {"label": "Mine", "max_ram_gb": 16, "tasks": {"code": "c:1b"}}}}
+        out = migrate_profiles(old)
+        assert out["version"] == PROFILES_VERSION
+        assert "everyday" not in out["profiles"]          # retired preset dropped
+        assert "mine" in out["profiles"]                  # real custom kept
+        assert set(out["profiles"]) >= {"32gb", "64gb", "128gb", "512gb"}
+        assert out["active"] in out["profiles"]           # active repaired (was "everyday")
+
+    def test_migrate_preserves_valid_active(self):
+        from lib.models import migrate_profiles
+        out = migrate_profiles({"version": 25, "active": "mine",
+                                "profiles": {"mine": {"max_ram_gb": 8, "tasks": {}}}})
+        assert out["active"] == "mine"
+
+    def test_seed_migrates_stale_version(self, tmp_path):
+        prof = tmp_path / "profiles.json"
+        prof.write_text(json.dumps({"version": 1, "active": "laptop",
+                                    "profiles": {"laptop": {"tasks": {}}}}))
+        with patch.object(menubar, "PROFILES_FILE", str(prof)):
+            assert menubar.seed_profiles_if_missing() is True
+            out = json.loads(prof.read_text())
+        assert out["version"] == menubar.PROFILES_VERSION
+        assert "laptop" not in out["profiles"]
+        assert "64gb" in out["profiles"]
+
+    def test_pick_profile_fallback_is_32gb(self):
+        # no profile fits 8GB and none named in fallback set except presets
+        assert menubar.pick_profile_for_ram(8, menubar.DEFAULT_PROFILES["profiles"]) == "32gb"

@@ -50,7 +50,8 @@ link bin/post-update.sh            ~/.local/bin/post-update.sh
 # MLX configs (copied on first install, new models merged on update)
 MLX_DIR="$HOME/.config/mlx-server"
 mkdir -p "$MLX_DIR"
-for conf in config.yaml config-laptop.yaml; do
+rm -f "$MLX_DIR/config-laptop.yaml"
+for conf in config.yaml; do
     user_conf="$MLX_DIR/$conf"
     repo_conf="$REPO_DIR/config/mlx-server/$conf"
     if [ ! -e "$user_conf" ] || [ -L "$user_conf" ]; then

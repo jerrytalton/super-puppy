@@ -284,7 +284,7 @@ class TestProfilesCRUD:
     def test_load_creates_default(self, profiles_dir):
         data = ps.load_profiles()
         assert "profiles" in data
-        assert "everyday" in data["profiles"]
+        assert "64gb" in data["profiles"]
         assert (profiles_dir / "profiles.json").exists()
 
     def test_save_and_load_roundtrip(self, profiles_dir):
@@ -301,7 +301,22 @@ class TestProfilesCRUD:
         (profiles_dir / "profiles.json").write_text(json.dumps(old))
         loaded = ps.load_profiles()
         assert loaded["version"] == ps.PROFILES_VERSION
-        assert "everyday" in loaded["profiles"]
+        assert "everyday" not in loaded["profiles"]
+        assert "64gb" in loaded["profiles"]
+        assert loaded["active"] == ps.DEFAULT_PROFILES["active"]
+
+    def test_load_profiles_migration_drops_retired(self, tmp_path):
+        path = tmp_path / "profiles.json"
+        path.write_text(json.dumps({"version": 25, "active": "everyday",
+                                    "profiles": {"everyday": {"tasks": {}},
+                                                 "custom": {"max_ram_gb": 8, "tasks": {}}}}))
+        with patch.object(ps, "PROFILES_FILE", path):
+            out = ps.load_profiles()
+        assert out["version"] == ps.PROFILES_VERSION
+        assert "everyday" not in out["profiles"]
+        assert "custom" in out["profiles"]
+        assert "64gb" in out["profiles"]
+        assert out["active"] in out["profiles"]
 
     def test_version_bump_preserves_custom_profiles(self, profiles_dir):
         old = {"version": 1, "active": "myconfig",
