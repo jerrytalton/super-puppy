@@ -63,6 +63,7 @@ from lib.models import (
     model_matches_filter as _model_matches_filter,
     pick_model_from_prefs as _pick_model_from_prefs,
     validate_network_conf,
+    warm_model_names,
 )
 
 logging.basicConfig(
@@ -82,6 +83,18 @@ MLX_URL = os.environ.get("MLX_URL", "http://localhost:8000")
 # long enough to survive normal interactive use and short enough not to pin
 # VRAM indefinitely.
 OLLAMA_KEEP_ALIVE = "30m"
+OLLAMA_KEEP_ALIVE_ONDEMAND = "30s"  # non-warm models evict promptly after use
+
+
+def keep_alive_for(model: str) -> str:
+    """Long keep_alive for the active profile's warm models, short otherwise."""
+    try:
+        warm = warm_model_names(load_profiles())
+    except Exception:
+        warm = set()
+    return OLLAMA_KEEP_ALIVE if model in warm else OLLAMA_KEEP_ALIVE_ONDEMAND
+
+
 HTML_FILE = Path(__file__).parent / "profiles.html"
 TOOLS_HTML = Path(__file__).parent / "tools.html"
 
@@ -2016,7 +2029,7 @@ def _chat(model, backend, messages, timeout=300, tool="chat", image_b64=None, th
                 return resp.json()["choices"][0]["message"]["content"]
             else:
                 body = {"model": model, "messages": messages, "stream": False,
-                        "keep_alive": OLLAMA_KEEP_ALIVE}
+                        "keep_alive": keep_alive_for(model)}
                 if not think:
                     body["think"] = False
                 resp = requests.post(f"{OLLAMA_URL}/api/chat", json=body,
@@ -2072,7 +2085,7 @@ def _chat_stream(model, backend, messages, think=True, tool="chat"):
                     f"{_requests_error_detail(e)}") from e
         else:
             body = {"model": model, "messages": messages, "stream": True,
-                    "keep_alive": OLLAMA_KEEP_ALIVE}
+                    "keep_alive": keep_alive_for(model)}
             if not think:
                 body["think"] = False
             try:
@@ -2369,7 +2382,7 @@ def _handle_test_image_gen(body, pick):
         try:
             resp = requests.post(f"{OLLAMA_URL}/api/generate", json={
                 "model": model, "prompt": body["prompt"], "stream": False,
-                "keep_alive": OLLAMA_KEEP_ALIVE,
+                "keep_alive": keep_alive_for(model),
             }, timeout=300)
             resp.raise_for_status()
             image_b64 = resp.json().get("image", "")
@@ -2570,7 +2583,7 @@ def _handle_test_embed(body, pick):
         else:
             resp = requests.post(f"{OLLAMA_URL}/api/embed", json={
                 "model": model, "input": [body["text"]],
-                "keep_alive": OLLAMA_KEEP_ALIVE,
+                "keep_alive": keep_alive_for(model),
             }, timeout=60)
             resp.raise_for_status()
             embeddings = resp.json().get("embeddings", [])
