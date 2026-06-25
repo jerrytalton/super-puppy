@@ -1765,7 +1765,8 @@ def api_profiles_warm(name):
         return jsonify({"ok": True, "loaded": []})
 
     models = get_all_models()
-    candidates = list(dict.fromkeys(tasks.values()))
+    warm_keys = profile.get("warm", [])
+    candidates = list(dict.fromkeys(tasks[k] for k in warm_keys if k in tasks))
 
     ollama_to_load = []
     mlx_to_load = []
