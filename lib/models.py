@@ -393,104 +393,117 @@ TASK_FILTERS: dict[str, dict[str, Any]] = {
 # (serves/migrates them), the menu bar app (seeds them on startup), and
 # install.sh (seeds them before pulling models, via lib.models).
 #
-# qwen3.6 tasks use Ollama's MLX tags (-mlx / -mxfp8) where RAM allows: on
-# Apple Silicon the MLX backend is ~20-40% faster than GGUF. Tradeoff verified
-# 2026-06-24: MLX honors `think:false` but NOT Ollama `format` JSON-schema
-# (grammar-constrained decoding is llama.cpp-only). The MCP server returns free
-# text and doesn't use `format`, so this is safe here; custom agent loops that
-# need schema-constrained output should pin a GGUF tag. Laptop stays GGUF (32GB
-# is the MLX floor with no headroom); maximum code stays bf16 (quality > speed).
+# Four RAM-tier presets (32gb / 64gb / 128gb / 512gb) replace the old
+# named profiles (laptop / desktop / everyday / maximum). Each tier's
+# max_ram_gb cap gates model-pull validation in install.sh and the profile
+# server. The active default is 64gb (fits M5 / mid GPU class).
 
-PROFILES_VERSION = 25  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 26  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
-    "active": "everyday",
+    "active": "64gb",
     "profiles": {
-        "everyday": {
-            "label": "Everyday",
-            "description": "Best balance for high-memory machines (256GB+)",
-            "max_ram_gb": 512,
+        "32gb": {
+            "label": "32 GB",
+            "description": "Base M5 / M1 Max class — small, fast models",
+            "max_ram_gb": 32,
             "tasks": {
-                "code": "qwen3.6:27b-coding-mxfp8",
-                "general": "qwen3.6-35b-bf16",
-                "reasoning": "qwen3.6-35b-bf16",
-                "long_context": "qwen3.6-35b-bf16",
-                "translation": "qwen3.6-35b-bf16",
-                "vision": "qwen3.5:122b",
-                "image_gen": "x/z-image-turbo:bf16",
-                "image_edit": "black-forest-labs/FLUX.1-Kontext-dev",
-                "transcription": "whisper-v3",
-                "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
-                "embedding": "qwen3-embedding:8b",
-                "unfiltered": "dolphin3:8b",
-                "computer_use": "holo3-35b",
-                "video": "AITRADER/Wan2.2-T2V-A14B-mlx-bf16",
+                "code": "qwen3.5-small",
+                "general": "qwen3.5-small",
+                "reasoning": "qwen3.5-small",
+                "long_context": "qwen3.5-small",
+                "translation": "qwen3.5-small",
+                "vision": "qwen3.5-small",
+                "transcription": "whisper-v3-turbo",
+                "tts": "mlx-community/Kokoro-82M-bf16",
+                "embedding": "embeddinggemma:300m",
+                "image_gen": "x/flux2-klein:latest",
             },
         },
-        "desktop": {
-            "label": "Desktop",
-            "description": "Fits in 64GB",
+        "64gb": {
+            "label": "64 GB",
+            "description": "M5 / mid GPU — dense 27B workhorse",
             "max_ram_gb": 64,
             "tasks": {
-                "code": "qwen3.6:27b-mlx",
+                "code": "qwen3.6:27b-coding-mxfp8",
                 "general": "qwen3.6:27b-mlx",
                 "reasoning": "qwen3.6:27b-mlx",
                 "long_context": "qwen3.6:27b-mlx",
                 "translation": "qwen3.6:27b-mlx",
                 "vision": "qwen3.6:27b-mlx",
-                "image_gen": "x/flux2-klein:latest",
-                "transcription": "whisper-v3",
-                "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
+                "transcription": "whisper-v3-turbo",
+                "tts": "mlx-community/fishaudio-s2-pro-8bit-mlx",
                 "embedding": "qwen3-embedding:8b",
                 "unfiltered": "dolphin3:8b",
-                "computer_use": "maternion/fara:7b",
+                "computer_use": "ui-venus",
+                "image_gen": "x/flux2-klein:latest",
             },
         },
-        "maximum": {
-            "label": "Heavyweight",
-            "description": "Frontier-tier reasoning and long context, at the cost of throughput",
-            "max_ram_gb": 0,
+        "128gb": {
+            "label": "128 GB",
+            "description": "M5 Max class — dense bf16 + strong vision",
+            "max_ram_gb": 128,
             "tasks": {
-                "code": "qwen3.6:27b-coding-bf16",
-                "general": "qwen3.5-397b-8bit",
-                "reasoning": "qwen3.5-397b-8bit",
-                "long_context": "qwen3.5-397b-8bit",
-                "translation": "qwen3.6-35b-bf16",
-                "vision": "qwen3.5:122b",
-                "image_gen": "x/z-image-turbo:bf16",
-                "image_edit": "black-forest-labs/FLUX.1-Kontext-dev",
-                "transcription": "whisper-v3",
-                "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16",
+                "code": "qwen3-coder-next:latest",
+                "general": "qwen3.6:27b-mlx-bf16",
+                "reasoning": "qwen3.6:27b-mlx-bf16",
+                "long_context": "qwen3.6:27b-mlx-bf16",
+                "translation": "qwen3.6:27b-mlx-bf16",
+                "vision": "qwen3.6:27b-mlx-bf16",
+                "transcription": "whisper-v3-turbo",
+                "tts": "mlx-community/fishaudio-s2-pro-8bit-mlx",
                 "embedding": "qwen3-embedding:8b",
                 "unfiltered": "dolphin3:8b",
-                "computer_use": "holo3-35b",
+                "computer_use": "ui-venus",
+                "image_gen": "x/z-image-turbo:bf16",
+                "image_edit": "black-forest-labs/FLUX.1-Kontext-dev",
                 "video": "AITRADER/Wan2.2-T2V-A14B-mlx-bf16",
             },
         },
-        "laptop": {
-            "label": "Laptop",
-            "description": "Fits in 32GB",
-            "max_ram_gb": 32,
+        "512gb": {
+            "label": "512 GB",
+            "description": "M3 Ultra class — frontier",
+            "max_ram_gb": 512,
             "tasks": {
-                # unfiltered (dolphin3:8b, ~6GB) and computer_use (fara:7b,
-                # ~7GB) dropped: including them pushed the static-weights sum
-                # past the 32GB cap by ~8GB. Both specialists are more useful
-                # on the desktop/everyday tiers where RAM actually allows.
-                "code": "qwen3.6:27b",
-                "general": "qwen3.6:27b",
-                "reasoning": "qwen3.6:27b",
-                "long_context": "qwen3.6:27b",
-                "translation": "qwen3.6:27b",
-                "vision": "qwen3.6:27b",
-                "image_gen": "x/flux2-klein:latest",
-                "transcription": "whisper-v3",
-                "tts": "mlx-community/Kokoro-82M-bf16",
-                "embedding": "nomic-embed-text:latest",
+                "code": "qwen3-coder-next:latest",
+                "general": "glm-5.2",
+                "reasoning": "glm-5.2",
+                "long_context": "glm-5.2",
+                "translation": "glm-5.2",
+                "vision": "qwen3.5:122b",
+                "transcription": "whisper-v3-turbo",
+                "tts": "mlx-community/fishaudio-s2-pro-8bit-mlx",
+                "embedding": "qwen3-embedding:8b",
+                "unfiltered": "dolphin3:8b",
+                "computer_use": "ui-venus",
+                "image_gen": "x/z-image-turbo:bf16",
+                "image_edit": "black-forest-labs/FLUX.1-Kontext-dev",
+                "video": "AITRADER/Wan2.2-T2V-A14B-mlx-bf16",
             },
         },
     },
 }
+
+RETIRED_PROFILE_NAMES = frozenset({"laptop", "desktop", "everyday", "maximum"})
+
+
+def migrate_profiles(data: dict) -> dict:
+    """Bring an on-disk profiles dict up to the current presets.
+
+    Refreshes the preset profiles, drops retired preset names, preserves
+    genuinely-custom profiles (anything not a current or retired preset), and
+    repairs `active` if it no longer names a profile that exists.
+    """
+    refreshed = {**DEFAULT_PROFILES, "profiles": dict(DEFAULT_PROFILES["profiles"])}
+    for name, profile in (data.get("profiles") or {}).items():
+        if name in DEFAULT_PROFILES["profiles"] or name in RETIRED_PROFILE_NAMES:
+            continue
+        refreshed["profiles"][name] = profile
+    active = data.get("active")
+    refreshed["active"] = active if active in refreshed["profiles"] else DEFAULT_PROFILES["active"]
+    return refreshed
+
 
 # ── Active param computation ──────────────────────────────────────────
 

@@ -885,3 +885,23 @@ exit 1
             ["bash", wrapper_env["script"]],
             capture_output=True, timeout=5)
         assert result.returncode == 1
+
+
+class TestPostUpdateConfigRefs:
+    """Guard that every config/mlx-server/*.yaml named in post-update.sh's loop exists in the repo."""
+
+    def test_mlx_server_config_refs_exist(self):
+        import re
+
+        repo_root = Path(__file__).parent.parent
+        script = (repo_root / "bin" / "post-update.sh").read_text()
+        # Extract config names from `for conf in <name1> <name2>; do` loop
+        m = re.search(r'for conf in ([^;]+);', script)
+        assert m, "Expected a 'for conf in ...' loop in post-update.sh"
+        names = [t for t in m.group(1).split() if t.endswith(".yaml")]
+        assert names, "Expected at least one .yaml name in the for-conf loop in post-update.sh"
+        mlx_dir = repo_root / "config" / "mlx-server"
+        for name in names:
+            assert (mlx_dir / name).exists(), (
+                f"post-update.sh loops over {name} but config/mlx-server/{name} does not exist in the repo"
+            )
