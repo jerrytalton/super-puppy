@@ -31,8 +31,8 @@ All model choices were re-verified against the Ollama library and `mlx-community
 | computer_use | — | `ui-venus` (UI-Venus-1.5-8B) | `ui-venus` | `ui-venus` |
 | unfiltered | — | `dolphin3:8b` | `dolphin3:8b` | `dolphin3:8b` |
 | transcription | `whisper-v3-turbo` | `whisper-v3-turbo` | `whisper-v3-turbo` | `whisper-v3-turbo` |
-| tts | `Kokoro-82M` | `Voxtral-4bit` | `Voxtral-bf16` | `Voxtral-bf16` |
-| embedding | `nomic-embed-text` | `qwen3-embedding:8b` | `qwen3-embedding:8b` | `qwen3-embedding:8b` |
+| tts | `Kokoro-82M` | `fish-s2-pro` | `fish-s2-pro` | `fish-s2-pro` |
+| embedding | `embeddinggemma:300m` | `qwen3-embedding:8b` | `qwen3-embedding:8b` | `qwen3-embedding:8b` |
 | image_gen | `flux2-klein` | `flux2-klein` | `z-image-turbo:bf16` | `z-image-turbo:bf16` |
 | image_edit | — | — | `FLUX.1-Kontext-dev` | `FLUX.1-Kontext-dev` |
 | video | — | — | `Wan2.2-T2V` | `Wan2.2-T2V` |
@@ -46,18 +46,20 @@ Approx peak resident footprint (one model at a time; on-demand unload): 32gb ~6G
 - **Transcription → `whisper-large-v3-turbo`** everywhere (~6× faster, near-identical accuracy; drop-in for the whisper path).
 - **512 frontier → `GLM-5.2-4bit`** (~418GB, leads open-weight intelligence index) replaces `qwen3.5-397b-8bit`.
 - **Code on 128/512 → `qwen3-coder-next`** (80B/3B-active MoE, agentic-coding-tuned, 256K ctx).
+- **TTS on 64/128/512 → `fish-s2-pro`** (Fish Audio S2 Pro, highest open-weight TTS Elo, MLX-native, voice cloning + emotion tags) replaces Voxtral. Kokoro stays on 32gb.
+- **Embedding on 32gb → `embeddinggemma:300m`** (Google, newer small embedder) replaces `nomic-embed-text`. `qwen3-embedding:8b` (MTEB #1) unchanged on the other tiers.
 
 ## Model → backend mapping
 
 Backend is inferred from the string (existing convention): `:` → Ollama tag; `/` → HF repo; otherwise → MLX served-name resolved via the MLX config.
 
-- **Ollama tags:** `qwen3.6:27b-mlx`, `qwen3.6:27b-mlx-bf16`, `qwen3.6:27b-coding-mxfp8`, `qwen3-coder-next:<tag>`, `qwen3.5:122b`, `qwen3-embedding:8b`, `nomic-embed-text:latest`, `dolphin3:8b`, `x/flux2-klein:latest`, `x/z-image-turbo:bf16`.
+- **Ollama tags:** `qwen3.6:27b-mlx`, `qwen3.6:27b-mlx-bf16`, `qwen3.6:27b-coding-mxfp8`, `qwen3-coder-next:<tag>`, `qwen3.5:122b`, `qwen3-embedding:8b`, `embeddinggemma:300m`, `dolphin3:8b`, `x/flux2-klein:latest`, `x/z-image-turbo:bf16`.
 - **MLX served-names** (defined in the MLX config, `on_demand: true`):
   - `qwen3.5-9b` → `mlx-community/Qwen3.5-9B-4bit` (existing `qwen3.5-small`)
   - `whisper-v3-turbo` → `mlx-community/whisper-large-v3-turbo` (NEW)
   - `ui-venus` → `mlx-community/UI-Venus-1.5-8B-bf16` (NEW)
   - `glm-5.2` → `mlx-community/GLM-5.2-4bit` (NEW)
-- **HF repos:** `mlx-community/Kokoro-82M-bf16`, `mlx-community/Voxtral-4B-TTS-2603-mlx-{4bit,bf16}`, `black-forest-labs/FLUX.1-Kontext-dev`, `AITRADER/Wan2.2-T2V-A14B-mlx-bf16`.
+- **HF repos** (downloaded, invoked by mflux / mlx-audio): `mlx-community/Kokoro-82M-bf16` (32gb tts), `mlx-community/fishaudio-s2-pro-8bit-mlx` (`fish-s2-pro`, 64/128/512 tts), `black-forest-labs/FLUX.1-Kontext-dev`, `AITRADER/Wan2.2-T2V-A14B-mlx-bf16`. (Voxtral stays available for multi-voice/9-language use, just no longer the default `tts`.)
 
 ## Plumbing
 
@@ -74,12 +76,13 @@ Backend is inferred from the string (existing convention): `:` → Ollama tag; `
 3. **`GLM-5.2-4bit` footprint** — full 4-bit is ~418GB (leaves ~94GB on 512GB). If that's too tight alongside the user's other work, fall back to a REAP-pruned variant (~214–265GB).
 4. **`UI-Venus-1.5-8B`** — unproven in this stack: confirm it loads/serves through the MLX computer_use path and grounds acceptably on a few real screenshots before trusting it as the default.
 5. **MLX served-model load** — confirm `whisper-large-v3-turbo`, `UI-Venus-1.5-8B`, and `GLM-5.2-4bit` each load via `mlx-openai-server` (or the appropriate runner) as configured.
+6. **`fish-s2-pro` TTS** — confirm the installed `mlx-audio` version serves `mlx-community/fishaudio-s2-pro-8bit-mlx` through the `local_speak` path, and that its language coverage is acceptable (Voxtral remains the fallback for multi-language needs).
+7. **`embeddinggemma:300m` context** — 2K context window; confirm it's adequate for the embedding chunk sizes used (qwen3-embedding's 32K is unaffected on the other tiers).
 
 ## Out of scope
 
 - **Qwen3-ASR** for transcription — higher accuracy than whisper-turbo but a different inference path (mlx-audio STT, not whisper); deferred as a future upgrade.
 - **Vision model change** — keep the validated `qwen3.6`/`qwen3.5:122b` multimodal picks; do not adopt a separate Qwen3-VL line in this work.
-- TTS and embedding model families were not re-evaluated against newer options in this pass.
 
 ## Research notes (2026-06-24)
 
@@ -88,3 +91,5 @@ Backend is inferred from the string (existing convention): `:` → Ollama tag; `
 - Verified available in `mlx-community`: `whisper-large-v3-turbo`, `GLM-5.2-4bit` (~418GB), `UI-Venus-1.5-8B-bf16`, `Qwen3-VL-30B-A3B-Instruct` (MoE). Verified on Ollama: `qwen3-coder-next` (80B/3B, 52–85GB).
 - ScreenSpot-Pro grounding: UI-Venus-1.5 ≈69.6%, MAI-UI ≈67.9% (73.5% w/ zoom); Holo3-35B "top-tier" (exact unpublished). UI-Venus chosen for best grounding-per-GB.
 - Kimi K2.6 (~562GB at MLX smart-quant) and DeepSeek V4 (1.6T) do not fit 512GB; GLM-5.2 does.
+- TTS: Voxtral is mid-pack on TTS Arena (~Elo 1056). `Fish Audio S2 Pro` (4B, open, MLX-native via `mlx-community/fishaudio-s2-pro-8bit-mlx`, voice cloning + emotion tags) has the highest open-weight Elo (1128.7); chosen for 64/128/512. Kokoro-82M kept for 32gb (tiny/fast). Chatterbox-Turbo also strong (beats ElevenLabs in blind tests) and stays available for cloning.
+- Embedding: `qwen3-embedding:8b` still #1 on MTEB multilingual (70.58); kept on 64/128/512. `embeddinggemma:300m` (Google, on Ollama, 768-dim) adopted for 32gb over `nomic-embed-text`.
