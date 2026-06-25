@@ -479,6 +479,7 @@ from lib.models import (
     ALWAYS_EXCLUDE, active_params_b, model_matches_filter,
     MCP_PREFS_FILE as _MCP_PREFS_PATH, CLAUDE_CONFIG_FILE,
     validate_network_conf, DEFAULT_PROFILES, PROFILES_VERSION, migrate_profiles,
+    warm_model_names,
 )
 MCP_PREFS_FILE = str(_MCP_PREFS_PATH)
 
@@ -718,6 +719,22 @@ def load_profiles():
         except Exception:
             pass
     return {"active": None, "profiles": {}}
+
+
+def warm_ping_targets(data):
+    """(model, backend) for the active profile's warm models worth keep-warming.
+
+    backend: 'ollama' for ':' tags, 'mlx' for bare served-names. HuggingFace
+    repos ('/') are excluded — they're invoked per-call (mflux / mlx-audio),
+    not long-lived server models to keep resident.
+    """
+    targets = []
+    for model in sorted(warm_model_names(data)):
+        if "/" in model and ":" not in model:
+            continue
+        backend = "ollama" if ":" in model else "mlx"
+        targets.append((model, backend))
+    return targets
 
 
 def save_profiles(data):
@@ -1400,6 +1417,8 @@ class LocalModelsApp(rumps.App):
         # Defer startup to first timer tick (NSMenu isn't ready during __init__)
         self.timer = rumps.Timer(self._on_tick, POLL_INTERVAL)
         self.timer.start()
+        self.warm_timer = rumps.Timer(self._on_warm_tick, 240)
+        self.warm_timer.start()
 
     def _on_tick(self, _):
         """Timer callback. Handles first-run initialization and periodic refresh."""
@@ -1413,6 +1432,40 @@ class LocalModelsApp(rumps.App):
                 UPDATE_CRASH_WINDOW, self._mark_startup_healthy).start()
             return
         self.refresh(None)
+
+    def _on_warm_tick(self, _):
+        """Keep the active profile's warm models resident (re-ping before idle unload)."""
+        if self.mode not in ("server", "offline") or not self.servers_started:
+            return
+        targets = warm_ping_targets(load_profiles())
+        if not targets:
+            return
+        threading.Thread(target=self._ping_warm, args=(targets,), daemon=True).start()
+
+    def _ping_warm(self, targets):
+        for model, backend in targets:
+            try:
+                if backend == "ollama":
+                    body = json.dumps({"model": model, "prompt": "",
+                                       "keep_alive": "30m"}).encode()
+                    req = urllib.request.Request(
+                        f"http://localhost:{self.ollama_port}/api/generate",
+                        data=body, method="POST")
+                    req.add_header("Content-Type", "application/json")
+                    with urllib.request.urlopen(req, timeout=120):
+                        pass
+                else:
+                    body = json.dumps({"model": model, "max_tokens": 1,
+                                       "messages": [{"role": "user",
+                                                      "content": "hi"}]}).encode()
+                    req = urllib.request.Request(
+                        f"http://localhost:{self.mlx_port}/v1/chat/completions",
+                        data=body, method="POST")
+                    req.add_header("Content-Type", "application/json")
+                    with urllib.request.urlopen(req, timeout=120):
+                        pass
+            except Exception as e:
+                logging.debug("keep-warm ping failed for %s: %s", model, e)
 
     def _start_services_bg(self):
         """Background thread: start services, then do first poll inline.

@@ -524,3 +524,12 @@ class TestDefaultProfilesSeeding:
                                 "profiles": {"mine": {"max_ram_gb": 8, "tasks": {"code": "c:1b"}}}})
         assert out["profiles"]["64gb"]["warm"] == ["general", "embedding"]
         assert "warm" not in out["profiles"]["mine"]   # custom untouched; absent ⇒ on-demand
+
+    def test_warm_ping_targets_classifies_backend(self):
+        data = {"active": "t", "profiles": {"t": {
+            "warm": ["general", "embedding", "tts"],
+            "tasks": {"general": "qwen3.6:27b-mlx", "embedding": "embed:8b",
+                      "tts": "mlx-community/Some-TTS", "code": "coder:1b"}}}}
+        targets = dict(menubar.warm_ping_targets(data))
+        assert targets == {"qwen3.6:27b-mlx": "ollama", "embed:8b": "ollama"}
+        # HF-repo TTS excluded (not a keep-warm server target); non-warm 'code' absent
