@@ -65,13 +65,9 @@ sys.exit(1)
 pick_mlx_config() {
     local ram_gb
     ram_gb=$(get_ram_gb)
-
-    if [ "$ram_gb" -ge 256 ]; then
+    if [ "$ram_gb" -ge 32 ]; then
         echo "$MLX_CONFIG_DIR/config.yaml"
-        echo "  Detected ${ram_gb}GB RAM — using high-memory config (all models)." >&2
-    elif [ "$ram_gb" -ge 48 ]; then
-        echo "$MLX_CONFIG_DIR/config-laptop.yaml"
-        echo "  Detected ${ram_gb}GB RAM — using laptop config (lighter models)." >&2
+        echo "  Detected ${ram_gb}GB RAM — using MLX config (on-demand models)." >&2
     else
         echo ""
         echo "  Detected ${ram_gb}GB RAM — too little for MLX server, skipping." >&2
