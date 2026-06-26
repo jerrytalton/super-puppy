@@ -762,8 +762,14 @@ async function renderMemory() {
     return;
   }
 
-  const { cap_bytes, budget_bytes, warm, warm_bytes, on_demand,
+  const { cap_bytes, budget_bytes, warm = [], warm_bytes, on_demand = [],
           largest_on_demand_bytes, peak_bytes, state } = data;
+
+  if (!cap_bytes) {
+    usage.textContent = 'RAM capacity unknown';
+    usage.style.color = 'var(--text3)';
+    return;
+  }
 
   const stateColor = state === 'thrash' ? 'var(--red)' :
                      state === 'tight'  ? 'var(--amber)' :
