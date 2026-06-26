@@ -4,6 +4,10 @@
 # dependencies = [
 #   "mlx-video @ git+https://github.com/Blaizzy/mlx-video.git@9ab4826d20e39286af13a26615c33b403d48be72",
 #   "mlx-video-with-audio==0.1.33",
+#   # Floor numba to a Python 3.12-compatible release. Without it, uv backtracks
+#   # librosa's transitive numba to 0.53.1 (llvmlite 0.36, py<3.10 only) and the
+#   # sdist build fails on 3.12. >=0.60 resolves to wheels (numba 0.65/llvmlite 0.47).
+#   "numba>=0.60",
 # ]
 # ///
 """Runner shim so the profile server can invoke mlx-video submodules without
