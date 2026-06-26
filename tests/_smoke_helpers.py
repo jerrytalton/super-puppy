@@ -149,6 +149,11 @@ SKIP_SUBSTRINGS = (
     "connection error",
     "connectionerror",
     "is not installed",
+    # Backend Python module not importable in this env — e.g. the test installs
+    # PyPI `mlx-audio` while the servers pin a git commit with a different module
+    # layout. The backend is unavailable here, so skip rather than hard-fail.
+    "no module named",
+    "is not a package",
 )
 
 
