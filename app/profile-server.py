@@ -88,9 +88,16 @@ OLLAMA_KEEP_ALIVE_ONDEMAND = "30s"  # non-warm models evict promptly after use
 
 
 def keep_alive_for(model: str) -> str:
-    """Long keep_alive for the active profile's warm models, short otherwise."""
+    """Long keep_alive for the active profile's warm models, short otherwise.
+
+    Read-only: this runs on every inference request, so it must NOT migrate or
+    write profiles.json (load_profiles writes on a version bump). It reads the
+    file directly; warm_model_names/warm_task_keys self-heal a stale-version
+    file without persisting. On any error it returns the short (safe) default.
+    """
     try:
-        warm = warm_model_names(load_profiles())
+        data = json.loads(PROFILES_FILE.read_text()) if PROFILES_FILE.exists() else {}
+        warm = warm_model_names(data)
     except Exception:
         warm = set()
     return OLLAMA_KEEP_ALIVE if model in warm else OLLAMA_KEEP_ALIVE_ONDEMAND
@@ -1247,20 +1254,28 @@ def load_profiles():
     if PROFILES_FILE.exists():
         try:
             data = json.loads(PROFILES_FILE.read_text())
-            if data.get("version", 0) == PROFILES_VERSION:
-                return data
-            refreshed = migrate_profiles(data)
-            save_profiles(refreshed)
-            return refreshed
         except Exception:
-            pass
+            # Existing but unparseable — likely a transient torn read from a
+            # concurrent writer, or genuine corruption. Either way, never
+            # clobber it with defaults (that would wipe custom profiles); serve
+            # defaults in memory and leave the file for the next clean read.
+            return {**DEFAULT_PROFILES}
+        if data.get("version", 0) == PROFILES_VERSION:
+            return data
+        refreshed = migrate_profiles(data)
+        save_profiles(refreshed)
+        return refreshed
     save_profiles(DEFAULT_PROFILES)
     return {**DEFAULT_PROFILES}
 
 
 def save_profiles(data):
     PROFILES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PROFILES_FILE.write_text(json.dumps(data, indent=2))
+    # Atomic write: a concurrent reader (the other process or another Flask
+    # thread) sees either the old or the new complete file, never a torn one.
+    tmp = PROFILES_FILE.with_name(PROFILES_FILE.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    os.replace(tmp, PROFILES_FILE)
 
 
 def save_mcp_prefs(prefs):
@@ -1838,7 +1853,7 @@ def api_profiles_warm(name):
 @app.route("/api/profiles/<name>/memory", methods=["GET"])
 def api_profiles_memory(name):
     """Residency math for the memory bar: warm set vs budget, transient peak, state."""
-    proxied = _proxy_to_desktop(f"/api/profiles/{name}/memory")
+    proxied = _proxy_to_desktop(f"/api/profiles/{name}/memory", method="GET")
     if proxied is not None:
         return proxied
     data = load_profiles()
