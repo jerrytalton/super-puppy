@@ -64,6 +64,7 @@ from lib.models import (
     pick_model_from_prefs as _pick_model_from_prefs,
     validate_network_conf,
     warm_model_names,
+    warm_task_keys,
 )
 
 logging.basicConfig(
@@ -1787,7 +1788,7 @@ def api_profiles_warm(name):
         return jsonify({"ok": True, "loaded": []})
 
     models = get_all_models()
-    warm_keys = profile.get("warm", [])
+    warm_keys = warm_task_keys(name, profile)
     candidates = list(dict.fromkeys(tasks[k] for k in warm_keys if k in tasks))
 
     ollama_to_load = []
@@ -1847,7 +1848,7 @@ def api_profiles_memory(name):
 
     models = get_all_models()
     tasks = profile.get("tasks", {})
-    warm_keys = profile.get("warm", [])
+    warm_keys = warm_task_keys(name, profile)
 
     def size_of(model):
         info = models.get(model) or {}
