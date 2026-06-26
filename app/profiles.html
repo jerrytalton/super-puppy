@@ -88,9 +88,29 @@ nav a.active { color: #fff; background: var(--accent); }
   position: absolute; top: 0; bottom: 0; width: 2px;
   background: var(--red); z-index: 2; display: none;
 }
+.mem-bar-budget {
+  position: absolute; top: 0; bottom: 0; width: 2px;
+  background: var(--amber); z-index: 2;
+}
+.mem-seg-ondemand {
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(180,180,180,0.4) 0, rgba(180,180,180,0.4) 4px,
+    transparent 4px, transparent 8px
+  );
+  border-left: 2px dashed var(--text3);
+}
 .mem-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; }
 .mem-legend-item { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text2); }
 .mem-dot { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+.mem-dot-ondemand {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--dot-color, #888) 0, var(--dot-color, #888) 3px,
+    transparent 3px, transparent 6px
+  ) !important;
+  border: 1px solid var(--dot-color, #888);
+}
 
 /* Active downloads panel — mirrors mem-box for visual continuity */
 .pulls-box {
@@ -718,75 +738,117 @@ function renderProfiles() {
   }
 }
 
-function renderMemory() {
+async function renderMemory() {
   const bar = document.getElementById('mem-bar');
   const legend = document.getElementById('mem-legend');
   const usage = document.getElementById('mem-usage');
   bar.innerHTML = ''; legend.innerHTML = '';
+  usage.textContent = '';
+  usage.style.color = '';
 
-  const sysRam = S.sys?.total_ram_bytes || 512*(1<<30);
-  // Use profile's target RAM if available, otherwise system RAM
-  const profile = S.sel && S.profiles?.profiles?.[S.sel];
-  const targetRamGb = profile?.max_ram_gb || Math.round(sysRam / (1<<30));
-  const targetRam = targetRamGb * (1<<30);
+  if (!S.sel) return;
 
-  const seen = new Set();
-  const segs = [];
-  for (const task of TASK_ORDER) {
-    const pick = S.picks[task];
-    if (!pick) continue;
-    const m = findModel(pick);
-    if (!m || seen.has(m.name)) continue;
-    seen.add(m.name);
-    segs.push({ name: m.name, bytes: m.vram_bytes || m.disk_bytes,
-                color: TC[task] || '#888', task, model: m });
+  let data;
+  try {
+    data = await _fetch('/api/profiles/' + S.sel + '/memory');
+  } catch {
+    usage.textContent = 'Memory unavailable';
+    usage.style.color = 'var(--text3)';
+    return;
+  }
+  if (!data || data.error) {
+    usage.textContent = 'Memory unavailable';
+    usage.style.color = 'var(--text3)';
+    return;
   }
 
-  const totalUsed = segs.reduce((s,x) => s + x.bytes, 0);
-  const overflows = totalUsed > targetRam;
-  const barMax = overflows ? totalUsed : targetRam;
+  const { cap_bytes, budget_bytes, warm = [], warm_bytes, on_demand = [],
+          largest_on_demand_bytes, peak_bytes, state } = data;
 
-  usage.textContent = fmt(totalUsed) + ' / ' + targetRamGb + 'GB';
-  usage.style.color = overflows ? 'var(--red)' : '';
+  if (!cap_bytes) {
+    usage.textContent = 'RAM capacity unknown';
+    usage.style.color = 'var(--text3)';
+    return;
+  }
 
-  segs.forEach(seg => {
+  const stateColor = state === 'thrash' ? 'var(--red)' :
+                     state === 'tight'  ? 'var(--amber)' :
+                     'var(--green)';
+
+  usage.textContent = fmt(warm_bytes) + ' warm / ' + fmt(budget_bytes) + ' budget · ' + fmt(cap_bytes) + ' cap';
+  usage.style.color = stateColor;
+
+  const barMax = cap_bytes || 1;
+
+  // Warm segments — solid stacked, colored by task
+  for (const seg of warm) {
     const pct = (seg.bytes / barMax) * 100;
-    const base = baseName(seg.name);          // segment label: narrow, no provider
-    const short = shortName(seg.name);        // legend + tooltip: provider/base
-    const meta = modelMeta(seg.model);
+    const color = TC[seg.task] || '#888';
+    const base = baseName(seg.name);
+    const m = findModel(seg.name);
+    const meta = m ? modelMeta(m) : '';
     const d = document.createElement('div');
     d.className = 'mem-seg';
     d.style.width = Math.max(pct, 0.8) + '%';
-    d.style.background = seg.color;
+    d.style.background = color;
     d.innerHTML = pct > 5 ? `<span>${base}</span>` : '';
-    d.title = `${seg.name}${meta ? ' · ' + meta : ''}`;
+    d.title = seg.name + (meta ? ' · ' + meta : '');
     bar.appendChild(d);
+  }
 
+  // On-demand hatched segment — transient peak footprint
+  if (largest_on_demand_bytes > 0) {
+    const pct = (largest_on_demand_bytes / barMax) * 100;
+    const d = document.createElement('div');
+    d.className = 'mem-seg mem-seg-ondemand';
+    d.style.width = Math.max(pct, 0.8) + '%';
+    d.title = 'on-demand transient peak · ' + fmt(largest_on_demand_bytes);
+    bar.appendChild(d);
+  }
+
+  // Budget marker (amber)
+  if (budget_bytes > 0 && budget_bytes < cap_bytes) {
+    const marker = document.createElement('div');
+    marker.className = 'mem-bar-budget';
+    marker.style.left = (budget_bytes / barMax * 100) + '%';
+    marker.title = 'budget: ' + fmt(budget_bytes);
+    bar.appendChild(marker);
+  }
+
+  // Cap marker (red, right edge)
+  const capMarker = document.createElement('div');
+  capMarker.className = 'mem-bar-limit';
+  capMarker.style.display = 'block';
+  capMarker.style.left = 'calc(100% - 2px)';
+  capMarker.title = 'cap: ' + fmt(cap_bytes);
+  bar.appendChild(capMarker);
+
+  // Legend: warm models (solid dot)
+  for (const seg of warm) {
+    const color = TC[seg.task] || '#888';
+    const short = shortName(seg.name);
     const li = document.createElement('span');
     li.className = 'mem-legend-item';
-    const legendMeta = meta || fmt(seg.bytes);
-    li.innerHTML = `<span class="mem-dot" style="background:${seg.color}"></span>${short} · ${legendMeta}`;
+    li.innerHTML = `<span class="mem-dot" style="background:${color}"></span>${short} · ${fmt(seg.bytes)}`;
     legend.appendChild(li);
-  });
-
-  if (overflows) {
-    const limit = document.createElement('div');
-    limit.className = 'mem-bar-limit';
-    limit.style.display = 'block';
-    limit.style.left = ((targetRam / barMax) * 100) + '%';
-    bar.appendChild(limit);
-  } else {
-    const freePct = ((targetRam - totalUsed) / barMax) * 100;
-    if (freePct > 0.5) {
-      const free = document.createElement('div');
-      free.className = 'mem-seg';
-      free.style.width = freePct + '%';
-      free.style.background = 'var(--surface2)';
-      free.style.color = 'var(--text3)';
-      if (freePct > 10) free.innerHTML = `<span>${fmt(targetRam - totalUsed)} free</span>`;
-      bar.appendChild(free);
-    }
   }
+
+  // Legend: on-demand models (hatched dot)
+  for (const seg of on_demand) {
+    const color = TC[seg.task] || '#888';
+    const short = shortName(seg.name);
+    const li = document.createElement('span');
+    li.className = 'mem-legend-item';
+    li.innerHTML = `<span class="mem-dot mem-dot-ondemand" style="--dot-color:${color}"></span>${short} · ${fmt(seg.bytes)}`;
+    legend.appendChild(li);
+  }
+
+  // Legend: peak line
+  const peakLi = document.createElement('span');
+  peakLi.className = 'mem-legend-item';
+  peakLi.style.color = stateColor;
+  peakLi.textContent = 'peak ' + fmt(peak_bytes) + ' ' + (peak_bytes <= cap_bytes ? '≤' : '>') + ' ' + fmt(cap_bytes) + ' cap';
+  legend.appendChild(peakLi);
 }
 
 function renderTasks() {

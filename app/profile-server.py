@@ -54,6 +54,7 @@ from lib.models import (
     STANDARD_TASKS,
     TASK_FILTERS,
     THINK_CAPABLE_TASKS,
+    WARM_BUDGET_FRACTION,
     active_params_b,
     migrate_profiles,
     mflux_command,
@@ -62,6 +63,8 @@ from lib.models import (
     model_matches_filter as _model_matches_filter,
     pick_model_from_prefs as _pick_model_from_prefs,
     validate_network_conf,
+    warm_model_names,
+    warm_task_keys,
 )
 
 logging.basicConfig(
@@ -81,6 +84,25 @@ MLX_URL = os.environ.get("MLX_URL", "http://localhost:8000")
 # long enough to survive normal interactive use and short enough not to pin
 # VRAM indefinitely.
 OLLAMA_KEEP_ALIVE = "30m"
+OLLAMA_KEEP_ALIVE_ONDEMAND = "30s"  # non-warm models evict promptly after use
+
+
+def keep_alive_for(model: str) -> str:
+    """Long keep_alive for the active profile's warm models, short otherwise.
+
+    Read-only: this runs on every inference request, so it must NOT migrate or
+    write profiles.json (load_profiles writes on a version bump). It reads the
+    file directly; warm_model_names/warm_task_keys self-heal a stale-version
+    file without persisting. On any error it returns the short (safe) default.
+    """
+    try:
+        data = json.loads(PROFILES_FILE.read_text()) if PROFILES_FILE.exists() else {}
+        warm = warm_model_names(data)
+    except Exception:
+        warm = set()
+    return OLLAMA_KEEP_ALIVE if model in warm else OLLAMA_KEEP_ALIVE_ONDEMAND
+
+
 HTML_FILE = Path(__file__).parent / "profiles.html"
 TOOLS_HTML = Path(__file__).parent / "tools.html"
 
@@ -1232,20 +1254,31 @@ def load_profiles():
     if PROFILES_FILE.exists():
         try:
             data = json.loads(PROFILES_FILE.read_text())
-            if data.get("version", 0) == PROFILES_VERSION:
-                return data
-            refreshed = migrate_profiles(data)
-            save_profiles(refreshed)
-            return refreshed
         except Exception:
-            pass
+            # Existing but unparseable — likely a transient torn read from a
+            # concurrent writer, or genuine corruption. Either way, never
+            # clobber it with defaults (that would wipe custom profiles); serve
+            # defaults in memory and leave the file for the next clean read.
+            return {**DEFAULT_PROFILES}
+        if data.get("version", 0) == PROFILES_VERSION:
+            return data
+        refreshed = migrate_profiles(data)
+        save_profiles(refreshed)
+        return refreshed
     save_profiles(DEFAULT_PROFILES)
     return {**DEFAULT_PROFILES}
 
 
 def save_profiles(data):
     PROFILES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PROFILES_FILE.write_text(json.dumps(data, indent=2))
+    # Atomic write: a concurrent reader (the other process or another Flask
+    # thread) sees either the old or the new complete file, never a torn one.
+    # Unique temp name per writer (process + thread): two concurrent writers
+    # must not share one temp file, or they'd interleave into it (garbage
+    # commit) and the loser's os.replace would hit FileNotFoundError.
+    tmp = PROFILES_FILE.with_name(f"{PROFILES_FILE.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    os.replace(tmp, PROFILES_FILE)
 
 
 def save_mcp_prefs(prefs):
@@ -1408,12 +1441,7 @@ def api_profiles_get():
     profile = data.get("profiles", {}).get(active, {}) if active else {}
     tasks = profile.get("tasks") or {}
     if tasks:
-        current = load_default_prefs()
-        merged = {**current}
-        for task, pick in tasks.items():
-            existing = current.get(task, [])
-            merged[task] = [pick] + [m for m in existing if m != pick]
-        missing, _ = _check_missing_models(merged)
+        missing, _ = _profile_missing_models(profile)
         try:
             with _pulls_lock():
                 dismissed = set(_pulls_read().get("dismissed", []))
@@ -1490,6 +1518,17 @@ def _check_missing_models(prefs):
                 seen.add(c)
                 missing_pullable.append(c)
     return missing_pullable, stale_warnings
+
+
+def _profile_missing_models(profile):
+    """Models the profile's OWN task picks reference but aren't installed.
+
+    Scopes the missing check to the profile's chosen model per task — not the
+    full default-prefs fallback lists — so the UI only ever prompts to download
+    what the active profile actually uses, not every alternate candidate.
+    """
+    tasks = profile.get("tasks") or {}
+    return _check_missing_models({task: [pick] for task, pick in tasks.items()})
 
 
 def _resolve_model_sizes(model_names):
@@ -1601,7 +1640,9 @@ def api_profiles_activate(name):
     if profile.get("thinking"):
         current.setdefault("thinking", {}).update(profile["thinking"])
 
-    missing_ollama, stale_warnings = _check_missing_models(current)
+    # The prompt lists only the profile's own picks, but `current` (the merged
+    # fallback lists) is what gets saved so the MCP server keeps its fallbacks.
+    missing_ollama, stale_warnings = _profile_missing_models(profile)
 
     save_mcp_prefs(current)
 
@@ -1765,7 +1806,8 @@ def api_profiles_warm(name):
         return jsonify({"ok": True, "loaded": []})
 
     models = get_all_models()
-    candidates = list(dict.fromkeys(tasks.values()))
+    warm_keys = warm_task_keys(name, profile)
+    candidates = list(dict.fromkeys(tasks[k] for k in warm_keys if k in tasks))
 
     ollama_to_load = []
     mlx_to_load = []
@@ -1809,6 +1851,57 @@ def api_profiles_warm(name):
 
     _model_cache["data"] = None
     return jsonify({"ok": True, "loaded": loaded})
+
+
+@app.route("/api/profiles/<name>/memory", methods=["GET"])
+def api_profiles_memory(name):
+    """Residency math for the memory bar: warm set vs budget, transient peak, state."""
+    proxied = _proxy_to_desktop(f"/api/profiles/{name}/memory", method="GET")
+    if proxied is not None:
+        return proxied
+    data = load_profiles()
+    profile = data.get("profiles", {}).get(name)
+    if not profile:
+        return jsonify({"error": f"Profile '{name}' not found"}), 404
+
+    models = get_all_models()
+    tasks = profile.get("tasks", {})
+    warm_keys = warm_task_keys(name, profile)
+
+    def size_of(model):
+        info = models.get(model) or {}
+        return int(info.get("vram_bytes") or info.get("disk_bytes") or 0)
+
+    warm_names = list(dict.fromkeys(tasks[k] for k in warm_keys if k in tasks))
+    warm_set = set(warm_names)
+    on_names = list(dict.fromkeys(
+        m for k, m in tasks.items() if k not in warm_keys and m not in warm_set))
+
+    def task_for(model):
+        return next((k for k, m in tasks.items() if m == model), None)
+
+    warm = [{"name": m, "task": task_for(m), "bytes": size_of(m)} for m in warm_names]
+    on_demand = [{"name": m, "task": task_for(m), "bytes": size_of(m)} for m in on_names]
+
+    cap_bytes = int(profile.get("max_ram_gb", 0)) << 30
+    budget_bytes = int(cap_bytes * WARM_BUDGET_FRACTION)
+    warm_bytes = sum(x["bytes"] for x in warm)
+    largest_on_demand = max((x["bytes"] for x in on_demand), default=0)
+    peak_bytes = warm_bytes + largest_on_demand
+
+    if warm_bytes > cap_bytes:
+        state = "thrash"
+    elif warm_bytes > budget_bytes or peak_bytes > cap_bytes:
+        state = "tight"
+    else:
+        state = "ok"
+
+    return jsonify({
+        "cap_bytes": cap_bytes, "budget_bytes": budget_bytes,
+        "warm": warm, "warm_bytes": warm_bytes,
+        "on_demand": on_demand, "largest_on_demand_bytes": largest_on_demand,
+        "peak_bytes": peak_bytes, "state": state,
+    })
 
 
 # ── Tool tester ──────────────────────────────────────────────────────
@@ -1963,7 +2056,7 @@ def _chat(model, backend, messages, timeout=300, tool="chat", image_b64=None, th
                 return resp.json()["choices"][0]["message"]["content"]
             else:
                 body = {"model": model, "messages": messages, "stream": False,
-                        "keep_alive": OLLAMA_KEEP_ALIVE}
+                        "keep_alive": keep_alive_for(model)}
                 if not think:
                     body["think"] = False
                 resp = requests.post(f"{OLLAMA_URL}/api/chat", json=body,
@@ -2019,7 +2112,7 @@ def _chat_stream(model, backend, messages, think=True, tool="chat"):
                     f"{_requests_error_detail(e)}") from e
         else:
             body = {"model": model, "messages": messages, "stream": True,
-                    "keep_alive": OLLAMA_KEEP_ALIVE}
+                    "keep_alive": keep_alive_for(model)}
             if not think:
                 body["think"] = False
             try:
@@ -2316,7 +2409,7 @@ def _handle_test_image_gen(body, pick):
         try:
             resp = requests.post(f"{OLLAMA_URL}/api/generate", json={
                 "model": model, "prompt": body["prompt"], "stream": False,
-                "keep_alive": OLLAMA_KEEP_ALIVE,
+                "keep_alive": keep_alive_for(model),
             }, timeout=300)
             resp.raise_for_status()
             image_b64 = resp.json().get("image", "")
@@ -2517,7 +2610,7 @@ def _handle_test_embed(body, pick):
         else:
             resp = requests.post(f"{OLLAMA_URL}/api/embed", json={
                 "model": model, "input": [body["text"]],
-                "keep_alive": OLLAMA_KEEP_ALIVE,
+                "keep_alive": keep_alive_for(model),
             }, timeout=60)
             resp.raise_for_status()
             embeddings = resp.json().get("embeddings", [])

@@ -438,6 +438,104 @@ class TestRoutes:
         missing_names = [m["name"] for m in data["missing"]]
         assert "gone-model:7b" in missing_names
 
+    def test_api_profiles_get_missing_is_active_picks_only(self, client, profiles_dir):
+        """The page-load download prompt lists only the active profile's chosen
+        models — not every fallback candidate from the default prefs."""
+        ps.save_profiles({
+            "version": ps.PROFILES_VERSION, "active": "t",
+            "profiles": {"t": {"label": "T", "tasks": {
+                "code": "pick-coder:7b", "general": "pick-gen:7b"}}},
+        })
+        fallbacks = {"code": ["pick-coder:7b", "fallback-coder:70b"],
+                     "general": ["pick-gen:7b", "fallback-gen:70b"],
+                     "reasoning": ["unrelated:70b"]}
+        with patch.object(ps, "load_default_prefs", return_value=fallbacks), \
+             patch.object(ps, "get_all_models",
+                          return_value={"installed:1b": {"backend": "ollama"}}), \
+             patch.object(ps, "_resolve_model_sizes",
+                          side_effect=lambda names: [{"name": n, "size_gb": None} for n in names]):
+            resp = client.get("/api/profiles")
+        names = {m["name"] for m in resp.get_json().get("missing", [])}
+        assert names == {"pick-coder:7b", "pick-gen:7b"}
+
+    def test_memory_warm_falls_back_to_canonical_for_stale_preset(self, client):
+        """A preset profile stored WITHOUT a `warm` key (e.g. a v27 file written
+        before warm existed) must still resolve its canonical warm set, not an
+        empty one — otherwise the bar shows 0B warm and everything hatched."""
+        GB = 1 << 30
+        # '128gb' preset, but the stored dict has NO 'warm' key.
+        prof = {"max_ram_gb": 128,
+                "tasks": {"general": "qwen3.6:27b-mlx-bf16", "embedding": "qwen3-embedding:8b",
+                          "code": "qwen3-coder-next:latest"}}
+        models = {"qwen3.6:27b-mlx-bf16": {"backend": "ollama", "vram_bytes": 55 * GB},
+                  "qwen3-embedding:8b": {"backend": "ollama", "vram_bytes": 8 * GB},
+                  "qwen3-coder-next:latest": {"backend": "ollama", "vram_bytes": 52 * GB}}
+        with patch.object(ps, "load_profiles",
+                          return_value={"active": "128gb", "profiles": {"128gb": prof}}), \
+             patch.object(ps, "get_all_models", return_value=models):
+            d = client.get("/api/profiles/128gb/memory").get_json()
+        assert {m["name"] for m in d["warm"]} == {"qwen3.6:27b-mlx-bf16", "qwen3-embedding:8b"}
+        assert d["warm_bytes"] == 63 * GB
+
+    def test_load_profiles_does_not_clobber_unparseable_file(self, client, profiles_dir):
+        # A non-empty but unparseable file (e.g. a transient torn read from a
+        # concurrent writer) must NOT be overwritten with defaults.
+        from pathlib import Path
+        pf = Path(ps.PROFILES_FILE)
+        pf.write_text('{ "version": 27, "profiles": {  TORN')
+        before = pf.read_text()
+        out = ps.load_profiles()
+        assert pf.read_text() == before           # file left intact
+        assert "profiles" in out                  # defaults served in-memory only
+
+    def test_save_profiles_is_atomic_no_tmp_left(self, client, profiles_dir):
+        from pathlib import Path
+        ps.save_profiles({"version": ps.PROFILES_VERSION, "active": None, "profiles": {}})
+        d = Path(ps.PROFILES_FILE).parent
+        assert not any(p.name.endswith(".tmp") for p in d.iterdir())
+        assert ps.load_profiles()["version"] == ps.PROFILES_VERSION
+
+    def test_keep_alive_for_does_not_write_on_version_mismatch(self, client, profiles_dir):
+        # The inference hot path must not migrate-and-write the file.
+        import json as _json
+        from pathlib import Path
+        pf = Path(ps.PROFILES_FILE)
+        stale = {"version": 1, "active": "t",
+                 "profiles": {"t": {"max_ram_gb": 8, "warm": ["general"],
+                                    "tasks": {"general": "warm-model:1b", "code": "cold:1b"}}}}
+        pf.write_text(_json.dumps(stale))
+        before = pf.read_text()
+        assert ps.keep_alive_for("warm-model:1b") == ps.OLLAMA_KEEP_ALIVE
+        assert ps.keep_alive_for("cold:1b") == ps.OLLAMA_KEEP_ALIVE_ONDEMAND
+        assert pf.read_text() == before           # no migrate/save side-effect
+
+    def test_memory_route_proxies_as_get_in_client_mode(self, client):
+        sentinel = ps.Response("{}", content_type="application/json")
+        with patch.object(ps, "_proxy_to_desktop", return_value=sentinel) as prox:
+            client.get("/api/profiles/128gb/memory")
+        assert prox.called
+        assert prox.call_args.kwargs.get("method") == "GET"
+
+    def test_api_profiles_activate_missing_only_picks_but_saves_fallbacks(self, client, profiles_dir):
+        """Activate prompts to pull only the profile's picks, but still saves
+        the full fallback lists into prefs for the MCP server's runtime use."""
+        ps.save_profiles({
+            "version": ps.PROFILES_VERSION, "active": None,
+            "profiles": {"t": {"label": "T", "tasks": {"code": "pick-coder:7b"}}},
+        })
+        fallbacks = {"code": ["pick-coder:7b", "fallback-coder:70b"]}
+        saved = {}
+        with patch.object(ps, "load_default_prefs", return_value=dict(fallbacks)), \
+             patch.object(ps, "get_all_models",
+                          return_value={"installed:1b": {"backend": "ollama"}}), \
+             patch.object(ps, "_resolve_model_sizes",
+                          side_effect=lambda names: [{"name": n, "size_gb": None} for n in names]), \
+             patch.object(ps, "save_mcp_prefs", side_effect=lambda p: saved.update(p)):
+            resp = client.post("/api/profiles/t/activate")
+        names = {m["name"] for m in resp.get_json()["missing"]}
+        assert names == {"pick-coder:7b"}
+        assert "fallback-coder:70b" in saved.get("code", [])
+
     def test_api_test_unknown_tool(self, client):
         resp = client.post("/api/test", json={"tool": "nonexistent"})
         assert resp.status_code == 400
@@ -467,7 +565,8 @@ class TestRoutes:
         assert payload["model"] == "qwen3:8b"
         assert payload["messages"] == [{"role": "user", "content": "say hi"}]
         assert payload["stream"] is False
-        assert payload["keep_alive"] == "30m"
+        # qwen3:8b is not in the warm set for this test, so keep_alive is short
+        assert payload["keep_alive"] == "30s"
 
     def test_api_test_override_round_trip(self, client):
         """Override model flows all the way through to the HTTP request."""
@@ -551,6 +650,90 @@ class TestRoutes:
     def test_tools_page(self, client):
         resp = client.get("/tools")
         assert resp.status_code == 200
+
+    def test_warm_loads_only_warm_set(self, client):
+        prof = {"max_ram_gb": 128, "warm": ["general", "embedding"],
+                "tasks": {"general": "work:bf16", "code": "coder:bf16",
+                          "embedding": "embed:8b", "image_gen": "x/img:latest"}}
+        with patch.object(ps, "load_profiles", return_value={"active": "t", "profiles": {"t": prof}}), \
+             patch.object(ps, "get_all_models", return_value={
+                 "work:bf16": {"backend": "ollama"}, "coder:bf16": {"backend": "ollama"},
+                 "embed:8b": {"backend": "ollama"}, "x/img:latest": {"backend": "ollama"}}), \
+             patch.object(ps, "ollama_get", return_value={"models": []}), \
+             patch("requests.post") as post:
+            post.return_value.status_code = 200
+            r = client.post("/api/profiles/t/warm")
+        assert r.status_code == 200
+        warmed = {c.kwargs["json"]["model"] for c in post.call_args_list}
+        assert warmed == {"work:bf16", "embed:8b"}      # general + embedding only
+        assert "coder:bf16" not in warmed and "x/img:latest" not in warmed
+
+    def _mem(self, client, max_ram_gb, tasks, warm, sizes):
+        prof = {"max_ram_gb": max_ram_gb, "warm": warm, "tasks": tasks}
+        models = {n: {"backend": "ollama", "vram_bytes": b, "disk_bytes": b}
+                  for n, b in sizes.items()}
+        with patch.object(ps, "load_profiles", return_value={"active": "t", "profiles": {"t": prof}}), \
+             patch.object(ps, "get_all_models", return_value=models):
+            return client.get("/api/profiles/t/memory").get_json()
+
+    def test_memory_ok(self, client):
+        GB = 1 << 30
+        d = self._mem(client, 128,
+                      {"general": "w", "embedding": "e", "code": "c"},
+                      ["general", "embedding"],
+                      {"w": 55 * GB, "e": 8 * GB, "c": 52 * GB})
+        assert d["warm_bytes"] == 63 * GB
+        assert d["largest_on_demand_bytes"] == 52 * GB
+        assert d["peak_bytes"] == 115 * GB           # 63 + 52 ≤ 128
+        assert d["state"] == "ok"
+
+    def test_memory_tight_dominant_over_budget(self, client):
+        GB = 1 << 30
+        d = self._mem(client, 512,
+                      {"general": "glm", "embedding": "e", "vision": "v"},
+                      ["general", "embedding"],
+                      {"glm": 418 * GB, "e": 8 * GB, "v": 95 * GB})
+        assert d["warm_bytes"] == 426 * GB           # > 333 budget, ≤ 512 cap
+        assert d["peak_bytes"] == 521 * GB           # 426 + 95 > 512 cap
+        assert d["state"] == "tight"
+
+    def test_memory_tight_peak_exceeds_cap_only(self, client):
+        """tight via peak > cap alone — warm set fits comfortably within budget.
+
+        This path requires warm_bytes ≤ budget_bytes so the tight state can only
+        be reached via the peak_bytes > cap_bytes branch of the OR, not the
+        warm > budget branch.  The dominant-over-budget test above cannot catch
+        a regression here because it fires both OR conditions at once."""
+        GB = 1 << 30
+        # cap=100GB, budget=65GB (65%), warm=64GB ≤ budget, peak=114GB > cap
+        d = self._mem(client, 100,
+                      {"general": "w", "embedding": "e", "code": "c"},
+                      ["general", "embedding"],
+                      {"w": 60 * GB, "e": 4 * GB, "c": 50 * GB})
+        assert d["warm_bytes"] == 64 * GB
+        assert d["warm_bytes"] <= d["budget_bytes"], (
+            "warm must stay within budget — otherwise this test proves nothing "
+            "about the peak-only branch")
+        assert d["peak_bytes"] > d["cap_bytes"]
+        assert d["state"] == "tight"
+
+    def test_memory_thrash_warm_exceeds_cap(self, client):
+        GB = 1 << 30
+        d = self._mem(client, 64,
+                      {"general": "a", "embedding": "b"},
+                      ["general", "embedding"],
+                      {"a": 50 * GB, "b": 30 * GB})   # warm 80 > 64 cap
+        assert d["state"] == "thrash"
+
+    def test_memory_dedup_shared_model_not_double_counted(self, client):
+        GB = 1 << 30
+        d = self._mem(client, 32,
+                      {"general": "s", "code": "s", "embedding": "e", "image_gen": "img"},
+                      ["general", "embedding"],
+                      {"s": 5 * GB, "e": 1 * GB, "img": 6 * GB})
+        # 's' backs warm general AND non-warm code → counted warm only, not on-demand
+        assert {m["name"] for m in d["on_demand"]} == {"img"}
+        assert d["warm_bytes"] == 6 * GB
 
 
 class TestReadServerRamGb:
@@ -945,3 +1128,17 @@ class TestUploadHardening:
             # Anything left over should be small (from other tests), not the big payload
             assert p.stat().st_size <= ps._UPLOAD_MAX_BYTES, \
                 f"oversize file {p} was not cleaned up"
+
+
+class TestKeepAliveFor:
+    """keep_alive_for returns long keep_alive for warm models, short otherwise."""
+
+    def test_keep_alive_for_warm_vs_on_demand(self, profiles_dir):
+        # keep_alive_for reads profiles.json directly (read-only hot path), so
+        # the warm set is whatever is on disk — not a patched load_profiles.
+        ps.save_profiles({"version": ps.PROFILES_VERSION, "active": "t",
+                          "profiles": {"t": {"warm": ["general"],
+                                             "tasks": {"general": "w:bf16", "code": "c:bf16"}}}})
+        assert ps.keep_alive_for("w:bf16") == "30m"
+        assert ps.keep_alive_for("c:bf16") == "30s"
+        assert ps.keep_alive_for("unknown:1b") == "30s"

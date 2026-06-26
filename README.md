@@ -136,7 +136,7 @@ All remote access uses Tailscale — services bind to localhost and are proxied 
 A puppy icon in the menu bar provides:
 
 - **Status** — Ollama/MLX running or down, MCP configured or not
-- **Model Profiles** — preset configurations (Laptop, Desktop, Everyday, Heavyweight) tuned for different RAM tiers
+- **Model Profiles** — RAM-tier presets (32GB / 64GB / 128GB / 512GB) with a warm-set memory view
 - **Task preferences** — pick which model backs each MCP tool
 - **Playground** — web UI to test any tool interactively
 - **Remote Access** — toggle Tailscale-based remote access to the Playground
@@ -220,14 +220,20 @@ All user-writable config lives in `~/.config/local-models/`. The installer sets 
 
 ### Profiles
 
-The installer picks a profile based on RAM. Change it any time from Model Profiles.
+Profiles are keyed to the machine class they target — the installer picks one by RAM, and you can change it any time from Model Profiles. Each tier runs the best models its **RAM and GPU** can drive with headroom: weaker-GPU tiers favor fast low-active-param MoE models, stronger tiers run dense models at higher precision, and the top tier runs frontier.
 
-| RAM | Profile | What fits |
-|-----|---------|-----------|
-| 32GB | Laptop | Qwen3.6:27b for everything (code, general, vision), small TTS, light image gen |
-| 64GB | Desktop | Qwen3.6:27b across the board, plus computer-use, image gen / edit, full Voxtral TTS |
-| 256GB+ | Everyday | Qwen3.6 35B-A3B (general/reasoning/long-context/translation), Qwen3.5:122b vision, full multimedia stack |
-| Opt-in | Heavyweight | Qwen3.5-397B-8bit for general/reasoning/long-context only; rest tracks Everyday. Slow but frontier-tier on the hardest reasoning and 1M-token contexts. |
+| Tier | Workhorse (general/reason/long-ctx/translate) | Code | Vision | Notable |
+|------|-----------------------------------------------|------|--------|---------|
+| **32GB** | `qwen3.5-9b` (small, fast) | (reuse) | (reuse) | embeddinggemma, Kokoro TTS, light image gen |
+| **64GB** | `qwen3.6:27b-mlx` (dense, MLX) | `qwen3.6:27b-coding-mxfp8` | reuse | + computer-use, Fish-S2-Pro TTS |
+| **128GB** | `qwen3.6:27b-mlx-bf16` (dense bf16) | `qwen3-coder-next` | reuse | + image edit, video |
+| **512GB** | `glm-5.2` (frontier) | `qwen3-coder-next` | `qwen3.5:122b` | full multimedia stack |
+
+A 256GB machine runs the `128gb` tier; a 512GB machine runs `512gb`.
+
+#### Warm vs on-demand
+
+Each profile declares a **warm set** (the text workhorse + embedding) that's kept resident for instant task-switching; everything else streams on demand and unloads when idle. On Apple Silicon the GPU is time-sliced — keeping many models resident buys no concurrency and risks memory-pressure thrash — so the warm set is deliberately small (≤ ~65% of RAM, leaving room for the active model's KV cache and the OS). The Models page's memory bar shows the warm set against that budget, with the largest on-demand model as a hatched "transient peak."
 
 | File | What |
 |------|------|
@@ -238,7 +244,7 @@ The installer picks a profile based on RAM. Change it any time from Model Profil
 
 ### MLX Models
 
-Edit `~/.config/mlx-server/config.yaml` (high-memory) or `config-laptop.yaml` (lightweight). Set `on_demand: true` for models that should only load when requested. Use `model_type: multimodal` for vision models. Your edits persist across auto-updates.
+Edit `~/.config/mlx-server/config.yaml`. Every model is `on_demand: true` (loads when first requested, unloads after an idle timeout) — the active profile decides what's actually pulled and kept warm, so one config serves all tiers. Use `model_type: multimodal` for vision models. Your edits persist across auto-updates.
 
 
 ## CLAUDE.md Setup
@@ -268,7 +274,7 @@ super-puppy/
 │   ├── post-update.sh           # Post-update hook for auto-update
 │   └── release.sh               # Cut a gated, signed release (see docs/RELEASING.md)
 ├── config/
-│   ├── mlx-server/              # MLX configs (high-memory + lightweight)
+│   ├── mlx-server/              # MLX server config (single, on-demand)
 │   ├── local-models/            # Network config, preferences
 │   └── launchd/                 # LaunchAgent plists
 ├── lib/

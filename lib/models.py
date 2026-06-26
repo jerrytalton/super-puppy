@@ -398,7 +398,7 @@ TASK_FILTERS: dict[str, dict[str, Any]] = {
 # max_ram_gb cap gates model-pull validation in install.sh and the profile
 # server. The active default is 64gb (fits M5 / mid GPU class).
 
-PROFILES_VERSION = 26  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 27  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -408,6 +408,7 @@ DEFAULT_PROFILES = {
             "label": "32 GB",
             "description": "Base M5 / M1 Max class — small, fast models",
             "max_ram_gb": 32,
+            "warm": ["general", "embedding"],
             "tasks": {
                 "code": "qwen3.5-small",
                 "general": "qwen3.5-small",
@@ -425,6 +426,7 @@ DEFAULT_PROFILES = {
             "label": "64 GB",
             "description": "M5 / mid GPU — dense 27B workhorse",
             "max_ram_gb": 64,
+            "warm": ["general", "embedding"],
             "tasks": {
                 "code": "qwen3.6:27b-coding-mxfp8",
                 "general": "qwen3.6:27b-mlx",
@@ -444,6 +446,7 @@ DEFAULT_PROFILES = {
             "label": "128 GB",
             "description": "M5 Max class — dense bf16 + strong vision",
             "max_ram_gb": 128,
+            "warm": ["general", "embedding"],
             "tasks": {
                 "code": "qwen3-coder-next:latest",
                 "general": "qwen3.6:27b-mlx-bf16",
@@ -465,6 +468,7 @@ DEFAULT_PROFILES = {
             "label": "512 GB",
             "description": "M3 Ultra class — frontier",
             "max_ram_gb": 512,
+            "warm": ["general", "embedding"],
             "tasks": {
                 "code": "qwen3-coder-next:latest",
                 "general": "glm-5.2",
@@ -503,6 +507,39 @@ def migrate_profiles(data: dict) -> dict:
     active = data.get("active")
     refreshed["active"] = active if active in refreshed["profiles"] else DEFAULT_PROFILES["active"]
     return refreshed
+
+
+WARM_BUDGET_FRACTION = 0.65  # warm set should fit under this fraction of tier RAM
+
+
+def warm_task_keys(name: str, profile: dict) -> list[str]:
+    """The warm task keys for a profile, self-healing for stale presets.
+
+    A profiles.json written before `warm` existed (or otherwise missing it) can
+    sit at the current version and never re-migrate. So when a *preset* profile
+    has no `warm` key, fall back to the canonical `DEFAULT_PROFILES` warm list
+    rather than treating it as "nothing warm" (which renders the bar as 0B warm
+    and keeps no models resident). Custom profiles legitimately default to [].
+    """
+    keys = profile.get("warm")
+    if keys is None and name in DEFAULT_PROFILES["profiles"]:
+        keys = DEFAULT_PROFILES["profiles"][name].get("warm", [])
+    return keys or []
+
+
+def warm_model_names(data: dict) -> set[str]:
+    """Model names kept warm for the active profile (its `warm` task keys).
+
+    Returns an empty set when there is no active profile. A task key that isn't
+    present in the profile's tasks is skipped. Stale presets missing `warm` are
+    healed via warm_task_keys.
+    """
+    name = data.get("active")
+    prof = (data.get("profiles") or {}).get(name)
+    if not prof:
+        return set()
+    tasks = prof.get("tasks", {})
+    return {tasks[k] for k in warm_task_keys(name, prof) if k in tasks}
 
 
 # ── Active param computation ──────────────────────────────────────────
