@@ -742,7 +742,9 @@ def save_profiles(data):
     os.makedirs(os.path.dirname(PROFILES_FILE), exist_ok=True)
     # Atomic write — the profile server (another process) and Flask threads can
     # read this file concurrently; os.replace ensures they never see a torn write.
-    tmp = PROFILES_FILE + ".tmp"
+    # Unique temp name per writer so the menu-bar app and the profile server
+    # (separate processes/threads) never share one temp file under concurrency.
+    tmp = f"{PROFILES_FILE}.{os.getpid()}.{threading.get_ident()}.tmp"
     with open(tmp, "w") as f:
         json.dump(data, f, indent=2)
     os.replace(tmp, PROFILES_FILE)

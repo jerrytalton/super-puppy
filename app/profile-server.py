@@ -1273,7 +1273,10 @@ def save_profiles(data):
     PROFILES_FILE.parent.mkdir(parents=True, exist_ok=True)
     # Atomic write: a concurrent reader (the other process or another Flask
     # thread) sees either the old or the new complete file, never a torn one.
-    tmp = PROFILES_FILE.with_name(PROFILES_FILE.name + ".tmp")
+    # Unique temp name per writer (process + thread): two concurrent writers
+    # must not share one temp file, or they'd interleave into it (garbage
+    # commit) and the loser's os.replace would hit FileNotFoundError.
+    tmp = PROFILES_FILE.with_name(f"{PROFILES_FILE.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(json.dumps(data, indent=2))
     os.replace(tmp, PROFILES_FILE)
 
