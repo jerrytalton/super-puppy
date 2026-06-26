@@ -1693,7 +1693,16 @@ def api_models_pull():
         # Explicit resume overrides a previous dismissal.
         if dismissed & set(model_names):
             data["dismissed"] = sorted(dismissed - set(model_names))
-        for name in model_names:
+        for requested in model_names:
+            # A bare MLX served-name (no "/", no ":") isn't an Ollama tag — it
+            # maps to an HF repo in the MLX config. Resolve it to that model_path
+            # so we hf-download it, rather than `ollama pull <served-name>`, which
+            # 404s with "file does not exist" on the manifest.
+            name = requested
+            if "/" not in requested and ":" not in requested:
+                resolved = _load_mlx_config().get(requested, {}).get("model_path")
+                if resolved:
+                    name = resolved
             entry = pulls.get(name)
             if entry and _pid_alive(entry.get("pid", 0)):
                 skipped.append(name)

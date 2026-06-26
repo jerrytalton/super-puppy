@@ -477,6 +477,35 @@ class TestRoutes:
         assert {m["name"] for m in d["warm"]} == {"qwen3.6:27b-mlx-bf16", "qwen3-embedding:8b"}
         assert d["warm_bytes"] == 63 * GB
 
+    def test_pull_resolves_bare_mlx_served_name_to_hf_repo(self, client):
+        # A bare MLX served-name (no "/", no ":") must be pulled as its HF
+        # model_path via hf, not `ollama pull <served-name>` (which 404s on the
+        # manifest — "file does not exist").
+        from contextlib import contextmanager
+        captured = {}
+
+        def fake_worker(name, kind, total):
+            captured["name"] = name
+            captured["kind"] = kind
+            return 4321
+
+        @contextmanager
+        def fake_lock():
+            yield
+
+        with patch.object(ps, "_refuse_if_client", return_value=None), \
+             patch.object(ps, "_load_mlx_config",
+                          return_value={"glm-5.2": {"model_path": "mlx-community/GLM-5.2-4bit"}}), \
+             patch.object(ps, "_pulls_lock", fake_lock), \
+             patch.object(ps, "_pulls_read", return_value={"pulls": {}, "dismissed": []}), \
+             patch.object(ps, "_pulls_write"), \
+             patch.object(ps, "_get_hf_model_size", return_value=None), \
+             patch.object(ps, "_start_pull_worker", side_effect=fake_worker):
+            resp = client.post("/api/models/pull", json={"models": ["glm-5.2"]})
+        assert resp.status_code == 202
+        assert captured["name"] == "mlx-community/GLM-5.2-4bit"
+        assert captured["kind"] == "hf"
+
     def test_load_profiles_does_not_clobber_unparseable_file(self, client, profiles_dir):
         # A non-empty but unparseable file (e.g. a transient torn read from a
         # concurrent writer) must NOT be overwritten with defaults.
