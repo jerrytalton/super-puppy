@@ -477,6 +477,45 @@ class TestRoutes:
         assert {m["name"] for m in d["warm"]} == {"qwen3.6:27b-mlx-bf16", "qwen3-embedding:8b"}
         assert d["warm_bytes"] == 63 * GB
 
+    def test_load_profiles_does_not_clobber_unparseable_file(self, client, profiles_dir):
+        # A non-empty but unparseable file (e.g. a transient torn read from a
+        # concurrent writer) must NOT be overwritten with defaults.
+        from pathlib import Path
+        pf = Path(ps.PROFILES_FILE)
+        pf.write_text('{ "version": 27, "profiles": {  TORN')
+        before = pf.read_text()
+        out = ps.load_profiles()
+        assert pf.read_text() == before           # file left intact
+        assert "profiles" in out                  # defaults served in-memory only
+
+    def test_save_profiles_is_atomic_no_tmp_left(self, client, profiles_dir):
+        from pathlib import Path
+        ps.save_profiles({"version": ps.PROFILES_VERSION, "active": None, "profiles": {}})
+        d = Path(ps.PROFILES_FILE).parent
+        assert not any(p.name.endswith(".tmp") for p in d.iterdir())
+        assert ps.load_profiles()["version"] == ps.PROFILES_VERSION
+
+    def test_keep_alive_for_does_not_write_on_version_mismatch(self, client, profiles_dir):
+        # The inference hot path must not migrate-and-write the file.
+        import json as _json
+        from pathlib import Path
+        pf = Path(ps.PROFILES_FILE)
+        stale = {"version": 1, "active": "t",
+                 "profiles": {"t": {"max_ram_gb": 8, "warm": ["general"],
+                                    "tasks": {"general": "warm-model:1b", "code": "cold:1b"}}}}
+        pf.write_text(_json.dumps(stale))
+        before = pf.read_text()
+        assert ps.keep_alive_for("warm-model:1b") == ps.OLLAMA_KEEP_ALIVE
+        assert ps.keep_alive_for("cold:1b") == ps.OLLAMA_KEEP_ALIVE_ONDEMAND
+        assert pf.read_text() == before           # no migrate/save side-effect
+
+    def test_memory_route_proxies_as_get_in_client_mode(self, client):
+        sentinel = ps.Response("{}", content_type="application/json")
+        with patch.object(ps, "_proxy_to_desktop", return_value=sentinel) as prox:
+            client.get("/api/profiles/128gb/memory")
+        assert prox.called
+        assert prox.call_args.kwargs.get("method") == "GET"
+
     def test_api_profiles_activate_missing_only_picks_but_saves_fallbacks(self, client, profiles_dir):
         """Activate prompts to pull only the profile's picks, but still saves
         the full fallback lists into prefs for the MCP server's runtime use."""
@@ -1094,9 +1133,12 @@ class TestUploadHardening:
 class TestKeepAliveFor:
     """keep_alive_for returns long keep_alive for warm models, short otherwise."""
 
-    def test_keep_alive_for_warm_vs_on_demand(self):
-        prof = {"warm": ["general"], "tasks": {"general": "w:bf16", "code": "c:bf16"}}
-        with patch.object(ps, "load_profiles", return_value={"active": "t", "profiles": {"t": prof}}):
-            assert ps.keep_alive_for("w:bf16") == "30m"
-            assert ps.keep_alive_for("c:bf16") == "30s"
-            assert ps.keep_alive_for("unknown:1b") == "30s"
+    def test_keep_alive_for_warm_vs_on_demand(self, profiles_dir):
+        # keep_alive_for reads profiles.json directly (read-only hot path), so
+        # the warm set is whatever is on disk — not a patched load_profiles.
+        ps.save_profiles({"version": ps.PROFILES_VERSION, "active": "t",
+                          "profiles": {"t": {"warm": ["general"],
+                                             "tasks": {"general": "w:bf16", "code": "c:bf16"}}}})
+        assert ps.keep_alive_for("w:bf16") == "30m"
+        assert ps.keep_alive_for("c:bf16") == "30s"
+        assert ps.keep_alive_for("unknown:1b") == "30s"

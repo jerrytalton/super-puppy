@@ -740,8 +740,12 @@ def warm_ping_targets(data):
 
 def save_profiles(data):
     os.makedirs(os.path.dirname(PROFILES_FILE), exist_ok=True)
-    with open(PROFILES_FILE, "w") as f:
+    # Atomic write — the profile server (another process) and Flask threads can
+    # read this file concurrently; os.replace ensures they never see a torn write.
+    tmp = PROFILES_FILE + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(data, f, indent=2)
+    os.replace(tmp, PROFILES_FILE)
 
 
 def seed_profiles_if_missing():
