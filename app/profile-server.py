@@ -1422,12 +1422,7 @@ def api_profiles_get():
     profile = data.get("profiles", {}).get(active, {}) if active else {}
     tasks = profile.get("tasks") or {}
     if tasks:
-        current = load_default_prefs()
-        merged = {**current}
-        for task, pick in tasks.items():
-            existing = current.get(task, [])
-            merged[task] = [pick] + [m for m in existing if m != pick]
-        missing, _ = _check_missing_models(merged)
+        missing, _ = _profile_missing_models(profile)
         try:
             with _pulls_lock():
                 dismissed = set(_pulls_read().get("dismissed", []))
@@ -1504,6 +1499,17 @@ def _check_missing_models(prefs):
                 seen.add(c)
                 missing_pullable.append(c)
     return missing_pullable, stale_warnings
+
+
+def _profile_missing_models(profile):
+    """Models the profile's OWN task picks reference but aren't installed.
+
+    Scopes the missing check to the profile's chosen model per task — not the
+    full default-prefs fallback lists — so the UI only ever prompts to download
+    what the active profile actually uses, not every alternate candidate.
+    """
+    tasks = profile.get("tasks") or {}
+    return _check_missing_models({task: [pick] for task, pick in tasks.items()})
 
 
 def _resolve_model_sizes(model_names):
@@ -1615,7 +1621,9 @@ def api_profiles_activate(name):
     if profile.get("thinking"):
         current.setdefault("thinking", {}).update(profile["thinking"])
 
-    missing_ollama, stale_warnings = _check_missing_models(current)
+    # The prompt lists only the profile's own picks, but `current` (the merged
+    # fallback lists) is what gets saved so the MCP server keeps its fallbacks.
+    missing_ollama, stale_warnings = _profile_missing_models(profile)
 
     save_mcp_prefs(current)
 
