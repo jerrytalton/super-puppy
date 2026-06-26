@@ -512,17 +512,34 @@ def migrate_profiles(data: dict) -> dict:
 WARM_BUDGET_FRACTION = 0.65  # warm set should fit under this fraction of tier RAM
 
 
+def warm_task_keys(name: str, profile: dict) -> list[str]:
+    """The warm task keys for a profile, self-healing for stale presets.
+
+    A profiles.json written before `warm` existed (or otherwise missing it) can
+    sit at the current version and never re-migrate. So when a *preset* profile
+    has no `warm` key, fall back to the canonical `DEFAULT_PROFILES` warm list
+    rather than treating it as "nothing warm" (which renders the bar as 0B warm
+    and keeps no models resident). Custom profiles legitimately default to [].
+    """
+    keys = profile.get("warm")
+    if keys is None and name in DEFAULT_PROFILES["profiles"]:
+        keys = DEFAULT_PROFILES["profiles"][name].get("warm", [])
+    return keys or []
+
+
 def warm_model_names(data: dict) -> set[str]:
     """Model names kept warm for the active profile (its `warm` task keys).
 
-    Returns an empty set when there is no active profile or it has no warm list.
-    A task key that isn't present in the profile's tasks is skipped.
+    Returns an empty set when there is no active profile. A task key that isn't
+    present in the profile's tasks is skipped. Stale presets missing `warm` are
+    healed via warm_task_keys.
     """
-    prof = (data.get("profiles") or {}).get(data.get("active"))
+    name = data.get("active")
+    prof = (data.get("profiles") or {}).get(name)
     if not prof:
         return set()
     tasks = prof.get("tasks", {})
-    return {tasks[k] for k in prof.get("warm", []) if k in tasks}
+    return {tasks[k] for k in warm_task_keys(name, prof) if k in tasks}
 
 
 # ── Active param computation ──────────────────────────────────────────

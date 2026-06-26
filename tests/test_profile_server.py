@@ -458,6 +458,25 @@ class TestRoutes:
         names = {m["name"] for m in resp.get_json().get("missing", [])}
         assert names == {"pick-coder:7b", "pick-gen:7b"}
 
+    def test_memory_warm_falls_back_to_canonical_for_stale_preset(self, client):
+        """A preset profile stored WITHOUT a `warm` key (e.g. a v27 file written
+        before warm existed) must still resolve its canonical warm set, not an
+        empty one — otherwise the bar shows 0B warm and everything hatched."""
+        GB = 1 << 30
+        # '128gb' preset, but the stored dict has NO 'warm' key.
+        prof = {"max_ram_gb": 128,
+                "tasks": {"general": "qwen3.6:27b-mlx-bf16", "embedding": "qwen3-embedding:8b",
+                          "code": "qwen3-coder-next:latest"}}
+        models = {"qwen3.6:27b-mlx-bf16": {"backend": "ollama", "vram_bytes": 55 * GB},
+                  "qwen3-embedding:8b": {"backend": "ollama", "vram_bytes": 8 * GB},
+                  "qwen3-coder-next:latest": {"backend": "ollama", "vram_bytes": 52 * GB}}
+        with patch.object(ps, "load_profiles",
+                          return_value={"active": "128gb", "profiles": {"128gb": prof}}), \
+             patch.object(ps, "get_all_models", return_value=models):
+            d = client.get("/api/profiles/128gb/memory").get_json()
+        assert {m["name"] for m in d["warm"]} == {"qwen3.6:27b-mlx-bf16", "qwen3-embedding:8b"}
+        assert d["warm_bytes"] == 63 * GB
+
     def test_api_profiles_activate_missing_only_picks_but_saves_fallbacks(self, client, profiles_dir):
         """Activate prompts to pull only the profile's picks, but still saves
         the full fallback lists into prefs for the MCP server's runtime use."""
