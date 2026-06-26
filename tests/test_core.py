@@ -533,3 +533,24 @@ class TestDefaultProfilesSeeding:
         targets = dict(menubar.warm_ping_targets(data))
         assert targets == {"qwen3.6:27b-mlx": "ollama", "embed:8b": "ollama"}
         # HF-repo TTS excluded (not a keep-warm server target); non-warm 'code' absent
+
+    def test_warm_models_bare_names_are_mlx_served(self):
+        """Every bare-name (no ':' and no '/') warm model in a shipped preset
+        must appear as a served_model_name in config/mlx-server/config.yaml.
+        This guards the string-shape heuristic in warm_ping_targets: a bare name
+        is classified as 'mlx', so a bare name that isn't in the MLX config would
+        silently ping the wrong backend (or no backend at all)."""
+        import yaml
+        cfg_path = Path(__file__).resolve().parent.parent / "config" / "mlx-server" / "config.yaml"
+        cfg = yaml.safe_load(cfg_path.read_text())
+        served = {m["served_model_name"] for m in cfg["models"]}
+        for name, prof in menubar.DEFAULT_PROFILES["profiles"].items():
+            tasks = prof["tasks"]
+            for key in prof.get("warm", []):
+                model = tasks[key]
+                if ":" in model or "/" in model:
+                    continue  # ollama tag or HF repo — fine, warm_ping_targets handles them
+                assert model in served, (
+                    f"profile {name!r} warm bare-name {model!r} "
+                    f"is not a served_model_name in mlx-server/config.yaml"
+                )

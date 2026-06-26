@@ -599,6 +599,26 @@ class TestRoutes:
         assert d["peak_bytes"] == 521 * GB           # 426 + 95 > 512 cap
         assert d["state"] == "tight"
 
+    def test_memory_tight_peak_exceeds_cap_only(self, client):
+        """tight via peak > cap alone — warm set fits comfortably within budget.
+
+        This path requires warm_bytes ≤ budget_bytes so the tight state can only
+        be reached via the peak_bytes > cap_bytes branch of the OR, not the
+        warm > budget branch.  The dominant-over-budget test above cannot catch
+        a regression here because it fires both OR conditions at once."""
+        GB = 1 << 30
+        # cap=100GB, budget=65GB (65%), warm=64GB ≤ budget, peak=114GB > cap
+        d = self._mem(client, 100,
+                      {"general": "w", "embedding": "e", "code": "c"},
+                      ["general", "embedding"],
+                      {"w": 60 * GB, "e": 4 * GB, "c": 50 * GB})
+        assert d["warm_bytes"] == 64 * GB
+        assert d["warm_bytes"] <= d["budget_bytes"], (
+            "warm must stay within budget — otherwise this test proves nothing "
+            "about the peak-only branch")
+        assert d["peak_bytes"] > d["cap_bytes"]
+        assert d["state"] == "tight"
+
     def test_memory_thrash_warm_exceeds_cap(self, client):
         GB = 1 << 30
         d = self._mem(client, 64,

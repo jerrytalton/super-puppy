@@ -245,6 +245,7 @@ UPDATE_PRE_HASH_FILE = os.path.expanduser("~/.config/local-models/update_pre_has
 LAUNCH_ATTEMPTED_FILE = os.path.expanduser("~/.config/local-models/launch_attempted")
 PRE_UPDATE_HEALTH_FILE = os.path.expanduser("~/.config/local-models/pre_update_health.json")
 MCP_LOG_FILE = "/tmp/local-models-mcp.log"
+WARM_KEEP_ALIVE = "30m"          # keep_alive duration sent in Ollama keep-warm pings
 
 MODEL_PREFS_FILE = os.path.expanduser("~/.config/local-models/model_preferences.json")
 AUTH_TOKEN_CACHE = os.path.expanduser("~/.config/local-models/mcp_auth_token")
@@ -1447,7 +1448,7 @@ class LocalModelsApp(rumps.App):
             try:
                 if backend == "ollama":
                     body = json.dumps({"model": model, "prompt": "",
-                                       "keep_alive": "30m"}).encode()
+                                       "keep_alive": WARM_KEEP_ALIVE}).encode()
                     req = urllib.request.Request(
                         f"http://localhost:{self.ollama_port}/api/generate",
                         data=body, method="POST")
