@@ -499,3 +499,58 @@ class TestDefaultProfilesSeeding:
     def test_pick_profile_fallback_is_32gb(self):
         # no profile fits 8GB and none named in fallback set except presets
         assert menubar.pick_profile_for_ram(8, menubar.DEFAULT_PROFILES["profiles"]) == "32gb"
+
+    def test_every_preset_has_valid_warm_keys(self):
+        for name, prof in menubar.DEFAULT_PROFILES["profiles"].items():
+            warm = prof.get("warm")
+            assert warm == ["general", "embedding"], f"{name} warm={warm}"
+            for key in warm:
+                assert key in prof["tasks"], f"{name} warm key {key} not in tasks"
+
+    def test_warm_model_names_resolves_active(self):
+        from lib.models import warm_model_names, DEFAULT_PROFILES
+        data = {"active": "128gb", "profiles": DEFAULT_PROFILES["profiles"]}
+        names = warm_model_names(data)
+        tasks = DEFAULT_PROFILES["profiles"]["128gb"]["tasks"]
+        assert names == {tasks["general"], tasks["embedding"]}
+
+    def test_warm_model_names_no_active(self):
+        from lib.models import warm_model_names
+        assert warm_model_names({"active": None, "profiles": {}}) == set()
+
+    def test_migrate_adds_warm_to_presets_custom_absent(self):
+        from lib.models import migrate_profiles
+        out = migrate_profiles({"version": 26, "active": "64gb",
+                                "profiles": {"mine": {"max_ram_gb": 8, "tasks": {"code": "c:1b"}}}})
+        assert out["profiles"]["64gb"]["warm"] == ["general", "embedding"]
+        assert "warm" not in out["profiles"]["mine"]   # custom untouched; absent ⇒ on-demand
+
+    def test_warm_ping_targets_classifies_backend(self):
+        data = {"active": "t", "profiles": {"t": {
+            "warm": ["general", "embedding", "tts"],
+            "tasks": {"general": "qwen3.6:27b-mlx", "embedding": "embed:8b",
+                      "tts": "mlx-community/Some-TTS", "code": "coder:1b"}}}}
+        targets = dict(menubar.warm_ping_targets(data))
+        assert targets == {"qwen3.6:27b-mlx": "ollama", "embed:8b": "ollama"}
+        # HF-repo TTS excluded (not a keep-warm server target); non-warm 'code' absent
+
+    def test_warm_models_bare_names_are_mlx_served(self):
+        """Every bare-name (no ':' and no '/') warm model in a shipped preset
+        must appear as a served_model_name in config/mlx-server/config.yaml.
+        This guards the string-shape heuristic in warm_ping_targets: a bare name
+        is classified as 'mlx', so a bare name that isn't in the MLX config would
+        silently ping the wrong backend (or no backend at all)."""
+        import yaml
+        cfg_path = Path(__file__).resolve().parent.parent / "config" / "mlx-server" / "config.yaml"
+        cfg = yaml.safe_load(cfg_path.read_text())
+        served = {m["served_model_name"] for m in cfg["models"]}
+        for name, prof in menubar.DEFAULT_PROFILES["profiles"].items():
+            tasks = prof["tasks"]
+            for key in prof.get("warm", []):
+                model = tasks[key]
+                if ":" in model or "/" in model:
+                    continue  # ollama tag or HF repo — fine, warm_ping_targets handles them
+                assert model in served, (
+                    f"profile {name!r} warm bare-name {model!r} "
+                    f"is not a served_model_name in mlx-server/config.yaml"
+                )
