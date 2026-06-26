@@ -438,6 +438,46 @@ class TestRoutes:
         missing_names = [m["name"] for m in data["missing"]]
         assert "gone-model:7b" in missing_names
 
+    def test_api_profiles_get_missing_is_active_picks_only(self, client, profiles_dir):
+        """The page-load download prompt lists only the active profile's chosen
+        models — not every fallback candidate from the default prefs."""
+        ps.save_profiles({
+            "version": ps.PROFILES_VERSION, "active": "t",
+            "profiles": {"t": {"label": "T", "tasks": {
+                "code": "pick-coder:7b", "general": "pick-gen:7b"}}},
+        })
+        fallbacks = {"code": ["pick-coder:7b", "fallback-coder:70b"],
+                     "general": ["pick-gen:7b", "fallback-gen:70b"],
+                     "reasoning": ["unrelated:70b"]}
+        with patch.object(ps, "load_default_prefs", return_value=fallbacks), \
+             patch.object(ps, "get_all_models",
+                          return_value={"installed:1b": {"backend": "ollama"}}), \
+             patch.object(ps, "_resolve_model_sizes",
+                          side_effect=lambda names: [{"name": n, "size_gb": None} for n in names]):
+            resp = client.get("/api/profiles")
+        names = {m["name"] for m in resp.get_json().get("missing", [])}
+        assert names == {"pick-coder:7b", "pick-gen:7b"}
+
+    def test_api_profiles_activate_missing_only_picks_but_saves_fallbacks(self, client, profiles_dir):
+        """Activate prompts to pull only the profile's picks, but still saves
+        the full fallback lists into prefs for the MCP server's runtime use."""
+        ps.save_profiles({
+            "version": ps.PROFILES_VERSION, "active": None,
+            "profiles": {"t": {"label": "T", "tasks": {"code": "pick-coder:7b"}}},
+        })
+        fallbacks = {"code": ["pick-coder:7b", "fallback-coder:70b"]}
+        saved = {}
+        with patch.object(ps, "load_default_prefs", return_value=dict(fallbacks)), \
+             patch.object(ps, "get_all_models",
+                          return_value={"installed:1b": {"backend": "ollama"}}), \
+             patch.object(ps, "_resolve_model_sizes",
+                          side_effect=lambda names: [{"name": n, "size_gb": None} for n in names]), \
+             patch.object(ps, "save_mcp_prefs", side_effect=lambda p: saved.update(p)):
+            resp = client.post("/api/profiles/t/activate")
+        names = {m["name"] for m in resp.get_json()["missing"]}
+        assert names == {"pick-coder:7b"}
+        assert "fallback-coder:70b" in saved.get("code", [])
+
     def test_api_test_unknown_tool(self, client):
         resp = client.post("/api/test", json={"tool": "nonexistent"})
         assert resp.status_code == 400

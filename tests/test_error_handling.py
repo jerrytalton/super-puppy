@@ -231,16 +231,17 @@ class TestActivationPruning:
             yield tmp_path
 
     def test_reports_missing_ollama_models(self, client, profiles_dir):
+        # The profile's OWN pick is the missing Ollama model — that's what gets
+        # prompted. A fallback in saved prefs that isn't a pick must NOT.
         ps.save_profiles({
             "version": ps.PROFILES_VERSION,
             "active": None,
             "profiles": {
-                "test": {"label": "Test", "tasks": {"code": "qwen3.5-fast"}},
+                "test": {"label": "Test", "tasks": {"code": "nonexistent-model"}},
             },
         })
         ps.save_mcp_prefs({
-            "code": ["nonexistent-model", "qwen3.5-fast"],
-            "image_gen": ["gone-image-model"],
+            "code": ["nonexistent-model", "also-missing-fallback"],
         })
 
         with patch.object(ps, "get_all_models", return_value=FAKE_MODELS):
@@ -249,21 +250,18 @@ class TestActivationPruning:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["ok"]
-        # Ollama-style names (no "/") go into missing, not warnings
         missing_names = [m["name"] for m in data["missing"]]
-        assert "nonexistent-model" in missing_names
-        assert "gone-image-model" in missing_names
+        assert "nonexistent-model" in missing_names          # the profile's pick
+        assert "also-missing-fallback" not in missing_names  # a fallback, not prompted
 
     def test_reports_missing_hf_models_as_pullable(self, client, profiles_dir):
+        # An HF-path pick for a non-on-demand task is reported as pullable.
         ps.save_profiles({
             "version": ps.PROFILES_VERSION,
             "active": None,
             "profiles": {
-                "test": {"label": "Test", "tasks": {"code": "qwen3.5-fast"}},
+                "test": {"label": "Test", "tasks": {"code": "org/nonexistent-hf-model"}},
             },
-        })
-        ps.save_mcp_prefs({
-            "code": ["org/nonexistent-hf-model"],
         })
 
         with patch.object(ps, "get_all_models", return_value=FAKE_MODELS):
