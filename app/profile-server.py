@@ -1142,13 +1142,18 @@ def _fetch_mlx_models(existing):
 
         total_b, active_b = _parse_mlx_params(model_path, mid)
         bpp, quant = _mlx_quant_footprint(model_path)
+        # The model is downloaded (checked above), so its real on-disk size is
+        # authoritative. Fall back to the params×quant estimate only if the cache
+        # scan is empty — models whose name lacks a parseable param count and
+        # aren't in _KNOWN_MLX_PARAMS (e.g. GLM-5.2-4bit) would otherwise size to 0.
         est_bytes = int(total_b * 1e9 * bpp) if total_b else 0
+        disk_bytes = _hf_cache_bytes(model_path) or est_bytes
 
         models[mid] = {
             "name": mid,
             "backend": "mlx",
-            "disk_bytes": est_bytes,
-            "vram_bytes": est_bytes,
+            "disk_bytes": disk_bytes,
+            "vram_bytes": disk_bytes,
             "total_params_b": total_b,
             "active_params_b": active_b,
             "context": cfg.get("context_length", 0),
@@ -1862,6 +1867,39 @@ def api_profiles_warm(name):
     return jsonify({"ok": True, "loaded": loaded})
 
 
+_model_size_cache = {}
+
+
+def _estimate_model_bytes(model):
+    """Best-effort size (bytes) for a model not present locally, via the HF tree
+    API. Resolves bare MLX served-names to their model_path. Cached — model
+    sizes are static. Returns 0 when no size can be determined."""
+    if model in _model_size_cache:
+        return _model_size_cache[model]
+    path = model
+    if "/" not in model and ":" not in model:
+        path = _load_mlx_config().get(model, {}).get("model_path") or model
+    est = 0
+    if "/" in path:
+        try:
+            gb = _get_hf_model_size(path)
+            if gb:
+                est = int(gb * 1e9)
+        except Exception:
+            est = 0
+    _model_size_cache[model] = est
+    return est
+
+
+def _estimate_model_bytes_bulk(model_names):
+    """Estimate several models concurrently (each is a blocking HF call)."""
+    if not model_names:
+        return {}
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(8, len(model_names))) as ex:
+        return dict(zip(model_names, ex.map(_estimate_model_bytes, model_names)))
+
+
 @app.route("/api/profiles/<name>/memory", methods=["GET"])
 def api_profiles_memory(name):
     """Residency math for the memory bar: warm set vs budget, transient peak, state."""
@@ -1877,7 +1915,7 @@ def api_profiles_memory(name):
     tasks = profile.get("tasks", {})
     warm_keys = warm_task_keys(name, profile)
 
-    def size_of(model):
+    def local_size(model):
         info = models.get(model) or {}
         return int(info.get("vram_bytes") or info.get("disk_bytes") or 0)
 
@@ -1889,8 +1927,21 @@ def api_profiles_memory(name):
     def task_for(model):
         return next((k for k, m in tasks.items() if m == model), None)
 
-    warm = [{"name": m, "task": task_for(m), "bytes": size_of(m)} for m in warm_names]
-    on_demand = [{"name": m, "task": task_for(m), "bytes": size_of(m)} for m in on_names]
+    # Models not present locally (e.g. viewing a higher-RAM tier's profile) have
+    # no local size. Estimate them from HF so the bar shows a real figure rather
+    # than 0, and flag them as estimated/not-downloaded for the UI.
+    all_names = warm_names + on_names
+    local = {m: local_size(m) for m in all_names}
+    estimates = _estimate_model_bytes_bulk([m for m in all_names if local[m] <= 0])
+
+    def entry(m):
+        b = local[m] or estimates.get(m, 0)
+        return {"name": m, "task": task_for(m), "bytes": b,
+                "downloaded": local[m] > 0,
+                "estimated": local[m] <= 0 and b > 0}
+
+    warm = [entry(m) for m in warm_names]
+    on_demand = [entry(m) for m in on_names]
 
     cap_bytes = int(profile.get("max_ram_gb", 0)) << 30
     budget_bytes = int(cap_bytes * WARM_BUDGET_FRACTION)

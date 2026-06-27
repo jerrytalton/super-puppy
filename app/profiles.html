@@ -791,8 +791,10 @@ async function renderMemory() {
     d.className = 'mem-seg';
     d.style.width = Math.max(pct, 0.8) + '%';
     d.style.background = color;
+    if (seg.estimated) d.style.opacity = '0.45';
     d.innerHTML = pct > 5 ? `<span>${base}</span>` : '';
-    d.title = seg.name + (meta ? ' · ' + meta : '');
+    d.title = seg.name + (meta ? ' · ' + meta : '')
+            + (seg.estimated ? ' · estimated size (not downloaded here)' : '');
     bar.appendChild(d);
   }
 
@@ -823,13 +825,17 @@ async function renderMemory() {
   capMarker.title = 'cap: ' + fmt(cap_bytes);
   bar.appendChild(capMarker);
 
+  const sizeLabel = seg => (seg.estimated ? '~' : '') + fmt(seg.bytes)
+                         + (seg.estimated ? ' (not downloaded)' : '');
+
   // Legend: warm models (solid dot)
   for (const seg of warm) {
     const color = TC[seg.task] || '#888';
     const short = shortName(seg.name);
     const li = document.createElement('span');
     li.className = 'mem-legend-item';
-    li.innerHTML = `<span class="mem-dot" style="background:${color}"></span>${short} · ${fmt(seg.bytes)}`;
+    if (seg.estimated) li.style.opacity = '0.6';
+    li.innerHTML = `<span class="mem-dot" style="background:${color}"></span>${short} · ${sizeLabel(seg)}`;
     legend.appendChild(li);
   }
 
@@ -839,7 +845,8 @@ async function renderMemory() {
     const short = shortName(seg.name);
     const li = document.createElement('span');
     li.className = 'mem-legend-item';
-    li.innerHTML = `<span class="mem-dot mem-dot-ondemand" style="--dot-color:${color}"></span>${short} · ${fmt(seg.bytes)}`;
+    if (seg.estimated) li.style.opacity = '0.6';
+    li.innerHTML = `<span class="mem-dot mem-dot-ondemand" style="--dot-color:${color}"></span>${short} · ${sizeLabel(seg)}`;
     legend.appendChild(li);
   }
 
