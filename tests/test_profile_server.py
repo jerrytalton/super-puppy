@@ -477,6 +477,39 @@ class TestRoutes:
         assert {m["name"] for m in d["warm"]} == {"qwen3.6:27b-mlx-bf16", "qwen3-embedding:8b"}
         assert d["warm_bytes"] == 63 * GB
 
+    def test_memory_estimates_undownloaded_warm_model(self, client, profiles_dir):
+        # Viewing a higher tier whose models aren't downloaded here: the warm
+        # model must be estimated from HF and flagged, not counted as 0.
+        ps.save_profiles({"version": ps.PROFILES_VERSION, "active": "big",
+            "profiles": {"big": {"max_ram_gb": 512, "warm": ["general"],
+                "tasks": {"general": "glm-5.2"}}}})
+        with patch.object(ps, "get_all_models", return_value={}), \
+             patch.object(ps, "_load_mlx_config",
+                          return_value={"glm-5.2": {"model_path": "mlx-community/GLM-5.2-4bit"}}), \
+             patch.object(ps, "_get_hf_model_size", return_value=180.0):
+            ps._model_size_cache.clear()
+            d = client.get("/api/profiles/big/memory").get_json()
+        warm = {w["name"]: w for w in d["warm"]}
+        assert warm["glm-5.2"]["bytes"] == int(180 * 1e9)
+        assert warm["glm-5.2"]["estimated"] is True
+        assert warm["glm-5.2"]["downloaded"] is False
+        assert d["warm_bytes"] == int(180 * 1e9)
+
+    def test_mlx_downloaded_model_sized_from_disk_not_name(self):
+        # GLM-5.2-4bit has no parseable param count in its name and isn't in the
+        # known-params table, so the name-based estimate is 0. A downloaded model
+        # must be sized from its real on-disk bytes instead (else the memory bar
+        # shows "0 bit" for it).
+        with patch.object(ps, "_load_mlx_config",
+                          return_value={"glm-5.2": {"model_path": "mlx-community/GLM-5.2-4bit"}}), \
+             patch.object(ps, "_mlx_loaded_ids", return_value=set()), \
+             patch.object(ps, "_hf_model_downloaded", return_value=True), \
+             patch.object(ps, "_hf_cache_bytes", return_value=180 * 10**9), \
+             patch.object(ps, "_mlx_model_has_vision", return_value=False):
+            out = ps._fetch_mlx_models(existing=set())
+        assert out["glm-5.2"]["disk_bytes"] == 180 * 10**9
+        assert out["glm-5.2"]["vram_bytes"] == 180 * 10**9
+
     def test_pull_resolves_bare_mlx_served_name_to_hf_repo(self, client):
         # A bare MLX served-name (no "/", no ":") must be pulled as its HF
         # model_path via hf, not `ollama pull <served-name>` (which 404s on the
