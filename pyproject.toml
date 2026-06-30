@@ -5,9 +5,10 @@ requires-python = ">=3.12"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-m 'not slow'"
+addopts = "-m 'not slow and not correctness'"
 markers = [
     "slow: end-to-end tests that load heavyweight models (minutes). Run with `pytest -m slow` or `pytest -m ''` to include.",
     "smoke: live profile-server tests against real Ollama/MLX/mflux. Included in the default `pytest tests/` run; excluded from the pre-commit hook because cold loads make them occasionally flaky.",
+    "correctness: live tests asserting a tool's OUTPUT is correct (not just nonempty) for the model each profile picks. Excluded from the default run; `bin/release.sh` runs them on version bumps. Run manually with `pytest -m correctness`.",
     "e2e: tests that require live Ollama/MLX services.",
 ]
