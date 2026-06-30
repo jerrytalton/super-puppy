@@ -2013,10 +2013,16 @@ def _pick_model_for_task(task):
     candidates = prefs.get(task, [])
     if isinstance(candidates, str):
         candidates = [candidates]
+    # Vision needs a real encoder, not just a resolvable name: Ollama's
+    # `-mlx` tags advertise vision they can't do. Skip the impostors.
+    is_eligible = None
+    if task == "vision":
+        is_eligible = lambda name, _b: models.get(name, {}).get("has_vision", False)
     result = _pick_model_from_prefs(
         task, models, prefs,
         allow_hf_on_demand=True,
         fallback_to_general=False,
+        is_eligible=is_eligible,
     )
     if result:
         return result[0], result[1], None
