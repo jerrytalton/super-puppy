@@ -40,6 +40,10 @@ git fetch --quiet origin
 [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] || { echo "main not in sync with origin/main" >&2; exit 1; }
 
 echo "== test suite =="
+# The command-line -m overrides pyproject's default (which excludes
+# `correctness`), so this run INCLUDES the live correctness gate — the
+# version-bump check that each tool's chosen model actually honors its
+# input. Correctness/smoke cases skip cleanly if a model isn't pulled.
 uv run --with pytest --with flask --with pyyaml --with requests --with mlx-audio \
     pytest tests/ -q -m "not slow and not e2e"
 
