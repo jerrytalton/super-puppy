@@ -355,6 +355,37 @@ class TestValidateNetworkConf:
         assert any("not valid JSON" in w for w in warnings)
 
 
+class TestModelHasVision:
+    def test_model_info_vision_keys_signal_vision(self):
+        """GGUF vision models carry the vision tower; Ollama exposes it
+        as `<arch>.vision.*` model_info keys. This is the honest signal."""
+        from lib.models import model_has_vision
+        assert model_has_vision(
+            "qwen3.6:27b",
+            ollama_model_info={"qwen35.vision.embedding_length": 1280},
+        )
+        assert model_has_vision(
+            "qwen2-vl",
+            ollama_model_info={"qwen2vl.vision.image_size": 448},
+        )
+
+    def test_mlx_tag_without_vision_tower_is_not_vision(self):
+        """Ollama's MLX-converted tags advertise capabilities:[vision]
+        but ship no vision tower — model_info has zero vision keys and
+        the model silently ignores images. It must NOT be treated as
+        vision-capable, or a loud error becomes silent hallucination."""
+        from lib.models import model_has_vision
+        assert not model_has_vision(
+            "qwen3.6:27b-mlx-bf16",
+            ollama_model_info={"qwen35.context_length": 262144},
+        )
+
+    def test_name_heuristic_still_works(self):
+        from lib.models import model_has_vision
+        assert model_has_vision("qwen3-vl:7b")
+        assert not model_has_vision("nemotron:9b")
+
+
 class TestVideoTask:
     def test_video_in_special_tasks(self):
         from lib.models import SPECIAL_TASKS
