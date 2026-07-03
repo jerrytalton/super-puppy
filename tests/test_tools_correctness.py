@@ -139,16 +139,16 @@ def test_embedding_is_a_real_vector(client):
 # pending a separate fix. `run=False` keeps the suite from hanging on
 # them while still flagging (xpass) the day they start working again.
 
-@pytest.mark.xfail(
-    run=False,
-    reason="mlx-openai-server multimodal (VLM) generation hangs on the mlx "
-           "0.31.2 thread-local-stream bug (mlx-lm #1256); RPC-times-out "
-           "with no output. Upstream. Remove run=False when fixed.")
 def test_computer_use_grounds_on_screenshot(client, smoke_tmp):
+    """Computer_use must return a grounding action, not hang. MLX models
+    now dispatch via a one-shot mlx_vlm subprocess (the :8000 VLM path
+    hangs on the mlx 0.31.2 stream bug); a correct dispatch yields a
+    click action, a broken one errors or times out."""
     model = _model_for("computer_use")
-    img = write_png(smoke_tmp / "screen.png", size=200, rgb=(240, 240, 240))
+    img = write_png(smoke_tmp / "screen.png", size=400, rgb=(240, 240, 240))
     assert_tool_output_contains(
-        client, tool="computer_use", model=model, expect_any=["click", "x", "y"],
+        client, tool="computer_use", model=model,
+        expect_any=["click", "box", '"x"'],
         image_path=str(img), intent="Click the center of the screen.")
 
 
