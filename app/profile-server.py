@@ -2408,11 +2408,26 @@ def _handle_test_computer_use(body, pick):
     if not _is_safe_test_path(image_path):
         return jsonify({"error": _PLAYGROUND_PATH_ERROR}), 403
     intent = body.get("intent", "Describe what actions to take")
-    result = _chat(model, backend, [
-        {"role": "system", "content": _COMPUTER_USE_SYSTEM_PROMPT},
-        {"role": "user", "content": intent},
-    ], tool="computer_use", timeout=300, think=False,
-       image_b64=_read_image_b64(image_path))
+    if backend == "ollama":
+        result = _chat(model, backend, [
+            {"role": "system", "content": _COMPUTER_USE_SYSTEM_PROMPT},
+            {"role": "user", "content": intent},
+        ], tool="computer_use", timeout=300, think=False,
+           image_b64=_read_image_b64(image_path))
+        return jsonify({"result": result, "model": model})
+    # MLX: one-shot mlx_vlm subprocess. The :8000 server's VLM generation
+    # hangs on the mlx 0.31.2 thread-local-stream bug (mlx-lm #1256).
+    from lib import mlx_vlm
+    repo = mlx_vlm.repo_for(model, MLX_SERVER_CONFIG)
+    with _track_playground("computer_use", model, backend):
+        try:
+            raw = mlx_vlm.generate(
+                repo, image_path, _COMPUTER_USE_SYSTEM_PROMPT, intent,
+                max_tokens=1024)
+        except Exception as e:
+            return jsonify({"error": f"computer_use via mlx_vlm: {str(e)[:300]}"})
+    w_h = mlx_vlm.image_dimensions(image_path)
+    result = mlx_vlm.normalize_grounding(raw, *(w_h or (None, None)))
     return jsonify({"result": result, "model": model})
 
 

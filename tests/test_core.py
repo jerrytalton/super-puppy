@@ -386,6 +386,61 @@ class TestModelHasVision:
         assert not model_has_vision("nemotron:9b")
 
 
+class TestMlxVlmDispatch:
+    _SAMPLE = (
+        "Fetching 13 files: 100%\n"
+        "==========\n"
+        "Files: ['/tmp/ui.png'] \n\n"
+        "Prompt: <|im_start|>user\n"
+        "...Click the Submit button.<|im_end|>\n"
+        "<|im_start|>assistant\n\n\n"
+        "<answer>\nClick(box=(529,719))\n</answer>\n\n"
+        "==========\n"
+        "Prompt: 697 tokens\nGeneration: 19 tokens\nPeak memory: 18.6 GB\n"
+    )
+
+    def test_parse_output_extracts_generation(self):
+        from lib.mlx_vlm import parse_output
+        out = parse_output(self._SAMPLE)
+        assert "Click(box=(529,719))" in out
+        assert "Submit button" not in out
+        assert "tokens" not in out and "Peak memory" not in out
+
+    def test_image_dimensions_png(self, tmp_path):
+        import struct
+        from lib.mlx_vlm import image_dimensions
+        png = (b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR"
+               + struct.pack(">II", 800, 600))
+        f = tmp_path / "x.png"
+        f.write_bytes(png)
+        assert image_dimensions(f) == (800, 600)
+
+    def test_normalize_grounding_denormalizes_to_pixels(self):
+        import json
+        from lib.mlx_vlm import normalize_grounding
+        # 529,719 in 0-1000 space on a 1000x700 image -> (529, 503)
+        out = normalize_grounding("<answer>Click(box=(529,719))</answer>", 1000, 700)
+        action = json.loads(out)[0]
+        assert action["action"] == "click"
+        assert action["x"] == 529
+        assert action["y"] == 503
+
+    def test_normalize_grounding_passes_through_unknown(self):
+        from lib.mlx_vlm import normalize_grounding
+        raw = "I cannot determine where to click."
+        assert normalize_grounding(raw, 1000, 700) == raw
+
+    def test_repo_for_resolves_served_name(self, tmp_path):
+        from lib.mlx_vlm import repo_for
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            "models:\n"
+            "  - served_model_name: ui-venus\n"
+            "    model_path: mlx-community/UI-Venus-1.5-8B-bf16\n")
+        assert repo_for("ui-venus", cfg) == "mlx-community/UI-Venus-1.5-8B-bf16"
+        assert repo_for("unknown", cfg) == "unknown"
+
+
 class TestVideoTask:
     def test_video_in_special_tasks(self):
         from lib.models import SPECIAL_TASKS
