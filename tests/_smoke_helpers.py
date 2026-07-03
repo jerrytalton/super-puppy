@@ -139,6 +139,31 @@ def write_text(path: Path, text: str) -> Path:
     return path
 
 
+def write_speech_wav(path: Path, text: str) -> Path:
+    """Generate a mono 16kHz WAV of `text` spoken aloud via macOS `say`.
+
+    Unlike `write_wav` (silence), this produces real speech so a
+    transcription correctness test has ground truth to assert against.
+    Skips the test if `say`/`afconvert` aren't available (non-macOS/CI).
+    """
+    import shutil
+    import subprocess
+    # macOS built-ins live in /usr/bin, which the uv test env's PATH may
+    # omit — resolve absolutely before falling back to PATH lookup.
+    say = "/usr/bin/say" if os.path.exists("/usr/bin/say") else shutil.which("say")
+    afconvert = ("/usr/bin/afconvert" if os.path.exists("/usr/bin/afconvert")
+                 else shutil.which("afconvert"))
+    if not say or not afconvert:
+        pytest.skip("macOS `say`/`afconvert` unavailable — no speech fixture")
+    aiff = path.with_suffix(".aiff")
+    subprocess.run([say, "-o", str(aiff), text], check=True, timeout=30)
+    subprocess.run(
+        [afconvert, "-f", "WAVE", "-d", "LEI16@16000", "-c", "1",
+         str(aiff), str(path)],
+        check=True, timeout=30)
+    return path
+
+
 # ── invocation ──────────────────────────────────────────────────────
 
 # Error substrings that mean "the model isn't pulled" or "the binary isn't

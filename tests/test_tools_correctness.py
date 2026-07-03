@@ -23,8 +23,8 @@ from __future__ import annotations
 import pytest
 
 from tests._smoke_helpers import (
-    assert_tool_output_contains, client, ps, require_local_services,
-    smoke_tmp, write_png,
+    assert_tool_output_contains, call_api_test, client, ps,
+    require_local_services, smoke_tmp, write_png, write_speech_wav, write_text,
 )
 
 # Skip the whole module at collection if local services aren't up.
@@ -76,3 +76,88 @@ def test_translation_actually_translates(client):
         expect_any=["bonjour", "salut"],
         target="French", text="Hello",
     )
+
+
+def test_transcription_reads_speech(client, smoke_tmp):
+    """Whisper must transcribe spoken words, not return empty/garbage.
+    A backend that silently drops the audio fails this."""
+    model = _model_for("transcription")
+    wav = write_speech_wav(smoke_tmp / "speech.wav",
+                           "The quick brown fox jumps over the lazy dog")
+    assert_tool_output_contains(
+        client, tool="transcribe", model=model,
+        expect_any=["quick brown fox", "brown fox", "lazy dog"],
+        audio_path=str(wav),
+    )
+
+
+def test_chat_follows_a_basic_instruction(client):
+    """The general/code text model must actually follow a trivial
+    instruction — catches a model that loads but generates garbage."""
+    model = _model_for("general")
+    assert_tool_output_contains(
+        client, tool="general", model=model, expect_any=["banana"],
+        prompt="Reply with exactly one word: banana",
+    )
+
+
+def test_summarize_reflects_source(client, smoke_tmp):
+    """A summary must mention the source's actual subject."""
+    model = _model_for("long_context")
+    src = write_text(
+        smoke_tmp / "src.txt",
+        "The Eiffel Tower is a wrought-iron lattice tower in Paris, "
+        "France. It was completed in 1889 and is named after Gustave "
+        "Eiffel, whose company designed and built it.\n")
+    assert_tool_output_contains(
+        client, tool="summarize", model=model,
+        expect_any=["eiffel", "paris", "tower"],
+        file_path=str(src),
+    )
+
+
+def test_embedding_is_a_real_vector(client):
+    """The embedder must return a numeric vector of real dimension, not
+    an empty or degenerate result."""
+    model = _model_for("embedding")
+    status, data = call_api_test(
+        client, "embed", model, text="The quick brown fox.")
+    err = str(data.get("error", "")) if isinstance(data, dict) else ""
+    if err and any(s in err.lower() for s in ("not downloaded", "no model", "cannot connect")):
+        pytest.skip(f"embed({model}): {err}")
+    assert status == 200, f"embed({model}) HTTP {status}: {data}"
+    vec = data.get("embeddings")
+    if vec and isinstance(vec[0], list):
+        vec = vec[0]
+    assert vec and len(vec) >= 64, f"degenerate embedding: len={len(vec) if vec else 0}"
+    assert all(isinstance(x, (int, float)) for x in vec[:8]), "non-numeric embedding"
+    assert any(abs(x) > 1e-6 for x in vec), "all-zero embedding vector"
+
+
+# ── Known-broken tools (tracked, not run) ───────────────────────────
+# These are documented failures with root causes outside our control or
+# pending a separate fix. `run=False` keeps the suite from hanging on
+# them while still flagging (xpass) the day they start working again.
+
+@pytest.mark.xfail(
+    run=False,
+    reason="mlx-openai-server multimodal (VLM) generation hangs on the mlx "
+           "0.31.2 thread-local-stream bug (mlx-lm #1256); RPC-times-out "
+           "with no output. Upstream. Remove run=False when fixed.")
+def test_computer_use_grounds_on_screenshot(client, smoke_tmp):
+    model = _model_for("computer_use")
+    img = write_png(smoke_tmp / "screen.png", size=200, rgb=(240, 240, 240))
+    assert_tool_output_contains(
+        client, tool="computer_use", model=model, expect_any=["click", "x", "y"],
+        image_path=str(img), intent="Click the center of the screen.")
+
+
+@pytest.mark.xfail(
+    run=False,
+    reason="local_speak errors with 'mlx-audio' (dispatch/env bug in our "
+           "code, not the mlx stream bug). Remove run=False once fixed.")
+def test_tts_produces_audio(client, smoke_tmp):
+    model = _model_for("tts")
+    assert_tool_output_contains(
+        client, tool="speak", model=model, expect_key="audio_path",
+        expect_any=[".wav", ".mp3", "/tmp"], text="Hello world.")
