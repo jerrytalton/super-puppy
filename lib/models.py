@@ -425,7 +425,7 @@ TASK_FILTERS: dict[str, dict[str, Any]] = {
 # max_ram_gb cap gates model-pull validation in install.sh and the profile
 # server. The active default is 64gb (fits M5 / mid GPU class).
 
-PROFILES_VERSION = 28  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 29  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -442,7 +442,11 @@ DEFAULT_PROFILES = {
                 "reasoning": "qwen3.5-small",
                 "long_context": "qwen3.5-small",
                 "translation": "qwen3.5-small",
-                "vision": "qwen3.5-small",
+                # qwen3.5-small can't serve vision: mlx-openai-server's
+                # multimodal (VLM) path is broken by the mlx 0.31.2 stream
+                # bug (generation hangs, mlx-lm #1256). Vision routes to the
+                # GGUF tag that works. ~17GB, loaded on demand for vision.
+                "vision": "qwen3.6:27b",
                 "transcription": "whisper-v3-turbo",
                 "tts": "mlx-community/Kokoro-82M-bf16",
                 "embedding": "embeddinggemma:300m",
@@ -502,7 +506,10 @@ DEFAULT_PROFILES = {
                 "reasoning": "glm-5.2",
                 "long_context": "glm-5.2",
                 "translation": "glm-5.2",
-                "vision": "qwen3.5:122b",
+                # Dense qwen3.6:27b beats the 35B-A3B MoE on vision benchmarks
+                # (MMMU 82.9 vs 81.7) and actually serves images end-to-end;
+                # the prior qwen3.5:122b pick wasn't even a served model.
+                "vision": "qwen3.6:27b",
                 "transcription": "whisper-v3-turbo",
                 "tts": "mlx-community/fishaudio-s2-pro-8bit-mlx",
                 "embedding": "qwen3-embedding:8b",
