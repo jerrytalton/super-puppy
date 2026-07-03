@@ -26,12 +26,14 @@ models:
     on_demand: true
     on_demand_idle_timeout: 300
 
-  # Small workhorse for the 32gb tier (text + vision) — on demand.
-  # multimodal: Qwen3.5-9B is natively multimodal, and the 32gb profile reuses
-  # this served name for the vision task. (Confirm the 4-bit MLX conversion
-  # actually serves images on first use; if not, point 32gb vision elsewhere.)
+  # Small model for the 32gb tier's text tasks — on demand.
+  # Served as `lm`, NOT multimodal: mlx-openai-server's multimodal (VLM)
+  # generation path is broken by the mlx 0.31.2 thread-local-stream bug
+  # (mlx-lm #1256) — VLM requests hang and RPC-timeout with no output
+  # (verified with ui-venus on a clean server). As `lm` this serves text
+  # fine (verified, 4s). 32gb vision routes to GGUF qwen3.6:27b (Ollama).
   - model_path: mlx-community/Qwen3.5-9B-4bit
-    model_type: multimodal
+    model_type: lm
     served_model_name: qwen3.5-small
     context_length: 32768
     on_demand: true

@@ -49,6 +49,10 @@ def _import_profile_server():
     os.environ.setdefault("OLLAMA_URL", "http://localhost:11434")
     os.environ.setdefault("MLX_URL", "http://localhost:8000")
     os.environ["PROFILE_IDLE_TIMEOUT"] = "0"
+    # In-process Flask testing has no bearer token. Set the documented
+    # escape hatch here so these suites don't depend on another test
+    # module having been collected first (e.g. `pytest -m correctness`).
+    os.environ.setdefault("SP_ALLOW_NO_AUTH", "1")
 
     if "lib.hf_scanner" not in sys.modules:
         stub = MagicMock()
@@ -135,6 +139,31 @@ def write_text(path: Path, text: str) -> Path:
     return path
 
 
+def write_speech_wav(path: Path, text: str) -> Path:
+    """Generate a mono 16kHz WAV of `text` spoken aloud via macOS `say`.
+
+    Unlike `write_wav` (silence), this produces real speech so a
+    transcription correctness test has ground truth to assert against.
+    Skips the test if `say`/`afconvert` aren't available (non-macOS/CI).
+    """
+    import shutil
+    import subprocess
+    # macOS built-ins live in /usr/bin, which the uv test env's PATH may
+    # omit — resolve absolutely before falling back to PATH lookup.
+    say = "/usr/bin/say" if os.path.exists("/usr/bin/say") else shutil.which("say")
+    afconvert = ("/usr/bin/afconvert" if os.path.exists("/usr/bin/afconvert")
+                 else shutil.which("afconvert"))
+    if not say or not afconvert:
+        pytest.skip("macOS `say`/`afconvert` unavailable — no speech fixture")
+    aiff = path.with_suffix(".aiff")
+    subprocess.run([say, "-o", str(aiff), text], check=True, timeout=30)
+    subprocess.run(
+        [afconvert, "-f", "WAVE", "-d", "LEI16@16000", "-c", "1",
+         str(aiff), str(path)],
+        check=True, timeout=30)
+    return path
+
+
 # ── invocation ──────────────────────────────────────────────────────
 
 # Error substrings that mean "the model isn't pulled" or "the binary isn't
@@ -187,6 +216,37 @@ def assert_tool_produces_output(
     assert not err, f"{tool}({model}) error: {err}"
     value = data.get(expect_key)
     assert value, f"{tool}({model}) returned empty {expect_key!r}: {data}"
+    return data
+
+
+def assert_tool_output_contains(
+    client, *, tool: str, model: str, expect_any: list[str],
+    expect_key: str = "result", **body,
+):
+    """Invoke /api/test and assert the output CONTAINS expected ground truth.
+
+    This is the correctness check `assert_tool_produces_output` can't make:
+    a model that hallucinates returns nonempty output and passes the
+    "produces output" smoke test while being completely wrong. Here we
+    feed a known input and assert the answer reflects it — the only way
+    to catch a backend that silently ignores its input (e.g. Ollama's
+    `-mlx` tags that advertise vision but never see the image).
+
+    Skips when the model isn't available; FAILS when output is present
+    but wrong. `expect_any` passes if any substring matches (synonyms).
+    """
+    status, data = call_api_test(client, tool, model, **body)
+    err = str(data.get("error", "")) if isinstance(data, dict) else ""
+    if err and _is_skippable(err):
+        pytest.skip(f"{tool}({model}): {err}")
+    assert status == 200, f"{tool}({model}) HTTP {status}: {data}"
+    assert not err, f"{tool}({model}) error: {err}"
+    value = str(data.get(expect_key, ""))
+    low = value.lower()
+    if not any(s.lower() in low for s in expect_any):
+        raise AssertionError(
+            f"{tool}({model}) output did not contain any of {expect_any!r} "
+            f"— the model likely ignored its input. Got: {value[:200]!r}")
     return data
 
 

@@ -8,6 +8,7 @@ profile server.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -163,6 +164,7 @@ def resolve_pref_candidate(
     *,
     task: str | None = None,
     allow_hf_on_demand: bool = False,
+    is_eligible: Callable[[str, str], bool] | None = None,
 ) -> tuple[str, str] | None:
     """Resolve a single preference candidate to (name, backend).
 
@@ -175,17 +177,29 @@ def resolve_pref_candidate(
        first use.
 
     `models` is `name -> {"backend": ...}` (other keys ignored).
+
+    `is_eligible(name, backend)` gates capability-matched tasks: a
+    candidate that resolves by name but fails the predicate is treated
+    as "no match" (returns None) so the caller can try the next pref.
+    This is what keeps a vision pref that points at a tower-less tag
+    (e.g. an Ollama `-mlx` tag advertising vision it can't do) from
+    being handed back for the vision tool to reject.
+
     Returns None if nothing matches.
     """
-    if candidate in models:
+    def _ok(name: str, backend: str) -> bool:
+        return not is_eligible or is_eligible(name, backend)
+
+    if candidate in models and _ok(candidate, models[candidate]["backend"]):
         return candidate, models[candidate]["backend"]
     suffix_target = candidate + ":"
     latest = candidate + ":latest"
     for name in models:
-        if name == latest or name.startswith(suffix_target):
+        if (name == latest or name.startswith(suffix_target)) \
+                and _ok(name, models[name]["backend"]):
             return name, models[name]["backend"]
     if (allow_hf_on_demand and task in HF_TASK_BACKENDS
-            and "/" in candidate):
+            and "/" in candidate and _ok(candidate, HF_TASK_BACKENDS[task])):
         return candidate, HF_TASK_BACKENDS[task]
     return None
 
@@ -198,6 +212,7 @@ def pick_model_from_prefs(
     override: str | None = None,
     allow_hf_on_demand: bool = False,
     fallback_to_general: bool = False,
+    is_eligible: Callable[[str, str], bool] | None = None,
 ) -> tuple[str, str] | None:
     """Pick the first model matching a task from preferences.
 
@@ -241,7 +256,8 @@ def pick_model_from_prefs(
         for c in candidates:
             result = resolve_pref_candidate(
                 c, models, task=task,
-                allow_hf_on_demand=allow_hf_on_demand)
+                allow_hf_on_demand=allow_hf_on_demand,
+                is_eligible=is_eligible)
             if result:
                 return result
         # If the task itself had prefs but none resolved, don't fall
@@ -258,12 +274,14 @@ def model_has_vision(
     ollama_model_info: dict | None = None,
     hf_config: dict | None = None,
 ) -> bool:
-    """Single source of truth: does this model accept image input?
+    """Single source of truth: does this model have a working vision tower?
 
     Checks four signals in order, any one is sufficient:
 
-    1. Ollama model_info contains a "vision" capability key (the
-       conventional way Ollama reports VL models).
+    1. Ollama model_info contains a "vision" architecture key (e.g.
+       `qwen35.vision.embedding_length`, `qwen2vl.vision.image_size`).
+       These keys are present only when the vision encoder weights are
+       actually in the model — they are the reliable signal.
     2. HF config.json declares a `vision_config` block, either at the
        top level or nested under `text_config` (Qwen3.5 family).
     3. HF config.json's `architectures` list contains a known
@@ -272,6 +290,15 @@ def model_has_vision(
        `vlm`) — last-resort heuristic that matches the Qwen3.5 /
        Qwen-VL / Llama-VL families when their HF cache hasn't been
        scanned yet.
+
+    NOTE: Ollama's top-level `capabilities` array is deliberately NOT
+    used. Its MLX-converted tags (`*-mlx`, `*-mlx-bf16`) advertise
+    `capabilities: ["vision"]` while shipping no vision tower — their
+    model_info has zero `*.vision.*` keys and they silently ignore
+    image input (verified on Ollama 0.30.10, qwen3.6:27b-mlx-bf16).
+    Trusting `capabilities` turns a loud "not vision-capable" error
+    into silent hallucination. The model_info vision keys, present only
+    when the encoder weights exist, are the honest signal.
 
     Pass whatever you have. The caller need not collect both ollama
     and HF signals — one is enough when it matches.
@@ -398,7 +425,7 @@ TASK_FILTERS: dict[str, dict[str, Any]] = {
 # max_ram_gb cap gates model-pull validation in install.sh and the profile
 # server. The active default is 64gb (fits M5 / mid GPU class).
 
-PROFILES_VERSION = 27  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 29  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -415,7 +442,11 @@ DEFAULT_PROFILES = {
                 "reasoning": "qwen3.5-small",
                 "long_context": "qwen3.5-small",
                 "translation": "qwen3.5-small",
-                "vision": "qwen3.5-small",
+                # qwen3.5-small can't serve vision: mlx-openai-server's
+                # multimodal (VLM) path is broken by the mlx 0.31.2 stream
+                # bug (generation hangs, mlx-lm #1256). Vision routes to the
+                # GGUF tag that works. ~17GB, loaded on demand for vision.
+                "vision": "qwen3.6:27b",
                 "transcription": "whisper-v3-turbo",
                 "tts": "mlx-community/Kokoro-82M-bf16",
                 "embedding": "embeddinggemma:300m",
@@ -433,7 +464,7 @@ DEFAULT_PROFILES = {
                 "reasoning": "qwen3.6:27b-mlx",
                 "long_context": "qwen3.6:27b-mlx",
                 "translation": "qwen3.6:27b-mlx",
-                "vision": "qwen3.6:27b-mlx",
+                "vision": "qwen3.6:27b",
                 "transcription": "whisper-v3-turbo",
                 "tts": "mlx-community/fishaudio-s2-pro-8bit-mlx",
                 "embedding": "qwen3-embedding:8b",
@@ -453,7 +484,7 @@ DEFAULT_PROFILES = {
                 "reasoning": "qwen3.6:27b-mlx-bf16",
                 "long_context": "qwen3.6:27b-mlx-bf16",
                 "translation": "qwen3.6:27b-mlx-bf16",
-                "vision": "qwen3.6:27b-mlx-bf16",
+                "vision": "qwen3.6:27b",
                 "transcription": "whisper-v3-turbo",
                 "tts": "mlx-community/fishaudio-s2-pro-8bit-mlx",
                 "embedding": "qwen3-embedding:8b",
@@ -475,7 +506,10 @@ DEFAULT_PROFILES = {
                 "reasoning": "glm-5.2",
                 "long_context": "glm-5.2",
                 "translation": "glm-5.2",
-                "vision": "qwen3.5:122b",
+                # Dense qwen3.6:27b beats the 35B-A3B MoE on vision benchmarks
+                # (MMMU 82.9 vs 81.7) and actually serves images end-to-end;
+                # the prior qwen3.5:122b pick wasn't even a served model.
+                "vision": "qwen3.6:27b",
                 "transcription": "whisper-v3-turbo",
                 "tts": "mlx-community/fishaudio-s2-pro-8bit-mlx",
                 "embedding": "qwen3-embedding:8b",

@@ -192,11 +192,38 @@ class TestPickModel:
             assert "No models loaded" in msg  # no ollama/mlx available
             assert "mcp_preferences.json" in msg  # suggests fix
 
-    def test_override_miss_falls_through(self):
+    def test_vision_skips_non_vision_prefs(self):
+        """A vision pref that resolves to a model without a vision tower
+        must be skipped, not handed back for the vision tool to reject.
+        This is the qwen3.6:27b-mlx-bf16 case: it resolves by name but
+        can't see, so the picker must fall through to a working one."""
+        server._models["qwen3.6:27b-mlx-bf16"] = {"backend": "ollama", "vision": False}
+        server._models["qwen3.6:27b"] = {"backend": "ollama", "vision": True}
+        with patch.object(server, "load_mcp_prefs",
+                          return_value={"vision": ["qwen3.6:27b-mlx-bf16", "qwen3.6:27b"]}):
+            assert server.pick_model("vision") == ("qwen3.6:27b", "ollama")
+
+    def test_vision_no_eligible_model_raises(self):
+        """When nothing has a vision tower, raise — never fall back to a
+        text model via the any-LLM fallback (that produces hallucinations)."""
+        server._models["qwen3.6:27b-mlx-bf16"] = {"backend": "ollama", "vision": False}
+        server._models["dolphin3:8b"] = {"backend": "ollama", "vision": False}
+        with patch.object(server, "load_mcp_prefs",
+                          return_value={"vision": ["qwen3.6:27b-mlx-bf16"]}):
+            with pytest.raises(ValueError, match="vision"):
+                server.pick_model("vision")
+
+    def test_override_miss_raises_not_silent_fallback(self):
+        """An override that doesn't resolve must error, not silently
+        substitute an arbitrary model. A vision request for an unpulled
+        model used to land on an image-gen model instead."""
         server._models["fallback:7b"] = {"backend": "ollama"}
         with patch.object(server, "load_mcp_prefs", return_value={}):
-            name, backend = server.pick_model("code", "nonexistent")
-        assert name == "fallback:7b"
+            with pytest.raises(ValueError) as exc_info:
+                server.pick_model("vision", "nonexistent")
+        msg = str(exc_info.value)
+        assert "nonexistent" in msg
+        assert "not found" in msg
 
 
 # ── load_mcp_prefs / thinking_enabled ──────────────────────────────
@@ -255,6 +282,15 @@ class TestGpuTracking:
         except RuntimeError:
             pass
         assert server._request_history[0]["status"] == "error"
+
+    def test_hf_subprocess_backends_dont_keyerror(self):
+        """TTS/image/video use backends beyond ollama+mlx (mlx-audio,
+        mflux, mlx-video). Tracking must not KeyError on them — that's
+        what broke local_speak with a bare 'mlx-audio' error."""
+        for backend in ("mlx-audio", "mflux", "mlx-video"):
+            with server._gpu_request(backend, f"tts:{backend}"):
+                assert server._gpu_active[backend] == 1
+            assert server._gpu_active[backend] == 0
 
     def test_history_ring_buffer(self):
         for i in range(server._REQUEST_HISTORY_MAX + 10):

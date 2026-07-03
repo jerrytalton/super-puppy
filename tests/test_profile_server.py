@@ -277,6 +277,22 @@ class TestPickModelForTask:
         assert name is None
         assert warning is None
 
+    def test_vision_skips_non_vision_pref(self):
+        """A vision pref pointing at a tower-less model is skipped in
+        favour of one that can actually see (the -mlx-bf16 trap)."""
+        with patch.object(ps, "load_default_prefs",
+                          return_value={"vision": ["qwen3:8b", "qwen3-vl:32b"]}), \
+             patch.object(ps, "get_all_models", return_value=FAKE_MODELS):
+            name, backend, warning = ps._pick_model_for_task("vision")
+        assert name == "qwen3-vl:32b"
+
+    def test_vision_no_capable_model_returns_none(self):
+        with patch.object(ps, "load_default_prefs",
+                          return_value={"vision": ["qwen3:8b"]}), \
+             patch.object(ps, "get_all_models", return_value=FAKE_MODELS):
+            name, backend, warning = ps._pick_model_for_task("vision")
+        assert name is None
+
 
 # ── Profiles CRUD ───────────────────────────────────────────────────
 
