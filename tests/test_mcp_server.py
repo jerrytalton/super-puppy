@@ -292,6 +292,44 @@ class TestGpuTracking:
                 assert server._gpu_active[backend] == 1
             assert server._gpu_active[backend] == 0
 
+
+# ── mlx_vlm subprocess dispatch (computer_use Option 2) ─────────────
+
+class TestMlxVlmOutputParse:
+    _SAMPLE = (
+        "Calling `python -m mlx_vlm.generate` directly is deprecated.\n"
+        "Fetching 13 files: 100%\n"
+        "==========\n"
+        "Files: ['/tmp/ui.png'] \n\n"
+        "Prompt: <|im_start|>user\n"
+        "<|vision_start|><|image_pad|><|vision_end|>Click the Submit button.<|im_end|>\n"
+        "<|im_start|>assistant\n\n\n"
+        "<answer>\nClick(box=(529,719))\n</answer>\n\n"
+        "==========\n"
+        "Prompt: 697 tokens, 315.777 tokens-per-sec\n"
+        "Generation: 19 tokens, 33.708 tokens-per-sec\n"
+        "Peak memory: 18.634 GB\n"
+    )
+
+    def test_extracts_generation_not_prompt_or_stats(self):
+        out = server._parse_mlx_vlm_output(self._SAMPLE)
+        assert "Click(box=(529,719))" in out
+        # must not leak the echoed prompt or the timing stats
+        assert "Click the Submit button" not in out
+        assert "tokens-per-sec" not in out
+        assert "Peak memory" not in out
+        assert "Files:" not in out
+
+    def test_plain_assistant_marker_fallback(self):
+        raw = ("==========\n"
+               "Prompt: describe this\nassistant\n"
+               "A red circle.\n"
+               "==========\nPrompt: 5 tokens\n")
+        assert server._parse_mlx_vlm_output(raw).strip() == "A red circle."
+
+    def test_no_fences_returns_stripped_input(self):
+        assert server._parse_mlx_vlm_output("  just text  ") == "just text"
+
     def test_history_ring_buffer(self):
         for i in range(server._REQUEST_HISTORY_MAX + 10):
             with server._gpu_request("ollama", f"test:{i}"):

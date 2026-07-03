@@ -836,6 +836,88 @@ async def local_vision(
     return f"{warning}[{model_name} via {backend}]\n\n{result}"
 
 
+# ── mlx_vlm subprocess dispatch (computer_use / MLX multimodal) ──────
+#
+# mlx-openai-server (the persistent :8000 server) loads a model on one
+# thread and generates on another; mlx 0.31.2 made compute streams
+# thread-local, so multimodal generation hangs/RPC-times-out there
+# (mlx-lm #1256). A one-shot `mlx_vlm` subprocess loads AND generates in
+# a single fresh process/thread, sidestepping the bug entirely — the same
+# pattern mflux (image) and mlx-audio (TTS) already use.
+
+
+def _parse_mlx_vlm_output(raw: str) -> str:
+    """Extract the generated text from `mlx_vlm generate` CLI output.
+
+    The CLI wraps output in `====` fences: a header (Files:/Prompt: with
+    the echoed chat-templated prompt), the generation, a closing fence,
+    then timing stats. The generation is what follows the prompt echo's
+    assistant-turn marker.
+    """
+    parts = raw.split("==========")
+    block = parts[1] if len(parts) >= 3 else (parts[-1] if len(parts) > 1 else raw)
+    for marker in ("<|im_start|>assistant", "\nassistant\n", "assistant\n"):
+        i = block.rfind(marker)
+        if i != -1:
+            return block[i + len(marker):].strip()
+    lines = [ln for ln in block.splitlines()
+             if not ln.startswith(("Files:", "Prompt:"))]
+    return "\n".join(lines).strip()
+
+
+def _mlx_repo_for(served_name: str) -> str:
+    """Resolve an MLX served-model name to its HuggingFace repo path via
+    the mlx-server config, falling back to the name itself."""
+    try:
+        import yaml
+        cfg = yaml.safe_load(MLX_SERVER_CONFIG.read_text())
+        for m in cfg.get("models", []):
+            if m.get("served_model_name") == served_name:
+                return m.get("model_path", served_name)
+    except Exception:
+        pass
+    return served_name
+
+
+def _mlx_vlm_command() -> list[str]:
+    """Interpreter+module prefix for `mlx_vlm generate`.
+
+    Honors $MLX_VLM_PYTHON (a python with mlx_vlm installed) for speed;
+    otherwise uses an isolated `uvx` env so the MCP server needn't carry
+    the heavy mlx-vlm dependency itself.
+    """
+    override = os.environ.get("MLX_VLM_PYTHON")
+    if override:
+        return [override, "-m", "mlx_vlm", "generate"]
+    # Prefer the mlx-openai-server tool env: it already carries mlx_vlm AND
+    # torch (the Qwen3-VL processors need torch), and it's guaranteed present
+    # since it's what served these models before. Fall back to an isolated
+    # uvx env with torch pulled in explicitly.
+    tool_py = os.path.expanduser(
+        "~/.local/share/uv/tools/mlx-openai-server/bin/python")
+    if os.path.exists(tool_py):
+        return [tool_py, "-m", "mlx_vlm", "generate"]
+    return ["uvx", "--from", "mlx-vlm==0.4.4", "--with", "torch",
+            "python", "-m", "mlx_vlm", "generate"]
+
+
+async def mlx_vlm_generate(repo: str, image_path: str, system: str,
+                           prompt: str, max_tokens: int = 1024,
+                           timeout: int = 600) -> str:
+    """Run a one-shot mlx_vlm subprocess and return the generated text."""
+    cmd = [*_mlx_vlm_command(), "--model", repo, "--image", image_path,
+           "--system", system, "--prompt", prompt,
+           "--max-tokens", str(max_tokens), "--temperature", "0.0"]
+    loop = asyncio.get_event_loop()
+    proc = await loop.run_in_executor(None, lambda: subprocess.run(
+        cmd, capture_output=True, text=True, timeout=timeout,
+        env={**os.environ, "PATH": f"/opt/homebrew/bin:{os.environ.get('PATH', '')}"},
+    ))
+    if proc.returncode != 0:
+        raise RuntimeError(f"mlx_vlm failed: {proc.stderr[-500:]}")
+    return _parse_mlx_vlm_output(proc.stdout)
+
+
 _COMPUTER_USE_SYSTEM = """You are a GUI automation assistant. Given a screenshot and an intent, return a JSON array of actions to accomplish the intent.
 
 Each action is one of:
@@ -885,8 +967,8 @@ async def local_computer_use(
 
     with _gpu_request(backend, f"computer_use:{model_name}"):
         try:
-            async with httpx.AsyncClient(timeout=300) as client:
-                if backend == "ollama":
+            if backend == "ollama":
+                async with httpx.AsyncClient(timeout=300) as client:
                     messages = [
                         {"role": "system", "content": _COMPUTER_USE_SYSTEM},
                         {"role": "user", "content": intent, "images": [img_b64]},
@@ -897,30 +979,22 @@ async def local_computer_use(
                         f"{OLLAMA_URL}/api/chat", json=body)
                     resp.raise_for_status()
                     result = resp.json()["message"]["content"]
-                else:
-                    content = [
-                        {"type": "text", "text": intent},
-                        {"type": "image_url",
-                         "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
-                    ]
-                    body = {"model": model_name,
-                            "messages": [
-                                {"role": "system", "content": _COMPUTER_USE_SYSTEM},
-                                {"role": "user", "content": content},
-                            ],
-                            "max_tokens": 4096, "stream": False,
-                            "chat_template_kwargs": {"enable_thinking": False}}
-                    resp = await client.post(
-                        f"{MLX_URL}/v1/chat/completions", json=body)
-                    resp.raise_for_status()
-                    result = resp.json()["choices"][0]["message"]["content"]
+            else:
+                # MLX multimodal: dispatch via a one-shot mlx_vlm subprocess
+                # rather than the :8000 server, whose VLM generation hangs
+                # on the mlx 0.31.2 thread-local-stream bug (mlx-lm #1256).
+                repo = _mlx_repo_for(model_name)
+                result = await mlx_vlm_generate(
+                    repo, screenshot_path, _COMPUTER_USE_SYSTEM, intent,
+                    max_tokens=1024)
         except httpx.HTTPStatusError as e:
             return f"Error: Computer use ({model_name}): HTTP {e.response.status_code} — {e.response.text[:200]}"
         except httpx.ConnectError:
-            url = OLLAMA_URL if backend == "ollama" else MLX_URL
-            return f"Error: Computer use ({model_name}): cannot connect to {url}"
+            return f"Error: Computer use ({model_name}): cannot connect to {OLLAMA_URL}"
         except httpx.TimeoutException:
             return f"Error: Computer use ({model_name}): timed out after 300s"
+        except (subprocess.TimeoutExpired, RuntimeError) as e:
+            return f"Error: Computer use ({model_name}) via mlx_vlm: {str(e)[:300]}"
 
     try:
         actions = json.loads(result)
