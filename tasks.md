@@ -30,13 +30,26 @@ Root cause: **mlx 0.31.2 made compute streams thread-local**; mlx-openai-server 
 | transcription (whisper) | :8000 | ✅ works |
 | text chat (Qwen models) | :8000 | ✅ works |
 | text chat (`llama-3b`, Llama arch) | :8000 | ❌ `Stream(gpu,1)` — but **unused** (health-check only) |
-| **computer_use** (multimodal VLM) | :8000 | ❌ **generation hangs / RPC-timeout** — the real casualty |
-| **tts** (`local_speak`) | mlx-audio | ❌ errors `'mlx-audio'` — separate dispatch/env bug, likely fixable |
+| **computer_use** (multimodal VLM) | ~~:8000~~ → **mlx_vlm subprocess** | ✅ **FIXED** — see below |
+| **tts** (`local_speak`) | mlx-audio | ✅ **FIXED** — GPU-tracking dict KeyError'd on non-ollama/mlx backends; now a defaultdict |
 
-Actionable follow-ups (not the upstream mlx bug):
-- Fix the `local_speak` `'mlx-audio'` dispatch error (ours).
-- `llama-3b` failing likely makes SP's status report MLX "down" even though real (on-demand) models work — point the health-check at a working model or stop eager-loading it.
-- `computer_use`: blocked on upstream mlx/mlx-openai-server; only "fix" is a full pre-0.31.2 stack downgrade (loses qwen3.6 support). Track mlx-lm #1256.
+### computer_use fix — one-shot mlx_vlm subprocess (`lib/mlx_vlm.py`)
+
+Rather than the persistent `:8000` server (which hangs), MLX grounding
+models are now dispatched as a one-shot `mlx_vlm generate` subprocess —
+load + generate in a single process/thread, sidestepping the thread-local
+stream bug (same pattern as mflux/mlx-audio). Shared by the MCP server
+(async) and profile server (sync). Output is normalized: UI-Venus/Qwen-VL
+`Click(box=(x,y))` (0-1000 space) → pixel-coord JSON click action.
+`install.sh` installs a dedicated `mlx-vlm` uv tool env with torch +
+torchvision. Verified end-to-end (MCP tool + profile-server + harness).
+
+Remaining `:8000` notes (not blocking any tool):
+- `llama-3b` (Llama arch) still `Stream(gpu,1)` on `:8000`, but it's the
+  unused startup health-check model. SP's MLX status is liveness-only
+  (`/v1/models`), so it reports "up" regardless — no false-down.
+- The persistent-server LM/whisper paths that DO work (Qwen text,
+  transcription) are unaffected. Track mlx-lm #1256 for the real fix.
 
 ## Next Steps
 
