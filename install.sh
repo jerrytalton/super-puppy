@@ -570,6 +570,17 @@ if [ "$RAM_CHECK" -ge 32 ] && ! command -v mflux-generate > /dev/null; then
     uv tool install --python 3.12 mflux || echo "  Warning: mflux install failed (image gen/edit will be unavailable)"
 fi
 
+# mlx-vlm for computer_use / MLX vision grounding. Dispatched as a one-shot
+# subprocess (lib/mlx_vlm.py) rather than through mlx-openai-server, whose
+# persistent server hangs on multimodal generation (mlx 0.31.2 thread-local
+# stream bug, mlx-lm #1256). Needs torch for the Qwen3-VL processors, so pull
+# it into the tool env. lib.mlx_vlm.command() looks for this env first.
+if [ "$RAM_CHECK" -ge 32 ] && [ ! -x "$HOME/.local/share/uv/tools/mlx-vlm/bin/python" ]; then
+    echo "  Installing mlx-vlm (computer_use)..."
+    uv tool install --python 3.12 "mlx-vlm==0.4.4" --with torch --with torchvision \
+        || echo "  Warning: mlx-vlm install failed (computer_use on MLX models will be unavailable)"
+fi
+
 # ffmpeg for audio transcription (WebM conversion, format support)
 if ! command -v ffmpeg > /dev/null; then
     if command -v brew > /dev/null; then
