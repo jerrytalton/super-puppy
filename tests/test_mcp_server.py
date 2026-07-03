@@ -283,6 +283,15 @@ class TestGpuTracking:
             pass
         assert server._request_history[0]["status"] == "error"
 
+    def test_hf_subprocess_backends_dont_keyerror(self):
+        """TTS/image/video use backends beyond ollama+mlx (mlx-audio,
+        mflux, mlx-video). Tracking must not KeyError on them — that's
+        what broke local_speak with a bare 'mlx-audio' error."""
+        for backend in ("mlx-audio", "mflux", "mlx-video"):
+            with server._gpu_request(backend, f"tts:{backend}"):
+                assert server._gpu_active[backend] == 1
+            assert server._gpu_active[backend] == 0
+
     def test_history_ring_buffer(self):
         for i in range(server._REQUEST_HISTORY_MAX + 10):
             with server._gpu_request("ollama", f"test:{i}"):
