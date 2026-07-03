@@ -94,6 +94,8 @@ Task filters (`TASK_FILTERS`) and the `model_matches_filter()` function are shar
 
 Qwen3.5 models (served via MLX) ARE vision-capable. The MCP server must detect this correctly for `local_vision` to work. Vision detection for MLX models cannot rely on Ollama's `model_info` — it must check the model name or HuggingFace config. The `local_vision` tool must dispatch to the correct backend (Ollama `/api/chat` vs MLX `/v1/chat/completions` with OpenAI-style image content).
 
+**Ollama's `-mlx`/`-mlx-bf16` tags lie about vision.** They advertise `capabilities: ["vision"]` via `/api/show` but ship no vision tower — their `model_info` has zero `*.vision.*` keys and they silently ignore image input and hallucinate (verified Ollama 0.30.10, `qwen3.6:27b-mlx-bf16`). `model_has_vision()` therefore detects vision from `model_info` vision keys / HF config, **never** from the top-level `capabilities` array — trusting it turns a loud "not vision-capable" error into silent wrong answers. For Ollama-backed vision, route to the **GGUF** tag (`qwen3.6:27b`), which carries the encoder. `pick_model` is capability-gated for vision: a pref that resolves to a tower-less model is skipped, not handed back. See the model-playbook for the full evidence.
+
 ## Shared Library (`lib/models.py`)
 
 Single source of truth for constants and logic used by menubar, MCP server, and profile server:

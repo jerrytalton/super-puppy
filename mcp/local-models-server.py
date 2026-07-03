@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 import uuid
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from pathlib import Path
 
 import httpx
@@ -226,8 +226,11 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
 # Tracks concurrent requests per backend so tools can warn about contention.
 # Also maintains a ring buffer of completed requests for the activity dashboard.
 
-_gpu_active: dict[str, int] = {"ollama": 0, "mlx": 0}
-_gpu_active_details: dict[str, list[dict]] = {"ollama": [], "mlx": []}
+# defaultdict so any backend is trackable — TTS (mlx-audio), image
+# (mflux) and video (mlx-video) dispatch to subprocess backends beyond
+# ollama/mlx; a plain dict KeyError'd on them (broke local_speak).
+_gpu_active: dict[str, int] = defaultdict(int)
+_gpu_active_details: dict[str, list[dict]] = defaultdict(list)
 _gpu_lock = threading.Lock()
 _REQUEST_HISTORY_MAX = 200
 _request_history: list[dict] = []
@@ -508,21 +511,37 @@ def pick_model(task: str, override: str | None = None) -> tuple[str, str]:
     *something* picked rather than 500-ing the caller.
     """
     prefs = load_mcp_prefs()
+
+    # Vision is gated on an actual vision tower, not just a resolvable
+    # name: Ollama's `-mlx` tags advertise vision but ship no encoder
+    # and silently hallucinate. Skip any candidate that isn't really
+    # vision-capable so the picker falls through to one that is.
+    is_eligible = None
+    if task == "vision":
+        is_eligible = lambda name, _backend: _models.get(name, {}).get("vision", False)
+
     result = pick_model_from_prefs(
         task, _models, prefs,
         override=override,
         fallback_to_general=True,
+        is_eligible=is_eligible,
     )
     if result:
         return result
 
-    # Fall back: models tagged with a specific task, then any LLM.
-    for name, info in _models.items():
-        if info.get("task") == task:
-            return name, info["backend"]
-    for name, info in _models.items():
-        if info["backend"] in ("ollama", "mlx"):
-            return name, info["backend"]
+    # An override that failed to resolve must NOT silently fall back to
+    # an arbitrary model — the caller asked for a specific one and would
+    # rather hear "not found" than get a surprise (e.g. a vision request
+    # for an unpulled "qwen3-vl" landing on an image-gen model).
+    if override is None:
+        # Fall back: models tagged with a specific task, then any LLM —
+        # but only ones that pass the task's eligibility gate.
+        for name, info in _models.items():
+            if info.get("task") == task and (not is_eligible or is_eligible(name, info["backend"])):
+                return name, info["backend"]
+        for name, info in _models.items():
+            if info["backend"] in ("ollama", "mlx") and (not is_eligible or is_eligible(name, info["backend"])):
+                return name, info["backend"]
 
     # Build actionable error message.
     available = [n for n, m in _models.items() if m["backend"] in ("ollama", "mlx")]
