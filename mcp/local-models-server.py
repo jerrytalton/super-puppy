@@ -836,6 +836,23 @@ async def local_vision(
     return f"{warning}[{model_name} via {backend}]\n\n{result}"
 
 
+# ── mlx_vlm subprocess dispatch (computer_use / MLX multimodal) ──────
+# The one-shot subprocess dispatch lives in lib.mlx_vlm so the MCP server
+# (async) and the profile server (sync) share it. Here we just wrap the
+# sync core in an executor for the async tool handlers.
+from lib import mlx_vlm as _mlx_vlm
+
+
+async def mlx_vlm_generate(repo: str, image_path: str, system: str,
+                           prompt: str, max_tokens: int = 1024,
+                           timeout: int = 600) -> str:
+    """Async wrapper over lib.mlx_vlm.generate (one-shot subprocess)."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lambda: _mlx_vlm.generate(
+        repo, image_path, system, prompt, max_tokens=max_tokens,
+        timeout=timeout))
+
+
 _COMPUTER_USE_SYSTEM = """You are a GUI automation assistant. Given a screenshot and an intent, return a JSON array of actions to accomplish the intent.
 
 Each action is one of:
@@ -885,8 +902,8 @@ async def local_computer_use(
 
     with _gpu_request(backend, f"computer_use:{model_name}"):
         try:
-            async with httpx.AsyncClient(timeout=300) as client:
-                if backend == "ollama":
+            if backend == "ollama":
+                async with httpx.AsyncClient(timeout=300) as client:
                     messages = [
                         {"role": "system", "content": _COMPUTER_USE_SYSTEM},
                         {"role": "user", "content": intent, "images": [img_b64]},
@@ -897,30 +914,25 @@ async def local_computer_use(
                         f"{OLLAMA_URL}/api/chat", json=body)
                     resp.raise_for_status()
                     result = resp.json()["message"]["content"]
-                else:
-                    content = [
-                        {"type": "text", "text": intent},
-                        {"type": "image_url",
-                         "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
-                    ]
-                    body = {"model": model_name,
-                            "messages": [
-                                {"role": "system", "content": _COMPUTER_USE_SYSTEM},
-                                {"role": "user", "content": content},
-                            ],
-                            "max_tokens": 4096, "stream": False,
-                            "chat_template_kwargs": {"enable_thinking": False}}
-                    resp = await client.post(
-                        f"{MLX_URL}/v1/chat/completions", json=body)
-                    resp.raise_for_status()
-                    result = resp.json()["choices"][0]["message"]["content"]
+            else:
+                # MLX multimodal: dispatch via a one-shot mlx_vlm subprocess
+                # rather than the :8000 server, whose VLM generation hangs
+                # on the mlx 0.31.2 thread-local-stream bug (mlx-lm #1256).
+                repo = _mlx_vlm.repo_for(model_name, MLX_SERVER_CONFIG)
+                raw = await mlx_vlm_generate(
+                    repo, screenshot_path, _COMPUTER_USE_SYSTEM, intent,
+                    max_tokens=1024)
+                w_h = _mlx_vlm.image_dimensions(screenshot_path)
+                result = _mlx_vlm.normalize_grounding(
+                    raw, *(w_h or (None, None)))
         except httpx.HTTPStatusError as e:
             return f"Error: Computer use ({model_name}): HTTP {e.response.status_code} — {e.response.text[:200]}"
         except httpx.ConnectError:
-            url = OLLAMA_URL if backend == "ollama" else MLX_URL
-            return f"Error: Computer use ({model_name}): cannot connect to {url}"
+            return f"Error: Computer use ({model_name}): cannot connect to {OLLAMA_URL}"
         except httpx.TimeoutException:
             return f"Error: Computer use ({model_name}): timed out after 300s"
+        except (subprocess.TimeoutExpired, RuntimeError) as e:
+            return f"Error: Computer use ({model_name}) via mlx_vlm: {str(e)[:300]}"
 
     try:
         actions = json.loads(result)

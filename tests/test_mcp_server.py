@@ -30,7 +30,10 @@ for mod_name in (
     "starlette.responses",
     "torch", "sentence_transformers",
     "mlx_audio", "mlx_audio.tts",
-    "anyio", "yaml", "pyyaml",
+    "anyio",
+    # NB: do NOT mock yaml here — it's only imported lazily inside
+    # functions no MCP test exercises, and mocking it globally poisons
+    # lib.mlx_vlm.repo_for's yaml.safe_load in other test modules.
 ):
     if mod_name not in sys.modules:
         if mod_name.startswith("starlette"):
@@ -291,6 +294,10 @@ class TestGpuTracking:
             with server._gpu_request(backend, f"tts:{backend}"):
                 assert server._gpu_active[backend] == 1
             assert server._gpu_active[backend] == 0
+
+
+# mlx_vlm dispatch parsing/normalization lives in lib.mlx_vlm and is
+# unit-tested in test_core.py::TestMlxVlmDispatch.
 
     def test_history_ring_buffer(self):
         for i in range(server._REQUEST_HISTORY_MAX + 10):
