@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 import uuid
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from pathlib import Path
 
 import httpx
@@ -226,8 +226,11 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
 # Tracks concurrent requests per backend so tools can warn about contention.
 # Also maintains a ring buffer of completed requests for the activity dashboard.
 
-_gpu_active: dict[str, int] = {"ollama": 0, "mlx": 0}
-_gpu_active_details: dict[str, list[dict]] = {"ollama": [], "mlx": []}
+# defaultdict so any backend is trackable — TTS (mlx-audio), image
+# (mflux) and video (mlx-video) dispatch to subprocess backends beyond
+# ollama/mlx; a plain dict KeyError'd on them (broke local_speak).
+_gpu_active: dict[str, int] = defaultdict(int)
+_gpu_active_details: dict[str, list[dict]] = defaultdict(list)
 _gpu_lock = threading.Lock()
 _REQUEST_HISTORY_MAX = 200
 _request_history: list[dict] = []
