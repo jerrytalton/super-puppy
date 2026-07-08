@@ -23,9 +23,20 @@ from __future__ import annotations
 import pytest
 
 from tests._smoke_helpers import (
-    assert_tool_output_contains, call_api_test, client, ps,
-    require_local_services, smoke_tmp, write_png, write_speech_wav, write_text,
+    assert_media_output, assert_tool_output_contains, call_api_test, client,
+    ps, require_local_services, smoke_tmp, write_png, write_speech_wav,
+    write_text,
 )
+
+
+def _avg_rgb(path):
+    """Average (r,g,b) of an image, downscaled — for asserting a
+    generated/edited image is the color it was asked to be."""
+    from PIL import Image
+    im = Image.open(path).convert("RGB").resize((8, 8))
+    px = list(im.getdata())
+    n = len(px)
+    return tuple(sum(p[i] for p in px) // n for i in range(3))
 
 # Skip the whole module at collection if local services aren't up.
 require_local_services()
@@ -152,12 +163,48 @@ def test_computer_use_grounds_on_screenshot(client, smoke_tmp):
         image_path=str(img), intent="Click the center of the screen.")
 
 
-@pytest.mark.xfail(
-    run=False,
-    reason="local_speak errors with 'mlx-audio' (dispatch/env bug in our "
-           "code, not the mlx stream bug). Remove run=False once fixed.")
-def test_tts_produces_audio(client, smoke_tmp):
+# ── media generation tools ──────────────────────────────────────────
+
+def test_image_gen_produces_requested_color(client):
+    """The image model must generate an image that is the color it was
+    asked for — a model that ignores the prompt fails the color check."""
+    model = _model_for("image_gen")
+    path = assert_media_output(
+        client, tool="image_gen", model=model, expect_key="image_path",
+        min_bytes=1000,
+        prompt="a solid pure blue rectangle filling the entire frame, "
+               "flat blue color, no other colors, no text")
+    r, g, b = _avg_rgb(path)
+    assert b > r and b > g, f"expected a blue image, got avg rgb ({r},{g},{b})"
+
+
+def test_image_edit_recolors_the_input(client, smoke_tmp):
+    """Editing a solid-red image to blue must shift the output toward
+    blue — catches an edit model that ignores its input."""
+    model = _model_for("image_edit")
+    red = write_png(smoke_tmp / "red_in.png", size=256, rgb=(220, 20, 20))
+    path = assert_media_output(
+        client, tool="image_edit", model=model, expect_key="image_path",
+        min_bytes=1000, image_path=str(red),
+        prompt="change the color to solid blue, keep it a flat solid color")
+    r, g, b = _avg_rgb(path)
+    assert b > r, f"edit did not move red->blue: avg rgb ({r},{g},{b})"
+
+
+def test_tts_produces_audio(client):
+    """local_speak must produce a real, non-empty audio file (regression
+    guard for the 'mlx-audio' GPU-tracking KeyError, now fixed)."""
     model = _model_for("tts")
-    assert_tool_output_contains(
+    assert_media_output(
         client, tool="speak", model=model, expect_key="audio_path",
-        expect_any=[".wav", ".mp3", "/tmp"], text="Hello world.")
+        min_bytes=2000, text="Testing the local text to speech pipeline.")
+
+
+@pytest.mark.slow
+def test_video_produces_mp4(client):
+    """Video generation must produce a real, non-empty MP4. Marked slow —
+    Wan2.2 t2v takes minutes; skips cleanly if the model isn't pulled."""
+    model = _model_for("video")
+    assert_media_output(
+        client, tool="video", model=model, expect_key="video_path",
+        min_bytes=10000, prompt="a red ball bouncing", num_frames=17)
