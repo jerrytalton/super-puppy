@@ -54,10 +54,18 @@ def _import_profile_server():
     # module having been collected first (e.g. `pytest -m correctness`).
     os.environ.setdefault("SP_ALLOW_NO_AUTH", "1")
 
+    # Use the REAL hf_scanner but stub only the slow full-cache scan.
+    # The snapshot helpers (resolve_hf_snapshot, check_wan_snapshot_ready)
+    # must stay real, or the video handler sees a MagicMock and reports the
+    # model as "still downloading" — silently skipping the video test.
     if "lib.hf_scanner" not in sys.modules:
-        stub = MagicMock()
-        stub.scan_hf_cache = MagicMock(return_value=[])
-        sys.modules["lib.hf_scanner"] = stub
+        try:
+            import lib.hf_scanner as _hfs
+            _hfs.scan_hf_cache = MagicMock(return_value=[])
+        except Exception:
+            stub = MagicMock()
+            stub.scan_hf_cache = MagicMock(return_value=[])
+            sys.modules["lib.hf_scanner"] = stub
 
     ps_path = REPO / "app" / "profile-server.py"
     spec = importlib.util.spec_from_file_location(
