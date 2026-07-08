@@ -425,7 +425,7 @@ TASK_FILTERS: dict[str, dict[str, Any]] = {
 # max_ram_gb cap gates model-pull validation in install.sh and the profile
 # server. The active default is 64gb (fits M5 / mid GPU class).
 
-PROFILES_VERSION = 29  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 30  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -448,7 +448,7 @@ DEFAULT_PROFILES = {
                 # GGUF tag that works. ~17GB, loaded on demand for vision.
                 "vision": "qwen3.6:27b",
                 "transcription": "whisper-v3-turbo",
-                "tts": "mlx-community/Kokoro-82M-bf16",
+                "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
                 "embedding": "embeddinggemma:300m",
                 "image_gen": "x/flux2-klein:latest",
             },
@@ -466,7 +466,7 @@ DEFAULT_PROFILES = {
                 "translation": "qwen3.6:27b-mlx",
                 "vision": "qwen3.6:27b",
                 "transcription": "whisper-v3-turbo",
-                "tts": "mlx-community/fishaudio-s2-pro-8bit-mlx",
+                "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
                 "embedding": "qwen3-embedding:8b",
                 "unfiltered": "dolphin3:8b",
                 "computer_use": "ui-venus",
@@ -486,7 +486,7 @@ DEFAULT_PROFILES = {
                 "translation": "qwen3.6:27b-mlx-bf16",
                 "vision": "qwen3.6:27b",
                 "transcription": "whisper-v3-turbo",
-                "tts": "mlx-community/fishaudio-s2-pro-8bit-mlx",
+                "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
                 "embedding": "qwen3-embedding:8b",
                 "unfiltered": "dolphin3:8b",
                 "computer_use": "ui-venus",
@@ -511,7 +511,7 @@ DEFAULT_PROFILES = {
                 # the prior qwen3.5:122b pick wasn't even a served model.
                 "vision": "qwen3.6:27b",
                 "transcription": "whisper-v3-turbo",
-                "tts": "mlx-community/fishaudio-s2-pro-8bit-mlx",
+                "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
                 "embedding": "qwen3-embedding:8b",
                 "unfiltered": "dolphin3:8b",
                 "computer_use": "ui-venus",
