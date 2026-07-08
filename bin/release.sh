@@ -44,7 +44,13 @@ echo "== test suite =="
 # `correctness`), so this run INCLUDES the live correctness gate — the
 # version-bump check that each tool's chosen model actually honors its
 # input. Correctness/smoke cases skip cleanly if a model isn't pulled.
-uv run --with pytest --with flask --with pyyaml --with requests --with mlx-audio \
+# mlx-audio is pinned to the SAME git commit the servers use, and transformers
+# to <5.13 — PyPI mlx-audio + transformers 5.13 can't load the TTS models
+# (register/weight-key mismatches), so the tts correctness test would false-fail.
+# pillow backs the image_gen/image_edit color assertions.
+uv run --with pytest --with flask --with pyyaml --with requests --with pillow \
+    --with "transformers==5.12.1" \
+    --with "mlx-audio[tts] @ git+https://github.com/Blaizzy/mlx-audio.git@e42e1431fcf89af313375296c46d03a0153c4aa7" \
     pytest tests/ -q -m "not slow and not e2e"
 
 echo "== fleet compat gate (vs $PREV) =="

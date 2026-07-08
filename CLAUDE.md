@@ -114,7 +114,9 @@ Dependencies are pinned to exact versions in PEP 723 inline metadata.
 
 ## Testing
 
-Run all tests: `uv run --with pytest --with flask --with pyyaml --with requests --with mlx-audio pytest tests/ -v`
+Run all tests: `uv run --with pytest --with flask --with pyyaml --with requests --with pillow --with "transformers==5.12.1" --with "mlx-audio[tts] @ git+https://github.com/Blaizzy/mlx-audio.git@e42e1431fcf89af313375296c46d03a0153c4aa7" pytest tests/ -v`
+
+(mlx-audio is pinned to the servers' git commit and transformers to <5.13 — PyPI mlx-audio + transformers 5.13 can't load the TTS models, so the tts tests would false-fail. pillow backs the image color-correctness assertions.)
 
 - `tests/test_core.py` — 28 unit tests (mocked subprocesses, real sockets)
 - `tests/test_deployment.py` — 53 tests for auto-update, rollback, tag verification, and post-update pipeline

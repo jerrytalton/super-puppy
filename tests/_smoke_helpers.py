@@ -178,6 +178,10 @@ SKIP_SUBSTRINGS = (
     "connection error",
     "connectionerror",
     "is not installed",
+    # Media models that aren't pulled yet — skip, don't fail.
+    "still downloading",
+    "pull it from",
+    "not downloaded",
     # Backend Python module not importable in this env — e.g. the test installs
     # PyPI `mlx-audio` while the servers pin a git commit with a different module
     # layout. The backend is unavailable here, so skip rather than hard-fail.
@@ -217,6 +221,30 @@ def assert_tool_produces_output(
     value = data.get(expect_key)
     assert value, f"{tool}({model}) returned empty {expect_key!r}: {data}"
     return data
+
+
+def assert_media_output(client, *, tool: str, model: str, expect_key: str,
+                        min_bytes: int = 100, **body):
+    """Invoke /api/test for a media tool and assert it produced a real,
+    non-empty output file on disk.
+
+    Skips when the model/tool isn't available (not pulled, not installed).
+    Fails when the tool ran but produced nothing/an error — that's the
+    signal a media tool is actually broken. Returns the output path.
+    """
+    status, data = call_api_test(client, tool, model, **body)
+    err = str(data.get("error", "")) if isinstance(data, dict) else ""
+    if err and _is_skippable(err):
+        pytest.skip(f"{tool}({model}): {err}")
+    assert status == 200, f"{tool}({model}) HTTP {status}: {data}"
+    assert not err, f"{tool}({model}) error: {err}"
+    path = data.get(expect_key)
+    assert path and Path(path).exists(), \
+        f"{tool}({model}) produced no file at {expect_key!r}: {data}"
+    size = Path(path).stat().st_size
+    assert size >= min_bytes, \
+        f"{tool}({model}) output is only {size}B (min {min_bytes}) — likely broken"
+    return path
 
 
 def assert_tool_output_contains(
