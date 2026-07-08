@@ -202,9 +202,14 @@ def test_tts_produces_audio(client):
 
 @pytest.mark.slow
 def test_video_produces_mp4(client):
-    """Video generation must produce a real, non-empty MP4. Marked slow —
-    Wan2.2 t2v takes minutes; skips cleanly if the model isn't pulled."""
+    """Video generation must produce a real, non-empty MP4. Marked slow;
+    skips cleanly if the model isn't pulled. Tiny resolution/frame count
+    keep it to ~90s — at Wan2.2's default 1280x704 it's ~100 min/clip
+    (per-step time scales with the latent size)."""
     model = _model_for("video")
+    # dims/frames go straight into the subprocess argv, so they must be
+    # strings (the Playground sends strings; JSON ints raise TypeError).
     assert_media_output(
         client, tool="video", model=model, expect_key="video_path",
-        min_bytes=10000, prompt="a red ball bouncing", num_frames=17)
+        min_bytes=10000, prompt="a red ball bouncing",
+        num_frames="9", width="320", height="320")
