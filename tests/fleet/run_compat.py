@@ -53,8 +53,11 @@ def _server(server_repo: Path):
            "OLLAMA_URL": "http://127.0.0.1:1", "MLX_URL": "http://127.0.0.1:1"}
     stderr_f = tempfile.NamedTemporaryFile(
         mode="w+", prefix="sp-compat-srv-", suffix=".log", delete=False)
+    # --python 3.12 like the production launchers: a bare `uv run` honors any
+    # .python-version found walking up from cwd (e.g. a stale alpha pin in
+    # $HOME), and the server's deps don't resolve on prerelease interpreters.
     proc = subprocess.Popen(
-        ["uv", "run", "mcp/local-models-server.py"],
+        ["uv", "run", "--python", "3.12", "mcp/local-models-server.py"],
         cwd=str(server_repo), env=env,
         stdout=subprocess.DEVNULL, stderr=stderr_f)
 
@@ -106,7 +109,7 @@ def _server(server_repo: Path):
 def _run_probe(probe_repo: Path) -> int:
     """Run probe_repo's contract probe against the server on PORT."""
     return subprocess.call(
-        ["uv", "run", "tests/fleet/contract_probe.py",
+        ["uv", "run", "--python", "3.12", "tests/fleet/contract_probe.py",
          "--base", f"http://127.0.0.1:{PORT}",
          "--token", TOKEN, "--host-header", HOST_HEADER],
         cwd=str(probe_repo))
