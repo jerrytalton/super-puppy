@@ -145,3 +145,59 @@ If the menu bar comes back up cleanly and stays up for a minute, you're good. Th
 **If even an older tag won't launch:** the problem is environmental, not code. Check `/tmp/local-models-menubar.log` and `/tmp/local-models-profile-server.log` for the crash trace. Most often it's a missing CLI tool — `which uv`, `which hf`, `which mflux-generate` should all resolve.
 
 **Why we don't auto-recover from this:** the rollback path is the least-iteratively-testable code in the repo (you can't safely simulate it without bricking your install), and recovery code that bugs out is harder to debug than the original problem. The pragmatic answer is a clear runbook plus eyeballs.
+
+---
+
+## glm-5.2 fails to load: "Missing 285 parameters" (or unloads every 5 minutes)
+
+**2026-07-08 — mlx-lm / mlx-openai-server, 512gb tier.**
+
+Chat tasks on the 512gb profile return 503 with `Failed to load on-demand
+model 'glm-5.2' … Missing 285 parameters: model.layers.N.self_attn.indexer.*`,
+and the MLX startup log shows a load attempt failing every ~4 minutes (the
+keep-warm ping). Alternatively glm-5.2 loads fine but the log shows it
+reloading all 390GB every ~5 minutes.
+
+Cause, load failure: GLM-5.2's `glm_moe_dsa` architecture places DSA indexer
+weights on 21 of its 78 layers and shares them across the rest
+(`config.indexer_types`). Released mlx-lm (through 0.31.3) subclasses
+DeepSeek-V3.2 directly and builds an indexer on **every** layer, so strict
+loading wants 5 tensors × 57 shared layers = 285 parameters the checkpoint
+deliberately doesn't have. The fix is upstream PR ml-explore/mlx-lm#1463,
+unmerged as of 2026-07-08. Installing mlx-lm ≥ 0.31.2 wholesale is not an
+option: it requires mlx ≥ 0.31.2, which still has the thread-local-stream
+hang (mlx-lm #1256).
+
+Cause, reload thrash: two mlx-openai-server bugs (present through 1.8.1) —
+a hardcoded 300s handler-readiness timeout that a 390GB checkpoint can
+exceed, and a warm-request fast path that bypasses the on-demand refcount,
+so the idle timer unloads the model 300s after load no matter how much
+traffic (including keep-warm pings) it serves.
+
+**Fix:** run the pinned patch script (install.sh does this automatically on
+512GB machines), then restart services from the menu bar:
+
+```bash
+bin/apply-mlx-glm52-patch.sh
+```
+
+It ports the PR's two model files onto the installed mlx-lm 0.31.1 (pinned
+to the PR head sha; fails closed if the ref moves), raises the readiness
+timeout to 1800s, and fixes the refcount bypass. Idempotent — re-run it any
+time (`uv tool upgrade mlx-openai-server` wipes the patches). It exits
+without touching anything once upstream mlx-lm ships `indexer_types`
+support; at that point delete the script and the install.sh hook.
+
+Verified working: strict load (0 missing / 0 unexpected), coherent recall at
+5.1K prompt tokens (past the `index_topk=2048` sparse-attention engagement
+point, where #1453 reported gibberish), and stable warm residency against
+the menu bar's 240s pings.
+
+Related limit: the registry keeps only ONE on-demand model loaded, so any
+other on-demand MLX request (most commonly whisper transcription) evicts
+glm-5.2 and the next chat pays the ~80s reload. Mitigation on 512GB
+machines: mark both whisper models (`whisper-v3-turbo`, `whisper-v3`)
+static in `~/.config/mlx-server/config.yaml` (drop their
+`on_demand`/`on_demand_idle_timeout` lines — they're 1.6GB and 3GB, fine to
+keep resident). post-update.sh merges rather than overwrites, so the edit
+survives updates.

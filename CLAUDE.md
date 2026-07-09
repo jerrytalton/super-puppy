@@ -20,6 +20,7 @@ Local AI model infrastructure for Apple Silicon. Menu bar app + standard APIs + 
 - MLX models marked `on_demand: true` download on first use and unload after idle timeout.
 - All remote access uses **Tailscale only** — no mDNS, no LAN binding. `tailscale serve` proxies all ports with TLS.
 - The `local-models-mcp-detect` wrapper probes the desktop via Tailscale before launching. Clients use the server if reachable, fall back to localhost.
+- **glm-5.2 (512gb tier) requires patched mlx-lm/mlx-openai-server.** Released mlx-lm can't load GLM-5.2's shared-indexer layout, and stock mlx-openai-server can't keep a 390GB on-demand model resident. `bin/apply-mlx-glm52-patch.sh` (run by install.sh on 512GB machines, idempotent, pinned to upstream PR ml-explore/mlx-lm#1463) fixes both; re-run it after any `uv tool upgrade mlx-openai-server`. Details: docs/troubleshooting.md.
 
 ## Runtime Architecture
 
@@ -123,8 +124,8 @@ Run all tests: `uv run --with pytest --with flask --with pyyaml --with requests 
 - `tests/test_mcp_server.py` — 47 tests for model selection, GPU tracking, auth, job store, path validation
 - `tests/test_profile_server.py` — 56 tests for Flask routes, profiles CRUD, model selection, config, auth
 - `tests/test_playground_coverage.py` — 4 tests ensuring MCP tools have playground UI and API routes
-- `tests/test_tools_smoke_laptop.py` — 11 live smoke tests (Laptop profile), marked `@pytest.mark.smoke`. Drives each task through the real profile-server → Ollama/MLX/mflux stack. Included in the default `pytest tests/` run; skips cleanly if services are down or a model isn't pulled. Excluded from the pre-commit hook because cold loads make it occasionally flaky.
-- `tests/test_tools_smoke_everyday.py` — same as laptop but for the Everyday profile's bigger models. Marked `@pytest.mark.smoke` and `@pytest.mark.slow`; excluded by default. Run with `pytest -m slow` or `pytest -m ''`.
+- `tests/test_tools_smoke_laptop.py` — 11 live smoke tests (32gb tier), marked `@pytest.mark.smoke`. Drives each task through the real profile-server → Ollama/MLX/mflux stack, with the model map derived from `DEFAULT_PROFILES` so it can't drift. Included in the default `pytest tests/` run; skips cleanly if services are down or a model isn't pulled. Excluded from the pre-commit hook because cold loads make it occasionally flaky.
+- `tests/test_tools_smoke_everyday.py` — same but for the 512gb tier's bigger models. Marked `@pytest.mark.smoke` and `@pytest.mark.slow`; excluded by default. Run with `pytest -m slow` or `pytest -m ''`.
 - `tests/test_e2e.py` — 43 end-to-end tests against live services
 - `tests/test_error_handling.py` — 24 tests for error handling and model validation
 - `tests/test_remote_access.sh` — bash script testing Tailscale HTTPS endpoints
