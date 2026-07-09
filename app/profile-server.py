@@ -2099,7 +2099,7 @@ def _attach_image(messages, image_b64, backend):
     return messages
 
 
-def _chat(model, backend, messages, timeout=300, tool="chat", image_b64=None, think=True):
+def _chat(model, backend, messages, timeout=600, tool="chat", image_b64=None, think=True):
     """Send a chat request to the appropriate backend.
 
     If image_b64 is set, the last user message is augmented in the backend's
@@ -2107,7 +2107,11 @@ def _chat(model, backend, messages, timeout=300, tool="chat", image_b64=None, th
 
     think=False disables chain-of-thought for models that support it — Qwen3
     (including 3.6) via MLX uses `chat_template_kwargs.enable_thinking`;
-    Ollama uses its native `think: false` flag."""
+    Ollama uses its native `think: false` flag.
+
+    timeout=600 because a cold on-demand load of a frontier-tier MLX model
+    (~400GB, 80-140s) stacks with a thinking-model generation; 300s cut off
+    real requests while the backend was still working."""
     if image_b64:
         messages = _attach_image(messages, image_b64, backend)
     with _track_playground(tool, model, backend):
