@@ -1,7 +1,7 @@
-"""Everyday-profile smoke tests — gated `slow`.
+"""512 GB tier smoke tests — gated `slow`.
 
 Same structure as test_tools_smoke_laptop.py but exercises the bigger
-models in the `everyday` profile. Run with:
+models in the shipped `512gb` preset. Run with:
 
     pytest -m slow tests/test_tools_smoke_everyday.py
 
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pytest
 
+from lib.models import DEFAULT_PROFILES
 from tests._smoke_helpers import (
     CHAT_CASES, FIXTURE_CASES,
     client, require_local_services, run_chat_case, run_fixture_case, smoke_tmp,
@@ -22,22 +23,9 @@ from tests._smoke_helpers import (
 require_local_services()
 
 
-EVERYDAY = {
-    "code":          "qwen3-coder-next:latest",
-    "general":       "glm-5.2",
-    "reasoning":     "glm-5.2",
-    "long_context":  "glm-5.2",
-    "translation":   "glm-5.2",
-    "vision":        "qwen3.5:122b",
-    "transcription": "whisper-v3-turbo",
-    "tts":           "mlx-community/fishaudio-s2-pro-8bit-mlx",
-    "embedding":     "qwen3-embedding:8b",
-    "unfiltered":    "dolphin3:8b",
-    "computer_use":  "ui-venus",
-    "image_gen":     "x/z-image-turbo:bf16",
-    "image_edit":    "black-forest-labs/FLUX.1-Kontext-dev",
-    "video":         "AITRADER/Wan2.2-T2V-A14B-mlx-bf16",
-}
+# Derived from the shipped preset so the map can't drift when the tier
+# changes (it did, twice — vision and tts both went stale after 0e3fefb).
+TIER_512GB = dict(DEFAULT_PROFILES["profiles"]["512gb"]["tasks"])
 
 
 pytestmark = [pytest.mark.smoke, pytest.mark.slow]
@@ -49,7 +37,7 @@ pytestmark = [pytest.mark.smoke, pytest.mark.slow]
     ids=[c[0] for c in CHAT_CASES],
 )
 def test_everyday_chat(client, smoke_tmp, tool, profile_task, build_body):
-    run_chat_case(client, EVERYDAY, tool, profile_task, build_body, smoke_tmp)
+    run_chat_case(client, TIER_512GB, tool, profile_task, build_body, smoke_tmp)
 
 
 @pytest.mark.parametrize(
@@ -59,4 +47,4 @@ def test_everyday_chat(client, smoke_tmp, tool, profile_task, build_body):
 )
 def test_everyday_tool(client, smoke_tmp, tool, profile_task, build_body, expect_key):
     run_fixture_case(
-        client, EVERYDAY, tool, profile_task, build_body, expect_key, smoke_tmp)
+        client, TIER_512GB, tool, profile_task, build_body, expect_key, smoke_tmp)

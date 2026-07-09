@@ -581,6 +581,16 @@ if [ "$RAM_CHECK" -ge 32 ] && [ ! -x "$HOME/.local/share/uv/tools/mlx-vlm/bin/py
         || echo "  Warning: mlx-vlm install failed (computer_use on MLX models will be unavailable)"
 fi
 
+# GLM-5.2 (512gb tier) needs two mlx-lm model files from unmerged upstream
+# PR ml-explore/mlx-lm#1463 — released mlx-lm can't load its shared-indexer
+# layout. The script is idempotent and self-disables once upstream ships
+# support. See docs/troubleshooting.md ("glm-5.2 fails to load").
+if [ "$RAM_CHECK" -ge 512 ] && command -v mlx-openai-server > /dev/null; then
+    echo "  Applying GLM-5.2 mlx-lm patch..."
+    "$SCRIPT_DIR/bin/apply-mlx-glm52-patch.sh" \
+        || echo "  Warning: GLM-5.2 patch failed (glm-5.2 won't load; other models unaffected)"
+fi
+
 # ffmpeg for audio transcription (WebM conversion, format support)
 if ! command -v ffmpeg > /dev/null; then
     if command -v brew > /dev/null; then
