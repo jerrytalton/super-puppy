@@ -224,12 +224,18 @@ Profiles are keyed to the machine class they target — the installer picks one 
 
 | Tier | Workhorse (general/reason/long-ctx/translate) | Code | Vision | Notable |
 |------|-----------------------------------------------|------|--------|---------|
-| **32GB** | `qwen3.5-9b` (small, fast) | (reuse) | (reuse) | embeddinggemma, Kokoro TTS, light image gen |
-| **64GB** | `qwen3.6:27b-mlx` (dense, MLX) | `qwen3.6:27b-coding-mxfp8` | reuse | + computer-use, Fish-S2-Pro TTS |
-| **128GB** | `qwen3.6:27b-mlx-bf16` (dense bf16) | `qwen3-coder-next` | reuse | + image edit, video |
-| **512GB** | `glm-5.2` (frontier) | `qwen3-coder-next` | `qwen3.5:122b` | full multimedia stack |
+| **32GB** | `qwen3.5-9b` (small, fast) | (reuse) | `qwen3.6:27b` | embeddinggemma, Voxtral TTS, light image gen |
+| **64GB** | `qwen3.6:27b-mlx` (dense, MLX) | `qwen3.6:27b-coding-mxfp8` | `qwen3.6:27b` | + computer-use, Voxtral TTS |
+| **128GB** | `qwen3.6:27b-mlx-bf16` (dense bf16) | `qwen3-coder-next` | `qwen3.6:27b` | + image edit, video |
+| **512GB** | `glm-5.2` (frontier)\* | `qwen3-coder-next` | `qwen3.6:27b` | full multimedia stack |
 
 A 256GB machine runs the `128gb` tier; a 512GB machine runs `512gb`.
+
+\* glm-5.2 needs two mlx model files from an unmerged upstream PR plus two
+mlx-openai-server fixes; `install.sh` applies them automatically on 512GB
+machines via `bin/apply-mlx-glm52-patch.sh` (idempotent — re-run it after
+any `uv tool upgrade mlx-openai-server`). See
+[docs/troubleshooting.md](docs/troubleshooting.md) for details.
 
 #### Warm vs on-demand
 
@@ -272,6 +278,7 @@ super-puppy/
 │   ├── local-models-mcp-auth    # MCP auth token management
 │   ├── tailscale-status         # Tailscale connectivity check
 │   ├── post-update.sh           # Post-update hook for auto-update
+│   ├── apply-mlx-glm52-patch.sh # Pinned mlx patches for glm-5.2 (512GB tier)
 │   └── release.sh               # Cut a gated, signed release (see docs/RELEASING.md)
 ├── config/
 │   ├── mlx-server/              # MLX server config (single, on-demand)
