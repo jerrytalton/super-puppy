@@ -9,9 +9,9 @@ HOST="$(scutil --get LocalHostName 2>/dev/null || hostname -s 2>/dev/null || ech
 python3 - "$DB" "$AGENT" "$HOST" <<'PY' 2>/dev/null || true
 import os, re, sqlite3, sys, time
 db, agent, host = sys.argv[1], sys.argv[2], sys.argv[3]
-if not re.match(r'^[a-z0-9-]{1,32}$', agent):
+if not re.fullmatch(r'[a-z0-9-]{1,32}', agent):
     agent = "claude-code"
-if not re.match(r'^[A-Za-z0-9._-]{1,64}$', host or ""):
+if not re.fullmatch(r'[A-Za-z0-9._-]{1,64}', host or ""):
     host = "unknown"
 os.makedirs(os.path.dirname(db), exist_ok=True)
 conn = sqlite3.connect(db, timeout=3)
