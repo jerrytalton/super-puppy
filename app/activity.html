@@ -361,7 +361,20 @@ function renderHistory(history) {
   const tbody = document.getElementById('history-body');
   const showMore = document.getElementById('show-more');
   if (!history || history.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text3)">No requests in this period</td></tr>';
+    let emptyText = 'No requests in this period';
+    if (lastData && lastData.last_activity_at) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 6;
+      td.style.textAlign = 'center';
+      td.style.color = 'var(--text3)';
+      td.textContent = emptyText + ' — last activity ' + fmtAgo(lastData.last_activity_at);
+      tr.appendChild(td);
+      tbody.innerHTML = '';
+      tbody.appendChild(tr);
+    } else {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text3)">No requests in this period</td></tr>';
+    }
     showMore.style.display = 'none';
     return;
   }

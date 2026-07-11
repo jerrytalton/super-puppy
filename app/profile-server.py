@@ -2999,6 +2999,7 @@ def api_activity():
     return jsonify({
         "active": active,
         "server_uptime_s": server_uptime_s,
+        "last_activity_at": activity.last_activity_at(),
         **db_data,
     })
 

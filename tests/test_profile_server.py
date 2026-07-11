@@ -1292,3 +1292,15 @@ class TestFleetReport:
     def test_report_rejects_non_dict_body_string(self, client):
         r = client.post("/api/fleet/report", json="hi")
         assert r.status_code == 400
+
+
+def test_api_activity_includes_last_activity(client):
+    """Activity API response includes last_activity_at timestamp."""
+    import time
+    from lib import activity
+    activity.init_db()
+    now = time.time()
+    activity.log_request(tool="code", model="x", backend="ollama", source="mcp",
+                         status="ok", duration_ms=5, started_at=now-1, completed_at=now)
+    data = client.get("/api/activity?period=1").get_json()  # 1-second window → empty history
+    assert data["last_activity_at"] is not None
