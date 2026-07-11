@@ -141,6 +141,7 @@ A puppy icon in the menu bar provides:
 - **Playground** — web UI to test any tool interactively
 - **Remote Access** — toggle Tailscale-based remote access to the Playground
 - **Auto-update** — pulls new tagged releases automatically
+- **Activity Log / Fleet view** — per-machine usage stats and a config-health audit (`sp-doctor`) across every machine on your fleet, never leaving your own tailnet — see [docs/usage-telemetry.md](docs/usage-telemetry.md)
 
 ## Commands
 
