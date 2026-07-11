@@ -3004,7 +3004,9 @@ def api_activity():
 
 
 _FLEET_FIELD_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+_FLEET_DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _FLEET_MIN_INTERVAL = 300  # one accepted report per machine per 5 min
+_FLEET_RATE_MAX_ENTRIES = 1000
 _fleet_rate: dict[str, float] = {}
 _fleet_rate_lock = threading.Lock()
 
@@ -3015,7 +3017,11 @@ def _valid_usage(usage) -> bool:
     for u in usage:
         if not isinstance(u, dict):
             return False
+        if not _FLEET_DAY_RE.match(str(u.get("day", ""))):
+            return False
         if not _FLEET_FIELD_RE.match(str(u.get("tool", ""))):
+            return False
+        if not _FLEET_FIELD_RE.match(str(u.get("source", ""))):
             return False
         for k in ("count", "errors", "avg_ms"):
             if not isinstance(u.get(k), int):
@@ -3027,6 +3033,8 @@ def _valid_usage(usage) -> bool:
 def api_fleet_report():
     """Ingest a fleet usage/audit report pushed from a client machine."""
     body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({"error": "body must be a JSON object"}), 400
     machine = str(body.get("machine", ""))
     version = str(body.get("version", ""))
     mode = str(body.get("mode", ""))
@@ -3040,6 +3048,9 @@ def api_fleet_report():
         last = _fleet_rate.get(machine, 0)
         if now - last < _FLEET_MIN_INTERVAL:
             return jsonify({"error": "rate limited"}), 429
+        if len(_fleet_rate) >= _FLEET_RATE_MAX_ENTRIES:
+            oldest_machine = min(_fleet_rate, key=_fleet_rate.get)
+            del _fleet_rate[oldest_machine]
         _fleet_rate[machine] = now
     audit_json = json.dumps(body.get("audit", []))[:100_000]
     activity.upsert_fleet_report(machine, version, mode, body["usage"], audit_json, now)
