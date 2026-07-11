@@ -4,7 +4,6 @@ import importlib
 import sqlite3
 import time
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -20,11 +19,13 @@ def test_activity_db_honors_env_override(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def tmp_db(tmp_path):
-    """Redirect ACTIVITY_DB to a temp path for every test."""
-    db_path = tmp_path / "activity.db"
-    with patch("lib.activity.ACTIVITY_DB", db_path):
-        yield db_path
+def tmp_db(_isolate_activity_db):
+    """DB path for tests that reference it explicitly.
+
+    Isolation itself is handled by conftest's autouse _isolate_activity_db;
+    this just exposes the same tmp path to tests that assert against it.
+    """
+    return _isolate_activity_db
 
 
 from lib import activity
