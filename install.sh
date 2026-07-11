@@ -63,6 +63,7 @@ if $UNINSTALL; then
         ~/.local/bin/tailscale-status \
         ~/.local/bin/post-update.sh \
         ~/.local/bin/sp-session-ping \
+        ~/.local/bin/sp-doctor \
         ~/bin/start-local-models \
         ~/bin/local-models-menubar \
         ~/bin/local-models-mcp-detect \
@@ -70,6 +71,7 @@ if $UNINSTALL; then
         ~/bin/tailscale-status \
         ~/bin/post-update.sh \
         ~/bin/sp-session-ping \
+        ~/bin/sp-doctor \
         ~/Library/LaunchAgents/com.local-models.menubar.plist \
         ~/Library/LaunchAgents/setenv.OLLAMA_HOST.plist; do
         if [ -L "$link" ]; then
@@ -531,6 +533,8 @@ if [ -f "$CLAUDE_JSON" ]; then
         else
             echo "  open-websearch MCP already registered"
         fi
+        ~/.local/bin/sp-doctor --fix --yes 2>/dev/null || true
+        echo "  Ran SP config audit (sp-doctor)"
     else
         echo "  claude CLI not found — install Claude Code first, then re-run install.sh"
     fi

@@ -393,3 +393,19 @@ def test_fix_all_skips_other_agents_and_token_present(tmp_path):
     # Should not raise despite other-agents (warn, unfixable) and
     # token-present (fail, unfixable) both being present.
     audit.fix_all(home=home, token="secret")
+
+
+# ── sp-doctor CLI ───────────────────────────────────────────────────────────
+
+def test_sp_doctor_json_runs(tmp_path):
+    import subprocess
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude.json").write_text("{}")
+    (tmp_path / ".claude" / "CLAUDE.md").write_text("# x\n")
+    (tmp_path / ".claude" / "settings.json").write_text("{}")
+    env = {**os.environ, "SP_AUDIT_HOME": str(tmp_path)}
+    REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    DOCTOR = os.path.join(REPO, "bin", "sp-doctor")
+    r = subprocess.run([DOCTOR, "--json"], env=env, capture_output=True, text=True)
+    data = json.loads(r.stdout)
+    assert any(c["id"] == "claude-mcp" for c in data)
