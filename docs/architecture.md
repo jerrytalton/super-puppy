@@ -48,6 +48,24 @@ All services bind to `127.0.0.1`. Remote access uses Tailscale exclusively — n
 
 Both the MCP server and profile server enforce bearer token auth on **every** request. There is no localhost shortcut: `tailscale serve` proxies remote requests as if they originated from `127.0.0.1`, so trusting the loopback address would silently bypass auth for any tailnet peer. Native `<img>`/`<audio>`/`<video>` elements that can't set headers may pass `?token=` on GETs only.
 
+## Usage Telemetry Data Flow
+
+Every machine logs its own requests locally (`lib/activity.py`, SQLite at `~/.config/local-models/activity.db`); nothing here leaves the user's own tailnet. Attribution and fleet rollup:
+
+```
+Claude Code (laptop) ──MCP, X-SP-Client: jerry-laptop──▶ MCP server (fleet server)
+                                                            └─ activity.db (machine='jerry-laptop')
+SessionStart hook ──▶ sp-session-ping ──▶ laptop's own activity.db (source='session')
+
+menubar heartbeat (laptop, every 15 min)
+  └─ POST https://{fqdn}:8101/api/fleet/report  (7-day usage summary + sp-doctor audit)
+                                                            └─▶ fleet server: fleet_usage, fleet_machines
+
+Fleet view (app/activity.html, GET /api/fleet) ◀── fleet server aggregates all machines' reports
+```
+
+The MCP server reads the `X-SP-Client` header off each request (validated, `unknown-client` if absent/invalid) to attribute usage to the calling machine rather than folding it into the server's own hostname. The menu bar's heartbeat is fire-and-forget and fails silently — an unreachable fleet server just leaves that machine's `last_seen` stale in the Fleet view, which is itself a signal. See `docs/usage-telemetry.md` for the full design and `sp-doctor` usage.
+
 ## Server / Client Model
 
 | Mode | Condition | Behavior |
