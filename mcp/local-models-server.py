@@ -12,7 +12,6 @@ Claude reasons; local models do heavy lifting.
 import anyio
 import asyncio
 import base64
-import contextvars
 import json
 import logging
 import os
@@ -191,12 +190,18 @@ _authenticated_sessions: OrderedDict[str, None] = OrderedDict()
 _session_lock = threading.Lock()
 
 # Identifies which fleet machine issued a request, from the X-SP-Client
-# header the local-models-mcp-detect wrapper sends. Set at the top of
-# BearerAuthMiddleware.dispatch (every request, every code path) and read
-# by _gpu_request.__exit__ to stamp activity.log_request(machine=...) for
-# the fleet dashboard. Validated so an untrusted header can't inject
-# garbage/markup into the activity DB.
-_client_ctx: contextvars.ContextVar[str] = contextvars.ContextVar("sp_client", default="")
+# header the local-models-mcp-detect wrapper sends on every request.
+# _current_client() reads it off the CURRENT tool call's Starlette Request,
+# which FastMCP's streamable-HTTP transport threads through as
+# get_context().request_context.request (mcp/server/streamable_http.py builds
+# ServerMessageMetadata(request_context=request) per POST; the low-level
+# server exposes it via request_ctx). This works from inside a tool handler,
+# and the _gpu_request it wraps, because the low-level server sets request_ctx
+# on the SAME receive-loop task that runs the handler
+# (mcp/server/lowlevel/server.py:_handle_request). A contextvar set in the
+# ASGI middleware task would NOT propagate here — the receive loop is a
+# different, already-forked task. Validated so an untrusted header can't
+# inject garbage/markup into the activity DB.
 _CLIENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 
@@ -204,9 +209,23 @@ def _validated_client(raw: str) -> str:
     return raw if raw and _CLIENT_RE.match(raw) else ""
 
 
+def _current_client() -> str:
+    """Validated X-SP-Client of the request being handled, or "".
+
+    Returns "" outside any request context (nothing to attribute) or when the
+    header is absent/invalid; callers stamp that as "unknown-client".
+    """
+    try:
+        request = mcp.get_context().request_context.request
+    except (LookupError, ValueError):
+        return ""
+    if request is None:
+        return ""
+    return _validated_client(request.headers.get("x-sp-client", ""))
+
+
 class BearerAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
-        _client_ctx.set(_validated_client(request.headers.get("x-sp-client", "")))
         if not MCP_AUTH_TOKEN:
             return await call_next(request)
         path = request.url.path
@@ -301,7 +320,7 @@ class _gpu_request:
             status=status, duration_ms=elapsed_ms,
             started_at=self.started, completed_at=completed_at,
             error_msg=str(exc_val) if exc_val else None,
-            machine=_client_ctx.get() or "unknown-client",
+            machine=_current_client() or "unknown-client",
         )
 
 
