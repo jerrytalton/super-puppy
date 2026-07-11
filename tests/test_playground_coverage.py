@@ -122,3 +122,10 @@ class TestPlaygroundCoverage:
         assert len(_parse_mcp_tools()) >= 10
         assert len(_parse_playground_tools()) >= 10
         assert len(_parse_api_routes()) >= 10
+
+
+def test_activity_page_has_fleet_view():
+    """The Activity dashboard must render the Fleet section against /api/fleet."""
+    html = (REPO / "app" / "activity.html").read_text()
+    assert "/api/fleet" in html
+    assert "Fleet" in html

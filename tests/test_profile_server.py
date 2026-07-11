@@ -1304,3 +1304,15 @@ def test_api_activity_includes_last_activity(client):
                          status="ok", duration_ms=5, started_at=now-1, completed_at=now)
     data = client.get("/api/activity?period=1").get_json()  # 1-second window → empty history
     assert data["last_activity_at"] is not None
+
+
+def test_api_activity_carries_csp_header(client):
+    """Every response (defense-in-depth for the Fleet view's XSS-safe render)
+    must carry a restrictive Content-Security-Policy header."""
+    from lib import activity
+    activity.init_db()
+    resp = client.get("/api/activity")
+    csp = resp.headers.get("Content-Security-Policy")
+    assert csp is not None
+    assert "default-src 'none'" in csp
+    assert "script-src 'self' 'unsafe-inline'" in csp
