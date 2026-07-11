@@ -36,9 +36,16 @@ def init_db() -> None:
             error_msg TEXT,
             duration_ms INTEGER NOT NULL,
             started_at REAL NOT NULL,
-            completed_at REAL NOT NULL
+            completed_at REAL NOT NULL,
+            machine TEXT NOT NULL DEFAULT ''
         )
     """)
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version < 1:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(requests)")}
+        if "machine" not in cols:
+            conn.execute("ALTER TABLE requests ADD COLUMN machine TEXT NOT NULL DEFAULT ''")
+        conn.execute("PRAGMA user_version = 1")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_completed_at ON requests(completed_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tool ON requests(tool)")
     cutoff = time.time() - (_PRUNE_DAYS * 86400)
@@ -57,13 +64,16 @@ def log_request(
     started_at: float,
     completed_at: float,
     error_msg: str | None = None,
+    machine: str = "",
 ) -> None:
     try:
         conn = _connect()
         conn.execute(
-            "INSERT INTO requests (tool, model, backend, source, status, error_msg, duration_ms, started_at, completed_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (tool, model, backend, source, status, error_msg, duration_ms, started_at, completed_at),
+            "INSERT INTO requests (tool, model, backend, source, status, error_msg, "
+            "duration_ms, started_at, completed_at, machine) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (tool, model, backend, source, status, error_msg, duration_ms,
+             started_at, completed_at, machine),
         )
         conn.commit()
         conn.close()
@@ -77,8 +87,8 @@ def query_activity(period_seconds: int, limit: int = 200) -> dict:
 
     history = [
         dict(r) for r in conn.execute(
-            "SELECT tool, model, backend, source, status, error_msg, duration_ms, started_at, completed_at "
-            "FROM requests WHERE completed_at > ? ORDER BY completed_at DESC LIMIT ?",
+            "SELECT tool, model, backend, source, status, error_msg, duration_ms, started_at, completed_at, machine "
+            "FROM requests WHERE completed_at > ? AND source != 'session' ORDER BY completed_at DESC LIMIT ?",
             (cutoff, limit),
         ).fetchall()
     ]
@@ -87,16 +97,21 @@ def query_activity(period_seconds: int, limit: int = 200) -> dict:
         dict(r) for r in conn.execute(
             "SELECT tool, COUNT(*) as count, CAST(AVG(duration_ms) AS INTEGER) as avg_ms, "
             "SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) as errors "
-            "FROM requests WHERE completed_at > ? GROUP BY tool ORDER BY count DESC",
+            "FROM requests WHERE completed_at > ? AND source != 'session' GROUP BY tool ORDER BY count DESC",
             (cutoff,),
         ).fetchall()
     ]
 
     totals = conn.execute(
         "SELECT COUNT(*) as total, SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) as errors "
-        "FROM requests WHERE completed_at > ?",
+        "FROM requests WHERE completed_at > ? AND source != 'session'",
         (cutoff,),
     ).fetchone()
+
+    sessions = conn.execute(
+        "SELECT COUNT(*) AS c FROM requests WHERE completed_at > ? AND source='session'",
+        (cutoff,),
+    ).fetchone()["c"]
 
     conn.close()
     return {
@@ -104,4 +119,14 @@ def query_activity(period_seconds: int, limit: int = 200) -> dict:
         "tool_stats": tool_stats,
         "total": totals["total"] or 0,
         "errors": totals["errors"] or 0,
+        "sessions": sessions or 0,
     }
+
+
+def last_activity_at() -> float | None:
+    conn = _connect()
+    row = conn.execute(
+        "SELECT MAX(completed_at) AS m FROM requests WHERE source != 'session'"
+    ).fetchone()
+    conn.close()
+    return row["m"]

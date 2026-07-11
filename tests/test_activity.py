@@ -186,3 +186,57 @@ class TestQueryActivity:
         assert result["errors"] == 0
         assert result["history"] == []
         assert result["tool_stats"] == []
+
+
+def test_migration_adds_machine_column_to_existing_db(tmp_path, monkeypatch):
+    # Simulate a v0 DB: create the old schema by hand, then migrate.
+    import sqlite3
+    db = tmp_path / "old.db"
+    monkeypatch.setenv("SP_ACTIVITY_DB", str(db))
+    import importlib, lib.models, lib.activity as act
+    importlib.reload(lib.models); importlib.reload(act)
+    conn = sqlite3.connect(str(db))
+    conn.execute("""CREATE TABLE requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, tool TEXT NOT NULL,
+        model TEXT NOT NULL, backend TEXT NOT NULL, source TEXT NOT NULL,
+        status TEXT NOT NULL, error_msg TEXT, duration_ms INTEGER NOT NULL,
+        started_at REAL NOT NULL, completed_at REAL NOT NULL)""")
+    conn.execute("INSERT INTO requests (tool,model,backend,source,status,duration_ms,started_at,completed_at) "
+                 "VALUES ('code','x','ollama','mcp','ok',10,1,2)")
+    conn.commit(); conn.close()
+    act.init_db()  # must not raise; must add the column
+    cols = {r[1] for r in sqlite3.connect(str(db)).execute("PRAGMA table_info(requests)")}
+    assert "machine" in cols
+
+
+def test_log_and_query_records_machine(tmp_path):
+    activity.init_db()
+    now = time.time()
+    activity.log_request(tool="vision", model="qwen", backend="ollama",
+                         source="mcp", status="ok", duration_ms=42,
+                         started_at=now-1, completed_at=now, machine="jerry-laptop")
+    data = activity.query_activity(3600)
+    assert data["history"][0]["machine"] == "jerry-laptop"
+
+
+def test_query_excludes_sessions_from_history_but_counts_them(tmp_path):
+    activity.init_db()
+    now = time.time()
+    activity.log_request(tool="code", model="x", backend="ollama", source="mcp",
+                         status="ok", duration_ms=5, started_at=now-1, completed_at=now)
+    activity.log_request(tool="session", model="claude-code", backend="", source="session",
+                         status="ok", duration_ms=0, started_at=now, completed_at=now)
+    data = activity.query_activity(3600)
+    assert data["total"] == 1               # session not counted as a request
+    assert data["sessions"] == 1
+    assert all(r["source"] != "session" for r in data["history"])
+
+
+def test_last_activity_at_ignores_sessions(tmp_path):
+    activity.init_db()
+    now = time.time()
+    activity.log_request(tool="code", model="x", backend="ollama", source="mcp",
+                         status="ok", duration_ms=5, started_at=now-10, completed_at=now-10)
+    activity.log_request(tool="session", model="claude-code", backend="", source="session",
+                         status="ok", duration_ms=0, started_at=now, completed_at=now)
+    assert abs(activity.last_activity_at() - (now-10)) < 0.001
