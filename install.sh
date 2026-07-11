@@ -62,12 +62,14 @@ if $UNINSTALL; then
         ~/.local/bin/local-models-mcp-auth \
         ~/.local/bin/tailscale-status \
         ~/.local/bin/post-update.sh \
+        ~/.local/bin/sp-session-ping \
         ~/bin/start-local-models \
         ~/bin/local-models-menubar \
         ~/bin/local-models-mcp-detect \
         ~/bin/local-models-mcp-auth \
         ~/bin/tailscale-status \
         ~/bin/post-update.sh \
+        ~/bin/sp-session-ping \
         ~/Library/LaunchAgents/com.local-models.menubar.plist \
         ~/Library/LaunchAgents/setenv.OLLAMA_HOST.plist; do
         if [ -L "$link" ]; then
