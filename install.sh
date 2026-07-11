@@ -512,11 +512,13 @@ if [ -f "$CLAUDE_JSON" ]; then
     if command -v claude > /dev/null; then
         claude mcp remove local-models -s local 2>/dev/null || true
         claude mcp remove local-models -s user 2>/dev/null || true
+        CLIENT_HOST=$(scutil --get LocalHostName 2>/dev/null || hostname -s)
         ENTRY='{"type":"http","url":"http://127.0.0.1:8100/mcp"'
+        HEADERS='"X-SP-Client":"'"$CLIENT_HOST"'"'
         if [ -n "$MCP_TOKEN" ]; then
-            ENTRY="$ENTRY"',"headers":{"Authorization":"Bearer '"$MCP_TOKEN"'"}'
+            HEADERS='"Authorization":"Bearer '"$MCP_TOKEN"'",'"$HEADERS"
         fi
-        ENTRY="$ENTRY"'}'
+        ENTRY="$ENTRY"',"headers":{'"$HEADERS"'}}'
         claude mcp add-json -s user local-models "$ENTRY" 2>/dev/null
         echo "  Registered local-models MCP (streamable-http on port 8100)"
         # Register open-websearch if not already present
