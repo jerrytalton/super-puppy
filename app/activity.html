@@ -151,6 +151,43 @@ nav a.active { color: #fff; background: var(--accent); }
   .source-playground { background: #3d2c0a; color: #fbbf24; }
 }
 
+/* ── Fleet ── */
+.fleet-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px; margin-bottom: 24px;
+}
+.fleet-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--rs); padding: 16px;
+}
+.fleet-card-header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; margin-bottom: 4px;
+}
+.fleet-hostname { font-weight: 600; font-size: 15px; overflow-wrap: anywhere; }
+.fleet-meta { font-size: 12px; color: var(--text2); margin-bottom: 12px; }
+.fleet-stats-row {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+}
+.fleet-stat { text-align: center; }
+.fleet-stat-value { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.fleet-stat-label {
+  font-size: 10px; color: var(--text2); text-transform: uppercase;
+  letter-spacing: 0.3px; margin-top: 2px;
+}
+.fleet-audit-badge {
+  display: inline-block; padding: 2px 8px; border-radius: 10px;
+  font-size: 11px; font-weight: 600; white-space: nowrap;
+  max-width: 55%; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0;
+}
+.audit-pass { background: #e8f5e9; color: #2e7d32; }
+.audit-fail { background: #fdecea; color: #c62828; }
+.audit-unknown { background: var(--surface2); color: var(--text3); }
+@media (prefers-color-scheme: dark) {
+  .audit-pass { background: #1b3a1e; color: #66bb6a; }
+  .audit-fail { background: #3a1a18; color: #ef5350; }
+}
+
 /* ── History table ── */
 .history-wrap { overflow-x: auto; margin-bottom: 8px; }
 .history-table {
@@ -191,6 +228,8 @@ nav a.active { color: #fff; background: var(--accent); }
   .tool-meta { width: 120px; }
   .tool-meta .avg { display: none; }
   .history-table .col-backend { display: none; }
+  .fleet-grid { grid-template-columns: 1fr; }
+  .fleet-stats-row { grid-template-columns: repeat(2, 1fr); }
 }
 </style>
 </head>
@@ -223,6 +262,13 @@ nav a.active { color: #fff; background: var(--accent); }
 <div class="section-title">Tool Breakdown</div>
 <div class="tool-bars" id="tool-bars"></div>
 
+<section id="fleet-view">
+  <div class="section-title">Fleet</div>
+  <div class="fleet-grid" id="fleet-grid">
+    <div class="empty-state">Loading fleet data…</div>
+  </div>
+</section>
+
 <div class="section-title">Request Log</div>
 <div class="history-wrap">
 <table class="history-table">
@@ -237,6 +283,7 @@ nav a.active { color: #fff; background: var(--accent); }
 
 <script>
 const POLL_MS = 2000;
+const FLEET_POLL_MS = 10000;
 const PAGE_SIZE = 25;
 let lastData = null;
 let currentPeriod = 86400;
@@ -401,6 +448,142 @@ function renderHistory(history) {
   }
 }
 
+// ── Fleet view (all server-supplied strings rendered via textContent —
+// machine/version/mode/audit ids come from network payloads, never trust
+// them as markup) ──
+
+function fleetStat(value, label) {
+  const el = document.createElement('div');
+  el.className = 'fleet-stat';
+  const v = document.createElement('div');
+  v.className = 'fleet-stat-value';
+  v.textContent = String(value);
+  const l = document.createElement('div');
+  l.className = 'fleet-stat-label';
+  l.textContent = label;
+  el.appendChild(v);
+  el.appendChild(l);
+  return el;
+}
+
+function buildAuditBadge(auditJson) {
+  const badge = document.createElement('div');
+  badge.className = 'fleet-audit-badge';
+
+  let checks = [];
+  try {
+    const parsed = JSON.parse(auditJson || '[]');
+    if (Array.isArray(parsed)) checks = parsed;
+  } catch {
+    checks = [];
+  }
+
+  const failing = checks.filter(c => c && c.status !== 'pass');
+  if (checks.length === 0) {
+    badge.classList.add('audit-unknown');
+    badge.textContent = 'no audit data';
+    return badge;
+  }
+  if (failing.length === 0) {
+    badge.classList.add('audit-pass');
+    badge.textContent = 'all checks pass';
+    return badge;
+  }
+
+  badge.classList.add('audit-fail');
+  const label = document.createTextNode(failing.length + ' failing: ');
+  badge.appendChild(label);
+  failing.forEach((c, i) => {
+    const idSpan = document.createElement('span');
+    idSpan.textContent = c && c.id != null ? String(c.id) : '?';
+    if (c && c.detail != null) idSpan.title = String(c.detail);
+    badge.appendChild(idSpan);
+    if (i < failing.length - 1) badge.appendChild(document.createTextNode(', '));
+  });
+  return badge;
+}
+
+function buildFleetCard(machine, usageRows, today) {
+  let callsToday = 0, calls7d = 0, sessions7d = 0;
+  for (const u of usageRows) {
+    const isSession = u.source === 'session';
+    if (isSession) {
+      sessions7d += u.count;
+    } else {
+      calls7d += u.count;
+      if (u.day === today) callsToday += u.count;
+    }
+  }
+  const callsPerSession = calls7d / Math.max(1, sessions7d);
+
+  const card = document.createElement('div');
+  card.className = 'fleet-card';
+
+  const header = document.createElement('div');
+  header.className = 'fleet-card-header';
+  const host = document.createElement('div');
+  host.className = 'fleet-hostname';
+  host.textContent = machine.machine;
+  header.appendChild(host);
+  header.appendChild(buildAuditBadge(machine.audit));
+  card.appendChild(header);
+
+  const meta = document.createElement('div');
+  meta.className = 'fleet-meta';
+  const verSpan = document.createElement('span');
+  verSpan.textContent = machine.version;
+  const modeSpan = document.createElement('span');
+  modeSpan.textContent = machine.mode;
+  const seenSpan = document.createElement('span');
+  seenSpan.textContent = fmtAgo(machine.last_seen);
+  meta.appendChild(verSpan);
+  meta.appendChild(document.createTextNode(' · '));
+  meta.appendChild(modeSpan);
+  meta.appendChild(document.createTextNode(' · '));
+  meta.appendChild(seenSpan);
+  card.appendChild(meta);
+
+  const statsRow = document.createElement('div');
+  statsRow.className = 'fleet-stats-row';
+  statsRow.appendChild(fleetStat(callsToday, 'Today'));
+  statsRow.appendChild(fleetStat(calls7d, 'Calls 7d'));
+  statsRow.appendChild(fleetStat(sessions7d, 'Sessions 7d'));
+  statsRow.appendChild(fleetStat(callsPerSession.toFixed(1), 'Calls / session'));
+  card.appendChild(statsRow);
+
+  return card;
+}
+
+function renderFleet(data) {
+  const grid = document.getElementById('fleet-grid');
+  grid.replaceChildren();
+
+  const machines = (data && data.machines) || [];
+  if (machines.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.textContent = 'No machines reporting yet';
+    grid.appendChild(empty);
+    return;
+  }
+
+  const usageByMachine = {};
+  for (const u of (data.usage || [])) {
+    (usageByMachine[u.machine] = usageByMachine[u.machine] || []).push(u);
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  for (const m of machines) {
+    grid.appendChild(buildFleetCard(m, usageByMachine[m.machine] || [], today));
+  }
+}
+
+async function pollFleet() {
+  try {
+    const resp = await fetch('/api/fleet', _authHeaders());
+    if (resp.ok) renderFleet(await resp.json());
+  } catch {}
+}
+
 function esc(s) {
   if (!s) return '';
   const d = document.createElement('div');
@@ -434,6 +617,9 @@ document.getElementById('show-more').addEventListener('click', () => {
 
 poll();
 setInterval(poll, POLL_MS);
+
+pollFleet();
+setInterval(pollFleet, FLEET_POLL_MS);
 </script>
 </body>
 </html>

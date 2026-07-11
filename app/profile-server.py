@@ -1345,6 +1345,35 @@ def _check_auth():
     return jsonify({"error": "unauthorized"}), 403
 
 
+# ── Content-Security-Policy ─────────────────────────────────────────
+# Defense-in-depth behind the textContent-only render in activity.html:
+# machine/version/mode/audit strings come from network payloads (fleet
+# reports), so even a future render bug shouldn't be able to execute
+# injected markup. Widened beyond the minimal baseline for two things the
+# existing Playground/Profiles pages need: `media-src 'self'` for the
+# playground's <audio>/<video> test-result players (same-origin
+# /api/test/audio|video URLs), and `manifest-src 'self'` for the PWA
+# <link rel="manifest"> tag every page includes. Inline styles/scripts and
+# onclick="..." handlers already in tools.html/profiles.html are allowed by
+# 'unsafe-inline' on script-src/style-src (no nonces/hashes are used, so
+# 'unsafe-inline' is not ignored here).
+_CSP = (
+    "default-src 'none'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "connect-src 'self'; "
+    "media-src 'self'; "
+    "manifest-src 'self'"
+)
+
+
+@app.after_request
+def _set_security_headers(response):
+    response.headers["Content-Security-Policy"] = _CSP
+    return response
+
+
 @app.route("/")
 def index():
     return send_file(str(HTML_FILE))
