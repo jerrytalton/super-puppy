@@ -27,8 +27,10 @@ def main():
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
     results = audit.run_all(home=HOME)
+    exit_code = 1 if any(c["status"] == "fail" for c in results) else 0
     if args.json:
-        print(json.dumps(results, indent=2)); return 0
+        print(json.dumps(results, indent=2))
+        return exit_code
     icons = {"pass": "✅", "fail": "❌", "warn": "⚠️ ", "n/a": "· "}
     for c in results:
         print(f"  {icons.get(c['status'],'?')} {c['id']:<18} {c['detail']}")
@@ -39,7 +41,7 @@ def main():
                 if input(f"Fix {c['id']}? [y/N] ").strip().lower() != "y":
                     continue
             print("  " + audit.fix(c["id"], home=HOME, token=_token()))
-    return 1 if any(c["status"] == "fail" for c in results) else 0
+    return exit_code
 
 
 if __name__ == "__main__":
