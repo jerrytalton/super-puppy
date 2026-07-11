@@ -206,7 +206,7 @@ _CLIENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 
 def _validated_client(raw: str) -> str:
-    return raw if raw and _CLIENT_RE.match(raw) else ""
+    return raw if isinstance(raw, str) and _CLIENT_RE.match(raw) else ""
 
 
 def _current_client() -> str:
