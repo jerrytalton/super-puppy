@@ -640,3 +640,22 @@ class TestDefaultProfilesSeeding:
                     f"profile {name!r} warm bare-name {model!r} "
                     f"is not a served_model_name in mlx-server/config.yaml"
                 )
+
+
+class TestHeartbeatPayload:
+    """build_heartbeat_payload is the pure shape used by the fleet heartbeat
+    (Task 9) — the menu bar app POSTs this to /api/fleet/report every 15
+    minutes so the fleet view can show per-machine usage + audit status."""
+
+    def test_build_heartbeat_payload_shape(self):
+        payload = menubar.build_heartbeat_payload(
+            machine="laptop", version="v1.2.0", mode="client",
+            summary=[{"day": "2026-07-10", "tool": "vision", "source": "mcp",
+                      "count": 3, "errors": 0, "avg_ms": 100}],
+            audit=[{"id": "claude-mcp", "status": "pass"}])
+        assert payload["machine"] == "laptop"
+        assert payload["version"] == "v1.2.0"
+        assert payload["mode"] == "client"
+        assert payload["usage"][0]["tool"] == "vision"
+        assert payload["audit"][0]["status"] == "pass"
+        assert "sent_at" in payload

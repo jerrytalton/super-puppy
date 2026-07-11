@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["rumps==0.4.0", "pyyaml==6.0.3", "pyobjc-framework-WebKit==12.1"]
+# dependencies = ["rumps==0.4.0", "pyyaml==6.0.3", "pyobjc-framework-WebKit==12.1", "requests==2.33.1"]
 # ///
 """
 Local Models — macOS menu bar app.
@@ -27,6 +27,7 @@ import urllib.request
 import urllib.error
 
 import objc
+import requests
 import rumps
 from AppKit import NSCommandKeyMask, NSObject, NSWindow
 import WebKit  # must be imported before _WebViewUIDelegate for block metadata
@@ -1293,6 +1294,23 @@ def _ensure_ollama_library_path():
     )
 
 
+# ---------------------------------------------------------------------------
+# Fleet heartbeat
+# ---------------------------------------------------------------------------
+
+def build_heartbeat_payload(machine, version, mode, summary, audit):
+    """Pure payload builder for the fleet heartbeat POST to
+    /api/fleet/report. Kept free of rumps/network so it's unit-testable."""
+    return {
+        "machine": machine,
+        "version": version,
+        "mode": mode,
+        "sent_at": time.time(),
+        "audit": audit,
+        "usage": summary,
+    }
+
+
 class LocalModelsApp(rumps.App):
     def __init__(self):
         icon = ICON_PATH if os.path.exists(ICON_PATH) else None
@@ -1426,6 +1444,9 @@ class LocalModelsApp(rumps.App):
         self.timer.start()
         self.warm_timer = rumps.Timer(self._on_warm_tick, 240)
         self.warm_timer.start()
+        self.heartbeat_timer = rumps.Timer(self._on_heartbeat_tick, 900)
+        self.heartbeat_timer.start()
+        threading.Timer(30, lambda: self._on_heartbeat_tick(None)).start()
 
     def _on_tick(self, _):
         """Timer callback. Handles first-run initialization and periodic refresh."""
@@ -1473,6 +1494,49 @@ class LocalModelsApp(rumps.App):
                         pass
             except Exception as e:
                 logging.debug("keep-warm ping failed for %s: %s", model, e)
+
+    def _fleet_report_target(self):
+        """Resolve (url, token) for this machine's fleet heartbeat POST.
+
+        Server mode reports to its own profile server on localhost. Client
+        mode reports to the desktop's profile server over Tailscale — never
+        plain HTTP, since tailscale serve rejects it. Returns ("", None) if
+        the desktop hasn't been resolved yet, so the caller skips the beat."""
+        if str(self.conf.get("IS_SERVER", "false")).lower() == "true":
+            return (f"http://127.0.0.1:{self._profile_fixed_port}", _AUTH_TOKEN)
+        if self.desktop_fqdn:
+            return (f"https://{self.desktop_fqdn}:{self._profile_fixed_port}",
+                    _AUTH_TOKEN)
+        return ("", None)
+
+    def _on_heartbeat_tick(self, _):
+        threading.Thread(target=self._send_heartbeat, daemon=True).start()
+
+    def _send_heartbeat(self):
+        """Fire-and-forget: push this machine's usage summary + audit
+        results to the fleet server every 15 minutes. Never raises — a
+        heartbeat failure must not affect app stability."""
+        try:
+            from lib import activity
+            machine = socket.gethostname().split(".")[0]
+            mode = ("server" if str(self.conf.get("IS_SERVER", "false")).lower() == "true"
+                    else "client")
+            summary = activity.local_usage_summary(7)
+            try:
+                from lib import audit
+                audit_results = audit.run_all()
+            except Exception:
+                audit_results = []
+            payload = build_heartbeat_payload(
+                machine, self.app_version, mode, summary, audit_results)
+            url, token = self._fleet_report_target()
+            if not url:
+                return
+            headers = {"Authorization": f"Bearer {token}"} if token else {}
+            requests.post(f"{url}/api/fleet/report", json=payload,
+                          headers=headers, timeout=8)
+        except Exception as e:
+            logging.debug("heartbeat failed: %s", e)
 
     def _start_services_bg(self):
         """Background thread: start services, then do first poll inline.
