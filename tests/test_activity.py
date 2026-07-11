@@ -277,3 +277,35 @@ def test_init_db_prune_runs_once_via_version_guard(tmp_db):
     remaining = sqlite3.connect(str(tmp_db)).execute(
         "SELECT COUNT(*) FROM requests WHERE tool='test'").fetchone()[0]
     assert remaining == 1, "version guard failed — prune re-ran on second init_db()"
+
+
+def test_local_usage_summary_groups_by_day_tool_source(tmp_path):
+    activity.init_db()
+    now = time.time()
+    for _ in range(3):
+        activity.log_request(tool="vision", model="q", backend="ollama", source="mcp",
+                             status="ok", duration_ms=100, started_at=now, completed_at=now)
+    activity.log_request(tool="vision", model="q", backend="ollama", source="mcp",
+                         status="error", duration_ms=200, started_at=now, completed_at=now)
+    summary = activity.local_usage_summary(7)
+    row = next(r for r in summary if r["tool"] == "vision")
+    assert row["count"] == 4 and row["errors"] == 1 and row["source"] == "mcp"
+
+
+def test_fleet_upsert_is_idempotent(tmp_path):
+    activity.init_db()
+    usage = [{"day": "2026-07-10", "tool": "vision", "source": "mcp",
+              "count": 5, "errors": 0, "avg_ms": 120}]
+    activity.upsert_fleet_report("laptop", "v1.2.0", "client", usage, '{"ok":true}', time.time())
+    activity.upsert_fleet_report("laptop", "v1.2.0", "client", usage, '{"ok":true}', time.time())
+    fleet = activity.query_fleet()
+    rows = [u for u in fleet["usage"] if u["machine"] == "laptop"]
+    assert len(rows) == 1 and rows[0]["count"] == 5   # upsert replaced, not doubled
+    assert fleet["machines"][0]["machine"] == "laptop"
+
+
+def test_fleet_last_seen_is_server_stamped(tmp_path):
+    activity.init_db()
+    t = time.time()
+    activity.upsert_fleet_report("laptop", "v1", "client", [], "{}", t)
+    assert abs(activity.query_fleet()["machines"][0]["last_seen"] - t) < 0.01
