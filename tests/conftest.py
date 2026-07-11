@@ -1,7 +1,6 @@
 """Ensure the repo root is on sys.path so `import app.menubar` works."""
 
 import importlib
-import os
 import sys
 from pathlib import Path
 
@@ -14,10 +13,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 def _isolate_activity_db(tmp_path, monkeypatch):
     """No test may touch the real ~/.config/local-models/activity.db.
 
-    Points SP_ACTIVITY_DB at a per-test tmp file. lib.activity reads
-    lib.models.ACTIVITY_DB at call time (via _connect), so setting the
-    env var before the DB is opened is sufficient; modules that cached
-    the old path re-resolve through lib.models.ACTIVITY_DB.
+    Points SP_ACTIVITY_DB at a per-test tmp file, then reloads lib.models
+    (which re-resolves ACTIVITY_DB from the env var) and lib.activity
+    (which binds ACTIVITY_DB by value at import via `from lib.models import
+    ACTIVITY_DB` — so the reload is what actually redirects it, NOT any
+    call-time lookup; do not drop the lib.activity reload).
     """
     db = tmp_path / "activity.db"
     monkeypatch.setenv("SP_ACTIVITY_DB", str(db))
