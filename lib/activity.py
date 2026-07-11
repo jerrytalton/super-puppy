@@ -62,11 +62,11 @@ def init_db() -> None:
         conn.execute("PRAGMA user_version = 1")
     if version < 2:
         conn.commit()
-        conn.execute("PRAGMA user_version = 2")
-        conn.commit()
         conn.close()
         prune_junk_rows()
         conn = _connect()
+        conn.execute("PRAGMA user_version = 2")
+        conn.commit()
     conn.execute("CREATE INDEX IF NOT EXISTS idx_completed_at ON requests(completed_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tool ON requests(tool)")
     cutoff = time.time() - (_PRUNE_DAYS * 86400)
