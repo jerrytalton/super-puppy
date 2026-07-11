@@ -1,11 +1,22 @@
 """Tests for lib/activity.py — persistent activity logging."""
 
+import importlib
 import sqlite3
 import time
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
+
+def test_activity_db_honors_env_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("SP_ACTIVITY_DB", str(tmp_path / "custom.db"))
+    import lib.models as models
+    importlib.reload(models)
+    assert str(models.ACTIVITY_DB) == str(tmp_path / "custom.db")
+    # restore default for other tests
+    monkeypatch.delenv("SP_ACTIVITY_DB")
+    importlib.reload(models)
 
 
 @pytest.fixture(autouse=True)
