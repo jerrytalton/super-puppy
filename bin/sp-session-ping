@@ -1,0 +1,32 @@
+#!/bin/bash
+# sp-session-ping [agent-name]
+# Records one agent-session start in the LOCAL Super Puppy activity DB, as a
+# denominator for tool-usage rate. Fire-and-forget: never fails a session.
+# Registered as a Claude Code SessionStart hook by `sp-doctor --fix`.
+AGENT="${1:-claude-code}"
+DB="${SP_ACTIVITY_DB:-$HOME/.config/local-models/activity.db}"
+HOST="$(scutil --get LocalHostName 2>/dev/null || hostname -s 2>/dev/null || echo unknown)"
+python3 - "$DB" "$AGENT" "$HOST" <<'PY' 2>/dev/null || true
+import os, re, sqlite3, sys, time
+db, agent, host = sys.argv[1], sys.argv[2], sys.argv[3]
+if not re.match(r'^[a-z0-9-]{1,32}$', agent):
+    agent = "claude-code"
+if not re.match(r'^[A-Za-z0-9._-]{1,64}$', host or ""):
+    host = "unknown"
+os.makedirs(os.path.dirname(db), exist_ok=True)
+conn = sqlite3.connect(db, timeout=3)
+conn.execute("PRAGMA journal_mode=WAL")
+conn.execute("PRAGMA busy_timeout=3000")
+conn.execute("""CREATE TABLE IF NOT EXISTS requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, tool TEXT NOT NULL, model TEXT NOT NULL,
+    backend TEXT NOT NULL, source TEXT NOT NULL, status TEXT NOT NULL,
+    error_msg TEXT, duration_ms INTEGER NOT NULL, started_at REAL NOT NULL,
+    completed_at REAL NOT NULL, machine TEXT NOT NULL DEFAULT '')""")
+now = time.time()
+conn.execute("INSERT INTO requests (tool, model, backend, source, status, "
+             "duration_ms, started_at, completed_at, machine) "
+             "VALUES (?, ?, '', ?, ?, 0, ?, ?, ?)",
+             ("session", agent, "session", "ok", now, now, host))
+conn.commit(); conn.close()
+PY
+exit 0
