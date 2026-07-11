@@ -1402,6 +1402,8 @@ class LocalModelsApp(rumps.App):
         self.menu_tools_sub = rumps.MenuItem("Tools")
         self.menu_tools_sub.add(rumps.MenuItem("Activity Log",
                                               callback=self.open_activity))
+        self.menu_tools_sub.add(rumps.MenuItem("Audit…",
+                                              callback=self.open_audit))
         self.menu_tools_sub.add(rumps.MenuItem("Diagnostics",
                                               callback=self.open_diagnostics))
         self.menu_tools_sub.add(None)
@@ -2969,6 +2971,25 @@ class LocalModelsApp(rumps.App):
     def open_activity(self, _):
         """Open the activity dashboard."""
         self._open_or_focus("activity")
+
+    def open_audit(self, _):
+        """Run the Super Puppy configuration audit and offer fixes."""
+        try:
+            from lib import audit
+            results = audit.run_all()
+            fails = [c for c in results if c["status"] == "fail"]
+            lines = "\n".join(f"{c['status'].upper():5} {c['id']}: {c['detail']}" for c in results)
+            if not fails:
+                rumps.alert("Super Puppy Audit", "All checks pass.\n\n" + lines)
+                return
+            resp = rumps.alert("Super Puppy Audit",
+                               lines + "\n\nApply fixes to the failing checks?",
+                               ok="Fix All", cancel="Close")
+            if resp == 1:
+                summaries = audit.fix_all()
+                rumps.alert("Fixes applied", "\n".join(summaries) or "Nothing to fix.")
+        except Exception as e:
+            rumps.alert("Audit Error", f"An error occurred while running the audit:\n\n{e}")
 
     def open_diagnostics(self, _):
         """Open the diagnostics pane."""
