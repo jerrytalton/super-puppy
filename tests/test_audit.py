@@ -1,4 +1,6 @@
 import json
+import os
+import stat
 
 import pytest
 
@@ -160,6 +162,26 @@ def test_mcp_fix_refuses_token_in_world_readable(tmp_path):
     assert results["claude-mcp"]["status"] == "pass"
 
 
+def test_mcp_fix_absent_file_creates_private_token_file(tmp_path):
+    # Fresh-machine case: ~/.claude.json does not exist yet. Before the fix,
+    # _unsafe_to_inline_token() returned False for a nonexistent path, the
+    # token was inlined, and atomic_write created the file under the ambient
+    # umask (typically 0644 — world-readable). The chmod(0o600) after the
+    # write is what must close that leak.
+    home = tmp_path
+    (home / ".claude").mkdir()
+    cj = home / ".claude.json"
+    assert not cj.exists()
+    audit.fix("claude-mcp", home=home, token="secret")
+    assert cj.exists()
+    mode = stat.S_IMODE(os.stat(cj).st_mode)
+    assert mode == 0o600
+    assert mode & (stat.S_IRGRP | stat.S_IROTH) == 0
+    entry = json.loads(cj.read_text())["mcpServers"]["local-models"]
+    assert entry["headers"]["Authorization"] == "Bearer secret"
+    assert entry["headers"]["X-SP-Client"]
+
+
 def test_mcp_fix_refuses_token_inside_git_worktree(tmp_path):
     import subprocess
     home = _fake_home(tmp_path)
@@ -313,6 +335,21 @@ def test_fix_gemini_mcp_refuses_token_in_world_readable(tmp_path):
     audit.fix("gemini-mcp", home=home, token="secret")
     entry = json.loads(settings.read_text())["mcpServers"]["local-models"]
     assert "secret" not in json.dumps(entry)
+
+
+def test_fix_gemini_mcp_absent_file_creates_private_token_file(tmp_path):
+    home = _fake_home(tmp_path)
+    (home / ".gemini").mkdir()
+    settings = home / ".gemini" / "settings.json"
+    assert not settings.exists()
+    audit.fix("gemini-mcp", home=home, token="secret")
+    assert settings.exists()
+    mode = stat.S_IMODE(os.stat(settings).st_mode)
+    assert mode == 0o600
+    assert mode & (stat.S_IRGRP | stat.S_IROTH) == 0
+    entry = json.loads(settings.read_text())["mcpServers"]["local-models"]
+    assert entry["headers"]["Authorization"] == "Bearer secret"
+    assert entry["headers"]["X-SP-Client"]
 
 
 def test_fix_gemini_guidance_is_idempotent_and_passes(tmp_path):

@@ -156,7 +156,12 @@ def _unsafe_to_inline_token(path: Path) -> bool:
     work tree (spec §S4 — `~/.claude.json` and friends are often synced or
     committed). Generalized beyond claude-mcp because the same file-leak
     risk applies to every config file a fix might inline a token into
-    (~/.gemini/settings.json, ~/.codex/config.toml)."""
+    (~/.gemini/settings.json, ~/.codex/config.toml).
+
+    A file that does not exist yet is NOT unsafe by this check alone — the
+    fresh-machine case (no pre-existing file, ambient umask would otherwise
+    leave a world-readable file after write) is made safe by each caller's
+    `os.chmod(path, 0o600)` immediately after inlining a token, not here."""
     if path.exists():
         mode = os.stat(path).st_mode
         if mode & (stat.S_IRGRP | stat.S_IROTH):
@@ -204,6 +209,8 @@ def _fix_claude_mcp(home: Path, token: Optional[str]) -> str:
     path = home / ".claude.json"
     entry, inlined = _http_mcp_entry(token, path)
     merge_json_key(path, "mcpServers.local-models", entry)
+    if inlined:
+        os.chmod(path, 0o600)
     return _mcp_fix_summary("claude-mcp", path, token, inlined)
 
 
@@ -330,6 +337,8 @@ def _fix_codex_mcp(home: Path, token: Optional[str]) -> str:
     new_text = _upsert_marked_text(existing, CODEX_MARKERS, _codex_managed_block(token, unsafe))
     tomllib.loads(new_text)  # sanity: our own managed section must itself parse
     atomic_write(path, new_text)
+    if token and not unsafe:
+        os.chmod(path, 0o600)
     if token and unsafe:
         return (
             f"codex-mcp: appended managed [mcp_servers.local-models] section to {path} "
@@ -383,6 +392,8 @@ def _fix_gemini_mcp(home: Path, token: Optional[str]) -> str:
     path = gemini_dir / "settings.json"
     entry, inlined = _http_mcp_entry(token, path)
     merge_json_key(path, "mcpServers.local-models", entry)
+    if inlined:
+        os.chmod(path, 0o600)
     return _mcp_fix_summary("gemini-mcp", path, token, inlined)
 
 
