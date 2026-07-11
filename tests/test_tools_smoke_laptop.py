@@ -52,3 +52,40 @@ def test_laptop_chat(client, smoke_tmp, tool, profile_task, build_body):
 def test_laptop_tool(client, smoke_tmp, tool, profile_task, build_body, expect_key):
     run_fixture_case(
         client, TIER_32GB, tool, profile_task, build_body, expect_key, smoke_tmp)
+
+
+@pytest.mark.smoke
+def test_fleet_report_roundtrip(client):
+    """Fleet heartbeat round-trip: POST usage report, then GET fleet and verify."""
+    from lib import activity
+    activity.init_db()
+
+    payload = {
+        "machine": "smoke-fleet-rt",
+        "version": "v0.0.0",
+        "mode": "server",
+        "sent_at": 1,
+        "audit": [],
+        "usage": [
+            {
+                "day": "2026-07-11",
+                "tool": "vision",
+                "source": "mcp",
+                "count": 1,
+                "errors": 0,
+                "avg_ms": 50,
+            }
+        ],
+    }
+
+    # POST the report; accept 200 or 429 (rate-limited from prior run)
+    r = client.post("/api/fleet/report", json=payload)
+    assert r.status_code in (200, 429), f"POST /api/fleet/report failed: {r.get_json()}"
+
+    # GET the fleet and verify the machine appears
+    got = client.get("/api/fleet").get_json()
+    assert got is not None, "GET /api/fleet returned None"
+    machines = got.get("machines", [])
+    assert any(
+        m["machine"] == "smoke-fleet-rt" for m in machines
+    ), f"Machine 'smoke-fleet-rt' not found in fleet. Got: {machines}"
