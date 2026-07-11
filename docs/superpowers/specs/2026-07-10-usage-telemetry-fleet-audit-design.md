@@ -59,7 +59,7 @@ The server participates in its own fleet: its menubar heartbeat calls the same r
 ### 2. Caller attribution (`X-SP-Client` header)
 
 - `install.sh` and the audit fix write the MCP entry with an extra header: `"X-SP-Client": "<hostname>"` alongside the existing `Authorization` header. Same for Codex/Gemini entries where their config supports headers.
-- The MCP server's `BearerAuthMiddleware` (which already sees every request) stashes the header value in a `contextvars.ContextVar`. The `GPUTracker.__exit__` → `activity.log_request` path reads it; absent header → local hostname (covers the playground and unupgraded clients).
+- The MCP server's `BearerAuthMiddleware` (which already sees every request) validates the header against `^[A-Za-z0-9._-]{1,64}$` and stashes it in a `contextvars.ContextVar`. The `GPUTracker.__exit__` → `activity.log_request` path reads it; absent/invalid header → `unknown-client` (never the server's own hostname, which would hide a misconfigured client's usage inside the server's row). Playground requests stamp the local hostname directly.
 - The profile server does the same for playground requests (always local hostname) and for any proxied tool calls (forwards the original client's header).
 
 ### 3. Session denominator (`bin/sp-session-ping`)
@@ -121,9 +121,73 @@ A registry of checks; each returns `{id, tool, status: pass|fail|warn|n/a, detai
 - Audit **fixes** are the opposite — fail loud: if a config file can't be parsed (malformed `~/.claude.json`), report the failure and touch nothing.
 - Heartbeat endpoint validates payload shape; malformed reports get 400 and are dropped (bad client version can't corrupt fleet tables).
 
+## Security (red-team mitigations, 2026-07-10)
+
+A context-free red-team pass raised issues that change the design. Folded in here; each maps to the component above.
+
+### S1. Dashboard XSS — the highest-leverage bug (was implicit, now required)
+
+Every field the Fleet view renders is attacker-influenceable: `X-SP-Client`/`machine`, `version`, `mode`, tool names, `error_msg`, and audit `detail` strings. On the profile-server origin — which holds the bearer token and exposes the audit-fix API — a stored `<img onerror>` would run in the owner's browser and could drive config-tampering fixes. Requirements:
+
+- **Render with `textContent` / DOM node creation only. No `innerHTML`, no template interpolation of any server-supplied string.** This is a hard rule for `activity.html`, called out in the plan and checked in review.
+- Serve the profile server with a strict `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'` (adjust to the page's actual needs; no inline event handlers).
+- **Server-side validation on ingest**: `machine`, `version`, `mode` must match `^[A-Za-z0-9._-]{1,64}$` or the report is rejected (400). Tool/source names validated against the known task/source vocabulary. `audit` check ids rendered from a client-side allowlist; free-text `detail`/`error_msg` always escaped as text.
+
+### S2. The audit is an agent-instruction channel — keep it off the auto-update rails
+
+The audit writes text into files an AI agent treats as instructions (CLAUDE.md/AGENTS.md/GEMINI.md guidance blocks). Auto-update ships signed tags fleet-wide in ~2 minutes. Those two must not compose into "a routine release silently rewrites every machine's agent guidance." Decisions:
+
+- **Guidance-block writes are never automatic.** They happen only via an explicit `sp-doctor --fix` / menubar "Fix" / `install.sh` opt-in, each showing a **before/after diff** and requiring confirmation (`--yes` bypasses only in install.sh where the user already opted in). A version bump alone never rewrites a block.
+- The managed block's **refresh trigger is content difference, not code version** — idempotent, so an auto-update or a crash-rollback tag change never thrashes the file (kills the flap in S6). The marker still carries a version for display, but equality is by rendered content.
+- The block stays **minimal and mechanical**: what SP is, the trigger→tool table, the parallelism directive, `local_models_status`. No open-ended behavioral instructions. Its canonical text is one reviewed template; changing it is a visible diff in a PR, same as code.
+- Docs state explicitly that the audit crosses the code-vs-prompt trust boundary and is gated behind user confirmation for exactly that reason.
+
+### S3. `sp-session-ping` must not build SQL by string interpolation
+
+The hook writes to the local DB with `model` from `$1` and `machine` from `hostname`. A shell heredoc interpolating those is a SQL-injection / DB-corruption vector (and a way to plant XSS rows that ride the heartbeat to S1). Requirements:
+
+- The ping writes via a tiny Python one-liner (or a shared `lib` helper) using **bound parameters** — never `sqlite3` CLI string interpolation. `$1` is validated against `^[a-z0-9-]{1,32}$` and dropped to the default otherwise.
+- Every connection, CLI or not, sets `PRAGMA busy_timeout=3000` (also mitigates S5).
+
+### S4. Identity, tokens, and the `/api/fleet/report` write path
+
+At personal-fleet scale (the user's own devices, shared tailnet) full multi-tenant identity is overkill, but two things are still required because SP is public software and the token leaks easily:
+
+- **Keep the token out of a world-readable file.** `~/.claude.json` is often group/other-readable, synced, or committed. The audit's `claude-mcp` fix **refuses to inline the token** if `~/.claude.json` is group/other-readable or inside a git work tree, and warns loudly otherwise. Prefer referencing the mode-600 token file if the MCP client supports it.
+- **`machine` is validated (S1) and the endpoint is rate-limited** — one accepted report per token per 5 minutes; excess → 429. Caps unbounded-cardinality growth and heartbeat storms.
+- **`last_seen` is stamped server-side** from the server's clock on receipt, never taken from the client (S7). Client `day`/`avg_ms`/counts are advisory; `day` is clamped to a sane window before upsert.
+- Per-machine tokens are **noted as a future hardening** (revocation, attribution-on-leak) but not required for v1; documented as an accepted limitation with the reasoning.
+
+### S5. SQLite multi-writer & retention
+
+- The hook adds a third writer (sqlite3/Python) to `activity.db`. `busy_timeout=3000` on all connections (S3); the MCP logger already swallows lock errors — verify it does so without dropping the tool response.
+- Retention: `lib/activity.py` already prunes `requests` at 90 days. **The new `fleet_usage`/`fleet_machines` tables get the same treatment** — `fleet_usage` TTL'd past the dashboard's 7-day window (keep 30 for slack), stale `fleet_machines` rows pruned, with a periodic `wal_checkpoint(TRUNCATE)`.
+
+### S6. Config-write races and array clobbering
+
+The audit fixes mutate files Claude Code itself writes (`~/.claude.json`, `~/.claude/settings.json`):
+
+- **Atomic writes**: temp file + `rename`, after re-reading immediately before write.
+- **Merge, never replace**: the SessionStart hook is added to the existing `hooks` array by key; the MCP entry is added alongside existing servers. Existing user hooks/servers are preserved. A `.bak` copy is written before mutating.
+- Note: editing `~/.claude/settings.json` is blocked by Jerry's backup-protection PreToolUse hook when *an agent* does it, but `sp-doctor` runs as a user tool, not via the agent's Edit/Bash — it operates outside that guard by design. The guard exists to stop agent self-elevation; a user-invoked audit is the sanctioned path. Called out so the interaction is intentional, not a surprise.
+
+## Data Flow (remote call, end to end)
+
+1. Claude Code on laptop calls `local_vision` → MCP request to server with `Authorization` + `X-SP-Client: jerry-laptop` headers.
+2. Server middleware validates `X-SP-Client` (charset), stashes client name; tool runs; `GPUTracker` logs to server's `activity.db` with `machine='jerry-laptop'`.
+3. Laptop's Claude session had already fired `sp-session-ping` (bound-param insert) → row in laptop's local DB.
+4. Laptop menubar heartbeat posts its 7-day aggregates (including session counts) + audit results; server validates, stamps `last_seen`, upserts.
+5. Server's Fleet view renders (via `textContent`): jerry-laptop — last seen 2 min ago, 14 calls / 6 sessions this week, audit green.
+
+## Error Handling
+
+- All telemetry paths are best-effort and silent on failure (existing `log_request` philosophy): a logging or heartbeat failure must never break a tool call, a Claude session, or the menubar. Failures log at debug/warning locally.
+- Audit **fixes** are the opposite — fail loud: if a config file can't be parsed (malformed `~/.claude.json`), report the failure and touch nothing.
+- Heartbeat endpoint validates auth, charset (S1), and payload shape; malformed or over-rate reports get 400/429 and are dropped (a bad or hostile client can't corrupt fleet tables).
+
 ## Rollout
 
-- Schema migration is automatic and backward-compatible (old rows get `machine=''`, displayed as the server's own hostname).
+- Schema migration is automatic and backward-compatible (old rows get `machine=''`, rendered as `unknown-client` — never silently folded into the server's own hostname, per S1/attribution-ambiguity).
 - Old clients that haven't updated simply don't send heartbeats or headers — attribution falls back, Fleet view shows them once upgraded.
-- Docs updated in the same commits: project `CLAUDE.md` (new runtime files/endpoints), `docs/architecture.md`, `sp-doctor` usage docs, README mention.
+- Docs updated in the same commits: project `CLAUDE.md` (new runtime files/endpoints), `docs/architecture.md`, `sp-doctor` usage docs, README mention, and the S2 trust-boundary note.
 - No `PROFILES_VERSION` bump needed (no profile changes).
