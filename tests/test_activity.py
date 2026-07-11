@@ -254,3 +254,26 @@ def test_junk_rows_pruned_once(tmp_path):
     data = activity.query_activity(3600)
     tools = {r["tool"] for r in data["history"]}
     assert tools == {"vision"}
+
+
+def test_init_db_prune_runs_once_via_version_guard(tmp_db):
+    """Verify the version guard prevents re-running prune on every init_db()."""
+    from lib import models
+
+    activity.init_db()
+    # Fresh DB must reach version 2
+    v = sqlite3.connect(str(tmp_db)).execute("PRAGMA user_version").fetchone()[0]
+    assert v == 2
+
+    # Log a junk-named row AFTER the one-shot migration
+    now = time.time()
+    activity.log_request(tool="test", model="x", backend="ollama", source="mcp",
+                         status="ok", duration_ms=1, started_at=now, completed_at=now)
+
+    # Call init_db() again — must NOT re-prune
+    activity.init_db()
+
+    # The junk row must still exist, proving the prune is version-guarded (one-shot)
+    remaining = sqlite3.connect(str(tmp_db)).execute(
+        "SELECT COUNT(*) FROM requests WHERE tool='test'").fetchone()[0]
+    assert remaining == 1, "version guard failed — prune re-ran on second init_db()"
