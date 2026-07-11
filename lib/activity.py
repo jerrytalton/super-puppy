@@ -12,6 +12,9 @@ from pathlib import Path
 from lib.models import ACTIVITY_DB
 
 _PRUNE_DAYS = 90
+_JUNK_TOOLS = ("test", "first_task", "second_task", "a", "b", "c",
+               "failing", "test_tool", "task1", "task2")
+_JUNK_LIKE = ("task\\_%",)  # matches task_0, task_1, ...
 
 
 def _connect() -> sqlite3.Connection:
@@ -21,6 +24,17 @@ def _connect() -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def prune_junk_rows() -> None:
+    """Delete rows with test-pollution tool names (one-time cleanup)."""
+    conn = _connect()
+    placeholders = ",".join("?" * len(_JUNK_TOOLS))
+    conn.execute(f"DELETE FROM requests WHERE tool IN ({placeholders})", _JUNK_TOOLS)
+    for pattern in _JUNK_LIKE:
+        conn.execute("DELETE FROM requests WHERE tool LIKE ? ESCAPE '\\'", (pattern,))
+    conn.commit()
+    conn.close()
 
 
 def init_db() -> None:
@@ -46,6 +60,13 @@ def init_db() -> None:
         if "machine" not in cols:
             conn.execute("ALTER TABLE requests ADD COLUMN machine TEXT NOT NULL DEFAULT ''")
         conn.execute("PRAGMA user_version = 1")
+    if version < 2:
+        conn.commit()
+        conn.execute("PRAGMA user_version = 2")
+        conn.commit()
+        conn.close()
+        prune_junk_rows()
+        conn = _connect()
     conn.execute("CREATE INDEX IF NOT EXISTS idx_completed_at ON requests(completed_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tool ON requests(tool)")
     cutoff = time.time() - (_PRUNE_DAYS * 86400)

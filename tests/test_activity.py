@@ -240,3 +240,17 @@ def test_last_activity_at_ignores_sessions(tmp_path):
     activity.log_request(tool="session", model="claude-code", backend="", source="session",
                          status="ok", duration_ms=0, started_at=now, completed_at=now)
     assert abs(activity.last_activity_at() - (now-10)) < 0.001
+
+
+def test_junk_rows_pruned_once(tmp_path):
+    activity.init_db()
+    now = time.time()
+    for tool in ("test", "task_0", "first_task", "a", "b", "c", "failing", "test_tool", "task1"):
+        activity.log_request(tool=tool, model="x", backend="ollama", source="mcp",
+                             status="ok", duration_ms=1, started_at=now, completed_at=now)
+    activity.log_request(tool="vision", model="qwen", backend="ollama", source="mcp",
+                         status="ok", duration_ms=1, started_at=now, completed_at=now)
+    activity.prune_junk_rows()
+    data = activity.query_activity(3600)
+    tools = {r["tool"] for r in data["history"]}
+    assert tools == {"vision"}
