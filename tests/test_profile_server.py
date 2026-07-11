@@ -1220,3 +1220,46 @@ class TestKeepAliveFor:
         assert ps.keep_alive_for("w:bf16") == "30m"
         assert ps.keep_alive_for("c:bf16") == "30s"
         assert ps.keep_alive_for("unknown:1b") == "30s"
+
+
+class TestFleetReport:
+    """POST /api/fleet/report ingest + GET /api/fleet query."""
+
+    @pytest.fixture(autouse=True)
+    def _fleet_setup(self):
+        """Fresh fleet tables per test (per-test DB via conftest's
+        _isolate_activity_db) and a clean rate-limit dict, since
+        _fleet_rate is module-global state shared across tests."""
+        ps.activity.init_db()
+        ps._fleet_rate.clear()
+        yield
+        ps._fleet_rate.clear()
+
+    def _payload(self, machine="laptop"):
+        return {"machine": machine, "version": "v1.2.0", "mode": "client",
+                "sent_at": 1, "audit": [{"id": "claude-mcp", "status": "pass"}],
+                "usage": [{"day": "2026-07-10", "tool": "vision", "source": "mcp",
+                           "count": 3, "errors": 0, "avg_ms": 100}]}
+
+    def test_report_accepts_valid(self, client):
+        r = client.post("/api/fleet/report", json=self._payload(machine="report-valid"))
+        assert r.status_code == 200
+        got = client.get("/api/fleet").get_json()
+        assert got["machines"][0]["machine"] == "report-valid"
+
+    def test_report_rejects_bad_machine(self, client):
+        p = self._payload(machine="<script>")
+        r = client.post("/api/fleet/report", json=p)
+        assert r.status_code == 400
+
+    def test_report_rate_limited(self, client):
+        payload = self._payload(machine="report-rate-limited")
+        assert client.post("/api/fleet/report", json=payload).status_code == 200
+        assert client.post("/api/fleet/report", json=payload).status_code == 429
+
+    def test_report_rejects_malformed_usage_item(self, client):
+        p = self._payload(machine="report-bad-usage")
+        p["usage"] = [{"day": "2026-07-10", "tool": "vision", "source": "mcp",
+                       "count": "not-an-int", "errors": 0, "avg_ms": 100}]
+        r = client.post("/api/fleet/report", json=p)
+        assert r.status_code == 400

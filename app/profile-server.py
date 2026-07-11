@@ -3003,6 +3003,58 @@ def api_activity():
     })
 
 
+_FLEET_FIELD_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+_FLEET_MIN_INTERVAL = 300  # one accepted report per machine per 5 min
+_fleet_rate: dict[str, float] = {}
+_fleet_rate_lock = threading.Lock()
+
+
+def _valid_usage(usage) -> bool:
+    if not isinstance(usage, list) or len(usage) > 5000:
+        return False
+    for u in usage:
+        if not isinstance(u, dict):
+            return False
+        if not _FLEET_FIELD_RE.match(str(u.get("tool", ""))):
+            return False
+        for k in ("count", "errors", "avg_ms"):
+            if not isinstance(u.get(k), int):
+                return False
+    return True
+
+
+@app.route("/api/fleet/report", methods=["POST"])
+def api_fleet_report():
+    """Ingest a fleet usage/audit report pushed from a client machine."""
+    body = request.get_json(silent=True) or {}
+    machine = str(body.get("machine", ""))
+    version = str(body.get("version", ""))
+    mode = str(body.get("mode", ""))
+    if not (_FLEET_FIELD_RE.match(machine) and _FLEET_FIELD_RE.match(version)
+            and _FLEET_FIELD_RE.match(mode)):
+        return jsonify({"error": "invalid machine/version/mode"}), 400
+    if not _valid_usage(body.get("usage", [])):
+        return jsonify({"error": "invalid usage payload"}), 400
+    now = time.time()
+    with _fleet_rate_lock:
+        last = _fleet_rate.get(machine, 0)
+        if now - last < _FLEET_MIN_INTERVAL:
+            return jsonify({"error": "rate limited"}), 429
+        _fleet_rate[machine] = now
+    audit_json = json.dumps(body.get("audit", []))[:100_000]
+    activity.upsert_fleet_report(machine, version, mode, body["usage"], audit_json, now)
+    return jsonify({"ok": True}), 200
+
+
+@app.route("/api/fleet")
+def api_fleet():
+    """Fleet dashboard data: per-machine last-seen/audit + usage rollup."""
+    proxied = _proxy_to_desktop("/api/fleet", method="GET")
+    if proxied is not None:
+        return proxied
+    return jsonify(activity.query_fleet())
+
+
 @app.route("/activity")
 def activity_page():
     return send_file(os.path.join(SCRIPT_DIR, "activity.html"))
