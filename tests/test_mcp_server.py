@@ -332,6 +332,45 @@ class TestGpuTracking:
                     warning = server._gpu_contention_warning("ollama")
                     assert "2 other requests" in warning
 
+    def test_gpu_tracker_stamps_client_machine(self):
+        from lib import activity
+        activity.init_db()
+        token = server._client_ctx.set("jerry-laptop")
+        try:
+            with server._gpu_request("ollama", "code:model-x"):
+                pass
+        finally:
+            server._client_ctx.reset(token)
+        row = activity.query_activity(60)["history"][0]
+        assert row["machine"] == "jerry-laptop"
+
+    def test_gpu_tracker_stamps_unknown_client_when_unset(self):
+        from lib import activity
+        activity.init_db()
+        row_before = len(activity.query_activity(60)["history"])
+        with server._gpu_request("ollama", "code:model-y"):
+            pass
+        history = activity.query_activity(60)["history"]
+        assert len(history) == row_before + 1
+        assert history[0]["machine"] == "unknown-client"
+
+
+# ── X-SP-Client validation ──────────────────────────────────────────
+
+class TestValidatedClient:
+    def test_accepts_good_hostnames(self):
+        assert server._validated_client("jerry-laptop") == "jerry-laptop"
+        assert server._validated_client("MacBook-Pro.local") == "MacBook-Pro.local"
+
+    def test_rejects_injection_attempt(self):
+        assert server._validated_client("<img onerror=x>") == ""
+
+    def test_rejects_too_long(self):
+        assert server._validated_client("a" * 65) == ""
+
+    def test_rejects_empty(self):
+        assert server._validated_client("") == ""
+
 
 # ── Auth middleware logic ──────────────────────────────────────────
 
@@ -451,6 +490,40 @@ class TestAuthMiddlewareDispatch:
                 assert "fourth" in server._authenticated_sessions
         finally:
             server._MAX_SESSIONS = old_max
+
+    def _call_capturing_client_ctx(self, path, headers=None):
+        """Like _call, but captures _client_ctx from inside call_next —
+        the contextvar is set on a per-task context by asyncio.run(), so
+        reading it back from the sync caller after the loop finishes
+        always sees the unmodified outer-context default. Reading it from
+        the awaited call_next (same task, no new Context copy) mirrors
+        how the real handler chain observes it in production."""
+        import asyncio
+        captured = {}
+        middleware = server.BearerAuthMiddleware.__new__(server.BearerAuthMiddleware)
+        req = self._make_request(path, headers)
+        resp = self._make_response()
+
+        async def call_next(r):
+            captured["client"] = server._client_ctx.get()
+            return resp
+
+        async def run():
+            return await middleware.dispatch(req, call_next)
+
+        asyncio.run(run())
+        return captured.get("client")
+
+    def test_dispatch_sets_client_ctx_from_valid_header(self):
+        assert self._call_capturing_client_ctx(
+            "/gpu", headers={"x-sp-client": "jerry-laptop"}) == "jerry-laptop"
+
+    def test_dispatch_sets_client_ctx_empty_for_invalid_header(self):
+        assert self._call_capturing_client_ctx(
+            "/gpu", headers={"x-sp-client": "<img onerror=x>"}) == ""
+
+    def test_dispatch_sets_client_ctx_empty_when_header_absent(self):
+        assert self._call_capturing_client_ctx("/gpu", headers={}) == ""
 
 
 class TestPathValidation:

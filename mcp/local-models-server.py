@@ -12,9 +12,11 @@ Claude reasons; local models do heavy lifting.
 import anyio
 import asyncio
 import base64
+import contextvars
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -188,9 +190,23 @@ _MAX_SESSIONS = 1000
 _authenticated_sessions: OrderedDict[str, None] = OrderedDict()
 _session_lock = threading.Lock()
 
+# Identifies which fleet machine issued a request, from the X-SP-Client
+# header the local-models-mcp-detect wrapper sends. Set at the top of
+# BearerAuthMiddleware.dispatch (every request, every code path) and read
+# by _gpu_request.__exit__ to stamp activity.log_request(machine=...) for
+# the fleet dashboard. Validated so an untrusted header can't inject
+# garbage/markup into the activity DB.
+_client_ctx: contextvars.ContextVar[str] = contextvars.ContextVar("sp_client", default="")
+_CLIENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
+def _validated_client(raw: str) -> str:
+    return raw if raw and _CLIENT_RE.match(raw) else ""
+
 
 class BearerAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
+        _client_ctx.set(_validated_client(request.headers.get("x-sp-client", "")))
         if not MCP_AUTH_TOKEN:
             return await call_next(request)
         path = request.url.path
@@ -285,6 +301,7 @@ class _gpu_request:
             status=status, duration_ms=elapsed_ms,
             started_at=self.started, completed_at=completed_at,
             error_msg=str(exc_val) if exc_val else None,
+            machine=_client_ctx.get() or "unknown-client",
         )
 
 
