@@ -1263,3 +1263,32 @@ class TestFleetReport:
                        "count": "not-an-int", "errors": 0, "avg_ms": 100}]
         r = client.post("/api/fleet/report", json=p)
         assert r.status_code == 400
+
+    def test_report_rejects_usage_item_missing_day(self, client):
+        p = self._payload(machine="report-missing-day")
+        p["usage"] = [{"tool": "vision", "source": "mcp",
+                       "count": 3, "errors": 0, "avg_ms": 100}]
+        r = client.post("/api/fleet/report", json=p)
+        assert r.status_code == 400
+
+    def test_report_rejects_usage_item_missing_source(self, client):
+        p = self._payload(machine="report-missing-source")
+        p["usage"] = [{"day": "2026-07-10", "tool": "vision",
+                       "count": 3, "errors": 0, "avg_ms": 100}]
+        r = client.post("/api/fleet/report", json=p)
+        assert r.status_code == 400
+
+    def test_report_rejects_usage_item_xss_source(self, client):
+        p = self._payload(machine="report-xss-source")
+        p["usage"] = [{"day": "2026-07-10", "tool": "vision", "source": "<script>",
+                       "count": 3, "errors": 0, "avg_ms": 100}]
+        r = client.post("/api/fleet/report", json=p)
+        assert r.status_code == 400
+
+    def test_report_rejects_non_dict_body_list(self, client):
+        r = client.post("/api/fleet/report", json=[1, 2, 3])
+        assert r.status_code == 400
+
+    def test_report_rejects_non_dict_body_string(self, client):
+        r = client.post("/api/fleet/report", json="hi")
+        assert r.status_code == 400
