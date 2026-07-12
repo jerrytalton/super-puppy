@@ -10,6 +10,7 @@ minimal and mechanical; changing GUIDANCE_TEXT is a reviewed code diff.
 import dataclasses
 import json
 import os
+import shutil
 import socket
 import stat
 import tomllib
@@ -74,12 +75,27 @@ def atomic_write(path: Path, content: str) -> None:
     file in the SAME directory and `os.replace`s it into place — same
     filesystem, so the rename is atomic. A crash mid-write leaves either
     the old file or the temp file, never a half-written target.
+
+    Permission invariant: the `.bak` always matches the mode of the file
+    it backs up (a 0600 secret-bearing config yields a 0600 `.bak`, never
+    the ambient-umask default). The `.tmp` is created owner-only (0600)
+    so a secret written mid-fix is never briefly world/group-readable; if
+    `path` already exists, the tmp is then bumped to `path`'s real mode
+    before the replace (so an ordinary 0644 config stays 0644). A
+    brand-new file is left at 0600 — the safe default for a config that
+    may have just had a token inlined into it.
     """
     path = Path(path)
     if path.exists():
-        (path.parent / (path.name + ".bak")).write_text(path.read_text())
+        bak = path.parent / (path.name + ".bak")
+        bak.write_text(path.read_text())
+        shutil.copymode(path, bak)
     tmp = path.parent / (path.name + ".tmp")
-    tmp.write_text(content)
+    fd = os.open(str(tmp), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(content)
+    if path.exists():
+        shutil.copymode(path, tmp)
     os.replace(tmp, path)
 
 

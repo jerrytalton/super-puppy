@@ -3083,7 +3083,7 @@ def api_fleet_report():
             del _fleet_rate[oldest_machine]
         _fleet_rate[machine] = now
     audit_json = json.dumps(body.get("audit", []))[:100_000]
-    activity.upsert_fleet_report(machine, version, mode, body["usage"], audit_json, now)
+    activity.upsert_fleet_report(machine, version, mode, body.get("usage", []), audit_json, now)
     return jsonify({"ok": True}), 200
 
 
