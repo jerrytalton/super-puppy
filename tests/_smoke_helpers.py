@@ -281,7 +281,8 @@ def assert_tool_output_contains(
     """
     seen = []
     wanted = [s.lower() for s in expect_any]
-    for _ in range(max(1, attempts)):
+    n = max(1, attempts)
+    for i in range(n):
         status, data = call_api_test(client, tool, model, **body)
         err = str(data.get("error", "")) if isinstance(data, dict) else ""
         if err and _is_skippable(err):
@@ -292,9 +293,16 @@ def assert_tool_output_contains(
         if any(w in value.lower() for w in wanted):
             return data
         seen.append(value[:120])
+        # Back off between samples so a transient bad model state (eviction /
+        # reload under the release suite's memory churn — which produced
+        # "no content provided" replies to a well-formed prompt) can recover
+        # before the next attempt, rather than all retries hitting one bad
+        # window. A genuinely-blind backend still fails every attempt.
+        if i < n - 1:
+            time.sleep(3)
     raise AssertionError(
         f"{tool}({model}) output did not contain any of {expect_any!r} in "
-        f"{attempts} attempts — the model likely ignored its input. "
+        f"{n} attempts — the model likely ignored its input. "
         f"Samples: {seen!r}")
 
 
