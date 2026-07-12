@@ -62,12 +62,16 @@ if $UNINSTALL; then
         ~/.local/bin/local-models-mcp-auth \
         ~/.local/bin/tailscale-status \
         ~/.local/bin/post-update.sh \
+        ~/.local/bin/sp-session-ping \
+        ~/.local/bin/sp-doctor \
         ~/bin/start-local-models \
         ~/bin/local-models-menubar \
         ~/bin/local-models-mcp-detect \
         ~/bin/local-models-mcp-auth \
         ~/bin/tailscale-status \
         ~/bin/post-update.sh \
+        ~/bin/sp-session-ping \
+        ~/bin/sp-doctor \
         ~/Library/LaunchAgents/com.local-models.menubar.plist \
         ~/Library/LaunchAgents/setenv.OLLAMA_HOST.plist; do
         if [ -L "$link" ]; then
@@ -512,11 +516,13 @@ if [ -f "$CLAUDE_JSON" ]; then
     if command -v claude > /dev/null; then
         claude mcp remove local-models -s local 2>/dev/null || true
         claude mcp remove local-models -s user 2>/dev/null || true
+        CLIENT_HOST=$(scutil --get LocalHostName 2>/dev/null || hostname -s)
         ENTRY='{"type":"http","url":"http://127.0.0.1:8100/mcp"'
+        HEADERS='"X-SP-Client":"'"$CLIENT_HOST"'"'
         if [ -n "$MCP_TOKEN" ]; then
-            ENTRY="$ENTRY"',"headers":{"Authorization":"Bearer '"$MCP_TOKEN"'"}'
+            HEADERS='"Authorization":"Bearer '"$MCP_TOKEN"'",'"$HEADERS"
         fi
-        ENTRY="$ENTRY"'}'
+        ENTRY="$ENTRY"',"headers":{'"$HEADERS"'}}'
         claude mcp add-json -s user local-models "$ENTRY" 2>/dev/null
         echo "  Registered local-models MCP (streamable-http on port 8100)"
         # Register open-websearch if not already present
@@ -527,6 +533,8 @@ if [ -f "$CLAUDE_JSON" ]; then
         else
             echo "  open-websearch MCP already registered"
         fi
+        ~/.local/bin/sp-doctor --fix --yes 2>/dev/null || true
+        echo "  Ran SP config audit (sp-doctor)"
     else
         echo "  claude CLI not found — install Claude Code first, then re-run install.sh"
     fi

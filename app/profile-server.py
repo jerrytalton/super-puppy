@@ -1345,6 +1345,35 @@ def _check_auth():
     return jsonify({"error": "unauthorized"}), 403
 
 
+# ── Content-Security-Policy ─────────────────────────────────────────
+# Defense-in-depth behind the textContent-only render in activity.html:
+# machine/version/mode/audit strings come from network payloads (fleet
+# reports), so even a future render bug shouldn't be able to execute
+# injected markup. Widened beyond the minimal baseline for two things the
+# existing Playground/Profiles pages need: `media-src 'self'` for the
+# playground's <audio>/<video> test-result players (same-origin
+# /api/test/audio|video URLs), and `manifest-src 'self'` for the PWA
+# <link rel="manifest"> tag every page includes. Inline styles/scripts and
+# onclick="..." handlers already in tools.html/profiles.html are allowed by
+# 'unsafe-inline' on script-src/style-src (no nonces/hashes are used, so
+# 'unsafe-inline' is not ignored here).
+_CSP = (
+    "default-src 'none'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "connect-src 'self'; "
+    "media-src 'self'; "
+    "manifest-src 'self'"
+)
+
+
+@app.after_request
+def _set_security_headers(response):
+    response.headers["Content-Security-Policy"] = _CSP
+    return response
+
+
 @app.route("/")
 def index():
     return send_file(str(HTML_FILE))
@@ -2999,8 +3028,72 @@ def api_activity():
     return jsonify({
         "active": active,
         "server_uptime_s": server_uptime_s,
+        "last_activity_at": activity.last_activity_at(),
         **db_data,
     })
+
+
+_FLEET_FIELD_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+_FLEET_DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_FLEET_MIN_INTERVAL = 300  # one accepted report per machine per 5 min
+_FLEET_RATE_MAX_ENTRIES = 1000
+_fleet_rate: dict[str, float] = {}
+_fleet_rate_lock = threading.Lock()
+
+
+def _valid_usage(usage) -> bool:
+    if not isinstance(usage, list) or len(usage) > 5000:
+        return False
+    for u in usage:
+        if not isinstance(u, dict):
+            return False
+        if not _FLEET_DAY_RE.match(str(u.get("day", ""))):
+            return False
+        if not _FLEET_FIELD_RE.match(str(u.get("tool", ""))):
+            return False
+        if not _FLEET_FIELD_RE.match(str(u.get("source", ""))):
+            return False
+        for k in ("count", "errors", "avg_ms"):
+            if not isinstance(u.get(k), int):
+                return False
+    return True
+
+
+@app.route("/api/fleet/report", methods=["POST"])
+def api_fleet_report():
+    """Ingest a fleet usage/audit report pushed from a client machine."""
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({"error": "body must be a JSON object"}), 400
+    machine = str(body.get("machine", ""))
+    version = str(body.get("version", ""))
+    mode = str(body.get("mode", ""))
+    if not (_FLEET_FIELD_RE.match(machine) and _FLEET_FIELD_RE.match(version)
+            and _FLEET_FIELD_RE.match(mode)):
+        return jsonify({"error": "invalid machine/version/mode"}), 400
+    if not _valid_usage(body.get("usage", [])):
+        return jsonify({"error": "invalid usage payload"}), 400
+    now = time.time()
+    with _fleet_rate_lock:
+        last = _fleet_rate.get(machine, 0)
+        if now - last < _FLEET_MIN_INTERVAL:
+            return jsonify({"error": "rate limited"}), 429
+        if len(_fleet_rate) >= _FLEET_RATE_MAX_ENTRIES:
+            oldest_machine = min(_fleet_rate, key=_fleet_rate.get)
+            del _fleet_rate[oldest_machine]
+        _fleet_rate[machine] = now
+    audit_json = json.dumps(body.get("audit", []))[:100_000]
+    activity.upsert_fleet_report(machine, version, mode, body.get("usage", []), audit_json, now)
+    return jsonify({"ok": True}), 200
+
+
+@app.route("/api/fleet")
+def api_fleet():
+    """Fleet dashboard data: per-machine last-seen/audit + usage rollup."""
+    proxied = _proxy_to_desktop("/api/fleet", method="GET")
+    if proxied is not None:
+        return proxied
+    return jsonify(activity.query_fleet())
 
 
 @app.route("/activity")

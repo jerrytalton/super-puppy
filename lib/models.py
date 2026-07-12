@@ -7,6 +7,7 @@ profile server.
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -19,7 +20,7 @@ PROFILES_FILE = CONFIG_DIR / "profiles.json"
 MCP_PREFS_FILE = CONFIG_DIR / "mcp_preferences.json"
 MODEL_PREFS_FILE = CONFIG_DIR / "model_preferences.json"
 NETWORK_CONF = CONFIG_DIR / "network.conf"
-ACTIVITY_DB = CONFIG_DIR / "activity.db"
+ACTIVITY_DB = Path(os.environ["SP_ACTIVITY_DB"]).expanduser() if os.environ.get("SP_ACTIVITY_DB") else CONFIG_DIR / "activity.db"
 MLX_SERVER_CONFIG = Path("~/.config/mlx-server/config.yaml").expanduser()
 CLAUDE_CONFIG_FILE = Path("~/.claude.json").expanduser()
 

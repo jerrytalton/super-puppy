@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""sp-doctor — verify (and optionally fix) that this machine's AI agents are
+wired to use Super Puppy. Usage:
+  sp-doctor              show the audit table
+  sp-doctor --fix        apply fixable findings (prompts per fix)
+  sp-doctor --fix --yes  apply without prompting
+  sp-doctor --json       machine-readable output
+"""
+import argparse, json, os, sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from lib import audit
+
+HOME = Path(os.environ.get("SP_AUDIT_HOME", str(Path.home())))
+
+
+def _token():
+    p = HOME / ".config" / "local-models" / "mcp_auth_token"
+    return p.read_text().strip() if p.exists() else None
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--fix", action="store_true")
+    ap.add_argument("--yes", action="store_true")
+    ap.add_argument("--json", action="store_true")
+    args = ap.parse_args()
+    results = audit.run_all(home=HOME)
+    exit_code = 1 if any(c["status"] == "fail" for c in results) else 0
+    if args.json:
+        print(json.dumps(results, indent=2))
+        return exit_code
+    icons = {"pass": "✅", "fail": "❌", "warn": "⚠️ ", "n/a": "· "}
+    for c in results:
+        print(f"  {icons.get(c['status'],'?')} {c['id']:<18} {c['detail']}")
+    failed = [c for c in results if c["status"] == "fail" and c["fixable"]]
+    if args.fix and failed:
+        for c in failed:
+            if not args.yes:
+                if input(f"Fix {c['id']}? [y/N] ").strip().lower() != "y":
+                    continue
+            print("  " + audit.fix(c["id"], home=HOME, token=_token()))
+    return exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

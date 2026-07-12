@@ -46,6 +46,8 @@ link bin/local-models-mcp-detect   ~/.local/bin/local-models-mcp-detect
 link bin/local-models-mcp-auth     ~/.local/bin/local-models-mcp-auth
 link bin/tailscale-status          ~/.local/bin/tailscale-status
 link bin/post-update.sh            ~/.local/bin/post-update.sh
+link bin/sp-session-ping           ~/.local/bin/sp-session-ping
+link bin/sp-doctor                 ~/.local/bin/sp-doctor
 
 # MLX configs (copied on first install, new models merged on update)
 MLX_DIR="$HOME/.config/mlx-server"

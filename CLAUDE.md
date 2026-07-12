@@ -68,6 +68,16 @@ Signature verification runs against the *existing* `allowed_signers` before any 
 
 Both the **MCP server** and the **profile server** require a bearer token (`MCP_AUTH_TOKEN`) on every request. The token is stored in `~/.config/local-models/mcp_auth_token` (sourced from 1Password via the wrapper script). Both fail closed — they refuse to start without a token. `SP_ALLOW_NO_AUTH=1` is the explicit escape hatch for unit tests and local dev. There is no localhost shortcut: `tailscale serve` proxies remote requests as if they came from `127.0.0.1`, so trusting loopback would silently bypass auth for any tailnet peer. The MCP server tracks session IDs from authenticated `/mcp` init requests; subsequent `/messages` requests are validated against this set.
 
+### Usage Telemetry & Audit
+
+`lib/activity.py` logs every MCP/playground request to a local SQLite DB (`~/.config/local-models/activity.db`, overridable via `SP_ACTIVITY_DB`) — schema v2 adds a `machine` column and `source='session'` rows are a session-count denominator excluded from request stats. **Telemetry never leaves the user's own tailnet**: it flows client → their own fleet server, over their existing bearer token, nowhere else.
+
+The MCP server attributes each request to the machine that made it by reading a validated `X-SP-Client` header (`^[A-Za-z0-9._-]{1,64}$`) off the current request (`mcp.get_context().request_context.request`) and stamping it as `machine` in `log_request`; `install.sh` writes that header into the `~/.claude.json` MCP entry. `bin/sp-session-ping` is a fire-and-forget `SessionStart` hook that inserts one `source='session'` row (bound-param SQL, always exits 0) — the denominator for calls-per-session.
+
+The menu bar app POSTs each machine's 7-day usage summary (`local_usage_summary`) + a fresh audit run to the fleet server's `POST /api/fleet/report` every 15 minutes (fire-and-forget, https via Tailscale FQDN in client mode / localhost in server mode, bearer auth). The endpoint validates `machine`/`version`/`mode`/usage-item fields, rate-limits one report per machine per 5 minutes, stamps `last_seen` server-side, and rejects malformed bodies with 400. `GET /api/fleet` serves the aggregated `fleet_usage`/`fleet_machines` tables (idempotent upsert, 30-day retention) to the Fleet view in `app/activity.html` — per-machine cards (version, mode, last-seen, calls today/7d, sessions 7d, calls-per-session, audit badge), rendered via `textContent` only behind a CSP header, polling every 10s.
+
+`lib/audit.py` + `bin/sp-doctor` check whether Claude Code / Codex / Gemini are wired to use SP (MCP registration, a managed guidance block, the SessionStart hook) and can fix what's missing; also surfaced as the menu bar's "Audit…" item. Per §S2 of the design, guidance-block fixes are a code-vs-prompt trust boundary and are **always user-confirmed** (`sp-doctor --fix` / menubar "Fix" / install.sh opt-in) — never auto-applied on a version bump.
+
 ### Key files at runtime
 
 | What | Where |
@@ -80,6 +90,11 @@ Both the **MCP server** and the **profile server** require a bearer token (`MCP_
 | Auth token | `~/.config/local-models/mcp_auth_token` |
 | MLX server config | `~/.config/mlx-server/config.yaml` (user-writable, survives updates) |
 | Claude MCP config | `~/.claude.json` |
+| Activity DB | `~/.config/local-models/activity.db` (`SP_ACTIVITY_DB` override) |
+| Fleet report endpoint | `POST https://{fqdn}:8101/api/fleet/report` |
+| Fleet view endpoint | `GET https://{fqdn}:8101/api/fleet` |
+| Session-start hook script | `bin/sp-session-ping` (symlinked to `~/.local/bin/`) |
+| Config audit script | `bin/sp-doctor` (symlinked to `~/.local/bin/`) |
 | Menu bar log | `/tmp/local-models-menubar.log` |
 | Instance lock | `~/.config/local-models/menubar.lock` |
 
