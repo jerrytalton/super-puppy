@@ -1220,3 +1220,111 @@ class TestKeepAliveFor:
         assert ps.keep_alive_for("w:bf16") == "30m"
         assert ps.keep_alive_for("c:bf16") == "30s"
         assert ps.keep_alive_for("unknown:1b") == "30s"
+
+
+class TestFleetReport:
+    """POST /api/fleet/report ingest + GET /api/fleet query."""
+
+    @pytest.fixture(autouse=True)
+    def _fleet_setup(self):
+        """Fresh fleet tables per test (per-test DB via conftest's
+        _isolate_activity_db) and a clean rate-limit dict, since
+        _fleet_rate is module-global state shared across tests."""
+        ps.activity.init_db()
+        ps._fleet_rate.clear()
+        yield
+        ps._fleet_rate.clear()
+
+    def _payload(self, machine="laptop"):
+        return {"machine": machine, "version": "v1.2.0", "mode": "client",
+                "sent_at": 1, "audit": [{"id": "claude-mcp", "status": "pass"}],
+                "usage": [{"day": "2026-07-10", "tool": "vision", "source": "mcp",
+                           "count": 3, "errors": 0, "avg_ms": 100}]}
+
+    def test_report_accepts_valid(self, client):
+        r = client.post("/api/fleet/report", json=self._payload(machine="report-valid"))
+        assert r.status_code == 200
+        got = client.get("/api/fleet").get_json()
+        assert got["machines"][0]["machine"] == "report-valid"
+
+    def test_report_rejects_bad_machine(self, client):
+        p = self._payload(machine="<script>")
+        r = client.post("/api/fleet/report", json=p)
+        assert r.status_code == 400
+
+    def test_report_rate_limited(self, client):
+        payload = self._payload(machine="report-rate-limited")
+        assert client.post("/api/fleet/report", json=payload).status_code == 200
+        assert client.post("/api/fleet/report", json=payload).status_code == 429
+
+    def test_report_rejects_malformed_usage_item(self, client):
+        p = self._payload(machine="report-bad-usage")
+        p["usage"] = [{"day": "2026-07-10", "tool": "vision", "source": "mcp",
+                       "count": "not-an-int", "errors": 0, "avg_ms": 100}]
+        r = client.post("/api/fleet/report", json=p)
+        assert r.status_code == 400
+
+    def test_report_rejects_usage_item_missing_day(self, client):
+        p = self._payload(machine="report-missing-day")
+        p["usage"] = [{"tool": "vision", "source": "mcp",
+                       "count": 3, "errors": 0, "avg_ms": 100}]
+        r = client.post("/api/fleet/report", json=p)
+        assert r.status_code == 400
+
+    def test_report_rejects_usage_item_missing_source(self, client):
+        p = self._payload(machine="report-missing-source")
+        p["usage"] = [{"day": "2026-07-10", "tool": "vision",
+                       "count": 3, "errors": 0, "avg_ms": 100}]
+        r = client.post("/api/fleet/report", json=p)
+        assert r.status_code == 400
+
+    def test_report_rejects_usage_item_xss_source(self, client):
+        p = self._payload(machine="report-xss-source")
+        p["usage"] = [{"day": "2026-07-10", "tool": "vision", "source": "<script>",
+                       "count": 3, "errors": 0, "avg_ms": 100}]
+        r = client.post("/api/fleet/report", json=p)
+        assert r.status_code == 400
+
+    def test_report_rejects_non_dict_body_list(self, client):
+        r = client.post("/api/fleet/report", json=[1, 2, 3])
+        assert r.status_code == 400
+
+    def test_report_rejects_non_dict_body_string(self, client):
+        r = client.post("/api/fleet/report", json="hi")
+        assert r.status_code == 400
+
+    def test_report_accepts_missing_usage_key(self, client):
+        """body.get("usage", []) validates an absent key as [] and passes,
+        so the ingest call must not KeyError on body["usage"] — a client
+        with nothing to report yet (e.g. no usage since last heartbeat)
+        must not 500."""
+        p = self._payload(machine="report-no-usage")
+        del p["usage"]
+        r = client.post("/api/fleet/report", json=p)
+        assert r.status_code == 200
+        got = client.get("/api/fleet").get_json()
+        assert any(m["machine"] == "report-no-usage" for m in got["machines"])
+
+
+def test_api_activity_includes_last_activity(client):
+    """Activity API response includes last_activity_at timestamp."""
+    import time
+    from lib import activity
+    activity.init_db()
+    now = time.time()
+    activity.log_request(tool="code", model="x", backend="ollama", source="mcp",
+                         status="ok", duration_ms=5, started_at=now-1, completed_at=now)
+    data = client.get("/api/activity?period=1").get_json()  # 1-second window → empty history
+    assert data["last_activity_at"] is not None
+
+
+def test_api_activity_carries_csp_header(client):
+    """Every response (defense-in-depth for the Fleet view's XSS-safe render)
+    must carry a restrictive Content-Security-Policy header."""
+    from lib import activity
+    activity.init_db()
+    resp = client.get("/api/activity")
+    csp = resp.headers.get("Content-Security-Policy")
+    assert csp is not None
+    assert "default-src 'none'" in csp
+    assert "script-src 'self' 'unsafe-inline'" in csp

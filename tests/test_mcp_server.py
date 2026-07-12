@@ -47,6 +47,10 @@ for mod_name in (
 # falls through to MagicMock as before.
 _fastmcp_instance = MagicMock()
 _fastmcp_instance.tool = lambda *a, **kw: (lambda fn: fn)
+# Default: no active MCP request → _current_client() returns "" (the real
+# get_context() yields a context whose request is None outside a tool call).
+# Tests that need attribution patch server._current_client or server.mcp.get_context.
+_fastmcp_instance.get_context.return_value.request_context.request = None
 _fastmcp_mock = MagicMock(return_value=_fastmcp_instance)
 sys.modules["mcp.server.fastmcp"].FastMCP = _fastmcp_mock
 sys.modules["mcp.server.transport_security"].TransportSecuritySettings = MagicMock()
@@ -331,6 +335,87 @@ class TestGpuTracking:
                 with server._gpu_request("ollama", "c:3"):
                     warning = server._gpu_contention_warning("ollama")
                     assert "2 other requests" in warning
+
+    def test_gpu_tracker_stamps_client_machine(self):
+        from lib import activity
+        activity.init_db()
+        with patch.object(server, "_current_client", return_value="jerry-laptop"):
+            with server._gpu_request("ollama", "code:model-x"):
+                pass
+        row = activity.query_activity(60)["history"][0]
+        assert row["machine"] == "jerry-laptop"
+
+    def test_gpu_tracker_stamps_unknown_client_when_unset(self):
+        from lib import activity
+        activity.init_db()
+        row_before = len(activity.query_activity(60)["history"])
+        with patch.object(server, "_current_client", return_value=""):
+            with server._gpu_request("ollama", "code:model-y"):
+                pass
+        history = activity.query_activity(60)["history"]
+        assert len(history) == row_before + 1
+        assert history[0]["machine"] == "unknown-client"
+
+
+# ── X-SP-Client validation ──────────────────────────────────────────
+
+class TestValidatedClient:
+    def test_accepts_good_hostnames(self):
+        assert server._validated_client("jerry-laptop") == "jerry-laptop"
+        assert server._validated_client("MacBook-Pro.local") == "MacBook-Pro.local"
+
+    def test_rejects_injection_attempt(self):
+        assert server._validated_client("<img onerror=x>") == ""
+
+    def test_rejects_too_long(self):
+        assert server._validated_client("a" * 65) == ""
+
+    def test_rejects_empty(self):
+        assert server._validated_client("") == ""
+
+
+class TestCurrentClient:
+    """_current_client reads X-SP-Client off the current request context.
+
+    These stub the request context to exercise the read/validation logic in
+    isolation; the cross-task behavior over the real transport is proven by
+    tests/test_mcp_attribution_e2e.py.
+    """
+
+    def _ctx_with_headers(self, headers):
+        request = MagicMock()
+        request.headers = headers
+        ctx = MagicMock()
+        ctx.request_context.request = request
+        return ctx
+
+    def test_reads_valid_header(self):
+        ctx = self._ctx_with_headers({"x-sp-client": "jerry-laptop"})
+        with patch.object(server.mcp, "get_context", return_value=ctx):
+            assert server._current_client() == "jerry-laptop"
+
+    def test_invalid_header_is_empty(self):
+        ctx = self._ctx_with_headers({"x-sp-client": "<img onerror=x>"})
+        with patch.object(server.mcp, "get_context", return_value=ctx):
+            assert server._current_client() == ""
+
+    def test_absent_header_is_empty(self):
+        ctx = self._ctx_with_headers({})
+        with patch.object(server.mcp, "get_context", return_value=ctx):
+            assert server._current_client() == ""
+
+    def test_no_request_is_empty(self):
+        ctx = MagicMock()
+        ctx.request_context.request = None
+        with patch.object(server.mcp, "get_context", return_value=ctx):
+            assert server._current_client() == ""
+
+    def test_outside_request_context_is_empty(self):
+        ctx = MagicMock()
+        type(ctx).request_context = property(
+            lambda self: (_ for _ in ()).throw(ValueError("no request")))
+        with patch.object(server.mcp, "get_context", return_value=ctx):
+            assert server._current_client() == ""
 
 
 # ── Auth middleware logic ──────────────────────────────────────────
