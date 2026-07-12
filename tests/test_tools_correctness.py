@@ -56,9 +56,9 @@ def _model_for(task: str) -> str:
 # actually sees the image names the color; a blind backend guesses and
 # fails at least one of these.
 _COLOR_CASES = [
-    ("red", (220, 20, 20), ["red", "crimson", "maroon"]),
-    ("green", (20, 170, 20), ["green"]),
-    ("blue", (20, 20, 220), ["blue", "navy"]),
+    ("red", (220, 20, 20), ["red", "crimson", "maroon", "scarlet"]),
+    ("green", (20, 170, 20), ["green", "lime", "emerald"]),
+    ("blue", (20, 20, 220), ["blue", "navy", "azure"]),
 ]
 
 
