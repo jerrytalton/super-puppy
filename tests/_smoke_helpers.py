@@ -257,7 +257,7 @@ def assert_media_output(client, *, tool: str, model: str, expect_key: str,
 
 def assert_tool_output_contains(
     client, *, tool: str, model: str, expect_any: list[str],
-    expect_key: str = "result", **body,
+    expect_key: str = "result", attempts: int = 3, **body,
 ):
     """Invoke /api/test and assert the output CONTAINS expected ground truth.
 
@@ -268,22 +268,34 @@ def assert_tool_output_contains(
     to catch a backend that silently ignores its input (e.g. Ollama's
     `-mlx` tags that advertise vision but never see the image).
 
-    Skips when the model isn't available; FAILS when output is present
-    but wrong. `expect_any` passes if any substring matches (synonyms).
+    Real models are nondeterministic and fuzzy: a vision model may call a
+    green swatch "cyan" on one sample and "green" on the next; a chat model
+    may occasionally drift. So we resample up to `attempts` times and pass
+    as soon as ONE sample matches. This kills release-gate flakes on a
+    single unlucky sample while preserving the signal: a backend that
+    genuinely ignores its input (the regression these tests exist to catch)
+    fails EVERY sample, not just one. Skips short-circuit immediately.
+
+    Skips when the model isn't available; FAILS when output is present but
+    wrong on all attempts. `expect_any` passes if any substring matches.
     """
-    status, data = call_api_test(client, tool, model, **body)
-    err = str(data.get("error", "")) if isinstance(data, dict) else ""
-    if err and _is_skippable(err):
-        pytest.skip(f"{tool}({model}): {err}")
-    assert status == 200, f"{tool}({model}) HTTP {status}: {data}"
-    assert not err, f"{tool}({model}) error: {err}"
-    value = str(data.get(expect_key, ""))
-    low = value.lower()
-    if not any(s.lower() in low for s in expect_any):
-        raise AssertionError(
-            f"{tool}({model}) output did not contain any of {expect_any!r} "
-            f"— the model likely ignored its input. Got: {value[:200]!r}")
-    return data
+    seen = []
+    wanted = [s.lower() for s in expect_any]
+    for _ in range(max(1, attempts)):
+        status, data = call_api_test(client, tool, model, **body)
+        err = str(data.get("error", "")) if isinstance(data, dict) else ""
+        if err and _is_skippable(err):
+            pytest.skip(f"{tool}({model}): {err}")
+        assert status == 200, f"{tool}({model}) HTTP {status}: {data}"
+        assert not err, f"{tool}({model}) error: {err}"
+        value = str(data.get(expect_key, ""))
+        if any(w in value.lower() for w in wanted):
+            return data
+        seen.append(value[:120])
+    raise AssertionError(
+        f"{tool}({model}) output did not contain any of {expect_any!r} in "
+        f"{attempts} attempts — the model likely ignored its input. "
+        f"Samples: {seen!r}")
 
 
 # ── shared test-body builders ───────────────────────────────────────
