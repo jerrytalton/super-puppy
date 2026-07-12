@@ -440,3 +440,46 @@ def test_sp_doctor_json_runs(tmp_path):
     r = subprocess.run([DOCTOR, "--json"], env=env, capture_output=True, text=True)
     data = json.loads(r.stdout)
     assert any(c["id"] == "claude-mcp" for c in data)
+
+
+def test_run_all_survives_ascii_locale_with_non_ascii_config(tmp_path):
+    """Regression: the menu bar app runs under launchd with an ASCII/C locale
+    (no LANG). `read_text()`/`write_text()` without an explicit encoding then
+    default to ASCII and raise UnicodeDecodeError on a config file containing
+    UTF-8 bytes (e.g. an em-dash in ~/.claude.json). Shipped in v1.3.0; the
+    live "Audit…" menu item crashed with:
+        'ascii' codec can't decode byte 0xe2 in position ...
+    Drive audit.run_all in a subprocess under a stripped ASCII env against a
+    fake home whose configs contain non-ASCII, and assert it does not crash.
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    # non-ASCII (em-dash, arrow) in both a JSON config and a markdown guidance file
+    (home / ".claude.json").write_text('{"note": "cost — value → ok"}', encoding="utf-8")
+    (home / ".claude" / "CLAUDE.md").write_text("# rules — see below → done\n", encoding="utf-8")
+    (home / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
+
+    script = (
+        "import sys; sys.path.insert(0, %r);"
+        "from lib import audit; from pathlib import Path;"
+        "r = audit.run_all(home=Path(%r));"
+        "assert isinstance(r, list) and r;"
+        % (str(Path(__file__).resolve().parent.parent), str(home))
+    )
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "LC_ALL": "C",
+        "LANG": "",
+        "PYTHONUTF8": "0",
+        "PYTHONCOERCECLOCALE": "0",
+    }
+    proc = subprocess.run([sys.executable, "-c", script], env=env,
+                          capture_output=True, text=True)
+    assert proc.returncode == 0, (
+        f"run_all crashed under ASCII locale: {proc.stderr}")
+    assert "UnicodeDecodeError" not in proc.stderr
+    assert "UnicodeEncodeError" not in proc.stderr

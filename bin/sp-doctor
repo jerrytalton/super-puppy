@@ -9,6 +9,14 @@ wired to use Super Puppy. Usage:
 import argparse, json, os, sys
 from pathlib import Path
 
+# Under launchd/cron the locale can be ASCII (no LANG); force UTF-8 on our
+# streams so the ✅/❌ status icons don't raise UnicodeEncodeError.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib import audit
 
@@ -17,7 +25,7 @@ HOME = Path(os.environ.get("SP_AUDIT_HOME", str(Path.home())))
 
 def _token():
     p = HOME / ".config" / "local-models" / "mcp_auth_token"
-    return p.read_text().strip() if p.exists() else None
+    return p.read_text(encoding="utf-8").strip() if p.exists() else None
 
 
 def main():
