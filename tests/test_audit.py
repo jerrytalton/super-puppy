@@ -15,6 +15,18 @@ def test_atomic_write_makes_bak(tmp_path):
     assert (tmp_path / "f.txt.bak").read_text() == "old"
 
 
+def test_atomic_write_bak_matches_source_mode(tmp_path):
+    p = tmp_path / "secret.json"
+    p.write_text("secret")
+    p.chmod(0o600)
+    audit.atomic_write(p, "new")
+    bak = tmp_path / "secret.json.bak"
+    assert bak.exists()
+    mode = stat.S_IMODE(os.stat(bak).st_mode)
+    assert mode == 0o600
+    assert mode & (stat.S_IRGRP | stat.S_IROTH) == 0
+
+
 def test_merge_json_key_preserves_siblings(tmp_path):
     p = tmp_path / "c.json"
     p.write_text(json.dumps({"mcpServers": {"other": {"x": 1}}, "keep": True}))
@@ -180,6 +192,25 @@ def test_mcp_fix_absent_file_creates_private_token_file(tmp_path):
     entry = json.loads(cj.read_text())["mcpServers"]["local-models"]
     assert entry["headers"]["Authorization"] == "Bearer secret"
     assert entry["headers"]["X-SP-Client"]
+
+
+def test_mcp_fix_absent_file_no_world_readable_intermediate(tmp_path):
+    # Same fresh-machine case, but asserting on atomic_write's own
+    # intermediates rather than just the final chmod: no leftover .tmp,
+    # and if a .bak exists (it shouldn't, since there was no prior file)
+    # it must not be group/other readable either.
+    home = tmp_path
+    (home / ".claude").mkdir()
+    cj = home / ".claude.json"
+    assert not cj.exists()
+    audit.fix("claude-mcp", home=home, token="secret")
+    mode = stat.S_IMODE(os.stat(cj).st_mode)
+    assert mode == 0o600
+    assert not (home / ".claude.json.tmp").exists()
+    bak = home / ".claude.json.bak"
+    if bak.exists():
+        bak_mode = stat.S_IMODE(os.stat(bak).st_mode)
+        assert bak_mode & (stat.S_IRGRP | stat.S_IROTH) == 0
 
 
 def test_mcp_fix_refuses_token_inside_git_worktree(tmp_path):

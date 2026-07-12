@@ -1293,6 +1293,18 @@ class TestFleetReport:
         r = client.post("/api/fleet/report", json="hi")
         assert r.status_code == 400
 
+    def test_report_accepts_missing_usage_key(self, client):
+        """body.get("usage", []) validates an absent key as [] and passes,
+        so the ingest call must not KeyError on body["usage"] — a client
+        with nothing to report yet (e.g. no usage since last heartbeat)
+        must not 500."""
+        p = self._payload(machine="report-no-usage")
+        del p["usage"]
+        r = client.post("/api/fleet/report", json=p)
+        assert r.status_code == 200
+        got = client.get("/api/fleet").get_json()
+        assert any(m["machine"] == "report-no-usage" for m in got["machines"])
+
 
 def test_api_activity_includes_last_activity(client):
     """Activity API response includes last_activity_at timestamp."""
