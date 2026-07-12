@@ -88,11 +88,11 @@ def atomic_write(path: Path, content: str) -> None:
     path = Path(path)
     if path.exists():
         bak = path.parent / (path.name + ".bak")
-        bak.write_text(path.read_text())
+        bak.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
         shutil.copymode(path, bak)
     tmp = path.parent / (path.name + ".tmp")
     fd = os.open(str(tmp), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(content)
     if path.exists():
         shutil.copymode(path, tmp)
@@ -105,7 +105,7 @@ def _load_json(path: Path) -> dict:
     path = Path(path)
     if not path.exists():
         return {}
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def merge_json_key(path, dotted_key: str, value) -> None:
@@ -232,7 +232,7 @@ def _fix_claude_mcp(home: Path, token: Optional[str]) -> str:
 
 def _check_claude_guidance(home: Path) -> Check:
     path = home / ".claude" / "CLAUDE.md"
-    text = path.read_text() if path.exists() else ""
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
     if render_block() in text:
         return Check("claude-guidance", "claude", "pass", f"guidance block current in {path}", True)
     return Check("claude-guidance", "claude", "fail", f"guidance block missing or stale in {path}", True)
@@ -241,7 +241,7 @@ def _check_claude_guidance(home: Path) -> Check:
 def _fix_claude_guidance(home: Path, token: Optional[str]) -> str:
     path = home / ".claude" / "CLAUDE.md"
     path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(path, upsert_guidance(path.read_text() if path.exists() else ""))
+    atomic_write(path, upsert_guidance(path.read_text(encoding="utf-8") if path.exists() else ""))
     return f"claude-guidance: upserted guidance block in {path}"
 
 
@@ -331,7 +331,7 @@ def _check_codex_mcp(home: Path) -> Check:
     if not path.exists():
         return Check("codex-mcp", "codex", "fail", f"{path} missing", True)
     try:
-        data = tomllib.loads(path.read_text())
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as e:
         return Check("codex-mcp", "codex", "fail", f"{path} is not valid TOML: {e}", True)
     entry = data.get("mcp_servers", {}).get("local-models")
@@ -343,7 +343,7 @@ def _check_codex_mcp(home: Path) -> Check:
 def _fix_codex_mcp(home: Path, token: Optional[str]) -> str:
     codex_dir = _require_tool_dir(home, ".codex", "Codex")
     path = codex_dir / "config.toml"
-    existing = path.read_text() if path.exists() else ""
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
     if existing.strip():
         try:
             tomllib.loads(existing)
@@ -370,7 +370,7 @@ def _check_codex_guidance(home: Path) -> Check:
     if not codex_dir.exists():
         return Check("codex-guidance", "codex", "n/a", "Codex not installed (~/.codex absent)", False)
     path = codex_dir / "AGENTS.md"
-    text = path.read_text() if path.exists() else ""
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
     if render_block() in text:
         return Check("codex-guidance", "codex", "pass", f"guidance block current in {path}", True)
     return Check("codex-guidance", "codex", "fail", f"guidance block missing or stale in {path}", True)
@@ -379,7 +379,7 @@ def _check_codex_guidance(home: Path) -> Check:
 def _fix_codex_guidance(home: Path, token: Optional[str]) -> str:
     codex_dir = _require_tool_dir(home, ".codex", "Codex")
     path = codex_dir / "AGENTS.md"
-    atomic_write(path, upsert_guidance(path.read_text() if path.exists() else ""))
+    atomic_write(path, upsert_guidance(path.read_text(encoding="utf-8") if path.exists() else ""))
     return f"codex-guidance: upserted guidance block in {path}"
 
 
@@ -418,7 +418,7 @@ def _check_gemini_guidance(home: Path) -> Check:
     if not gemini_dir.exists():
         return Check("gemini-guidance", "gemini", "n/a", "Gemini CLI not installed (~/.gemini absent)", False)
     path = gemini_dir / "GEMINI.md"
-    text = path.read_text() if path.exists() else ""
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
     if render_block() in text:
         return Check("gemini-guidance", "gemini", "pass", f"guidance block current in {path}", True)
     return Check("gemini-guidance", "gemini", "fail", f"guidance block missing or stale in {path}", True)
@@ -427,7 +427,7 @@ def _check_gemini_guidance(home: Path) -> Check:
 def _fix_gemini_guidance(home: Path, token: Optional[str]) -> str:
     gemini_dir = _require_tool_dir(home, ".gemini", "Gemini CLI")
     path = gemini_dir / "GEMINI.md"
-    atomic_write(path, upsert_guidance(path.read_text() if path.exists() else ""))
+    atomic_write(path, upsert_guidance(path.read_text(encoding="utf-8") if path.exists() else ""))
     return f"gemini-guidance: upserted guidance block in {path}"
 
 
