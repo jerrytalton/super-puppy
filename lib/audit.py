@@ -12,7 +12,6 @@ import json
 import os
 import shutil
 import socket
-import stat
 import tomllib
 from pathlib import Path
 from typing import Optional
@@ -76,27 +75,31 @@ def atomic_write(path: Path, content: str) -> None:
     filesystem, so the rename is atomic. A crash mid-write leaves either
     the old file or the temp file, never a half-written target.
 
-    Permission invariant: the `.bak` always matches the mode of the file
-    it backs up (a 0600 secret-bearing config yields a 0600 `.bak`, never
-    the ambient-umask default). The `.tmp` is created owner-only (0600)
-    so a secret written mid-fix is never briefly world/group-readable; if
-    `path` already exists, the tmp is then bumped to `path`'s real mode
-    before the replace (so an ordinary 0644 config stays 0644). A
-    brand-new file is left at 0600 — the safe default for a config that
-    may have just had a token inlined into it.
+    Permission invariant: the `.bak` matches the mode of the file it backs
+    up, and the `.tmp` is created owner-only (0600) then bumped to `path`'s
+    real mode before the replace (an ordinary 0644 config stays 0644; a new
+    file is left at 0600). No secret is written into these files anymore —
+    the token is referenced by env var — but keeping intermediates private
+    is cheap defense in depth.
     """
+    # Follow symlinks to the REAL target and write through it. A plain
+    # os.replace() on a symlink swaps the link itself for a regular file —
+    # which silently detaches a CLAUDE.md symlinked into a dotfiles repo
+    # (edits stop propagating in both directions). Writing the resolved
+    # target preserves the link.
     path = Path(path)
-    if path.exists():
-        bak = path.parent / (path.name + ".bak")
-        bak.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
-        shutil.copymode(path, bak)
-    tmp = path.parent / (path.name + ".tmp")
+    real = Path(os.path.realpath(path))
+    if real.exists():
+        bak = real.parent / (real.name + ".bak")
+        bak.write_text(real.read_text(encoding="utf-8"), encoding="utf-8")
+        shutil.copymode(real, bak)
+    tmp = real.parent / (real.name + ".tmp")
     fd = os.open(str(tmp), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(content)
-    if path.exists():
-        shutil.copymode(path, tmp)
-    os.replace(tmp, path)
+    if real.exists():
+        shutil.copymode(real, tmp)
+    os.replace(tmp, real)
 
 
 def _load_json(path: Path) -> dict:
@@ -162,49 +165,32 @@ def _client_hostname() -> str:
     return (socket.gethostname() or "unknown").split(".")[0] or "unknown"
 
 
-def _in_git_worktree(path: Path) -> bool:
-    return any((parent / ".git").exists() for parent in (path.parent, *path.parent.parents))
+SP_TOKEN_ENV = "SP_MCP_TOKEN"
+# The auth header references the token by env var. Claude Code expands
+# ${SP_MCP_TOKEN} from the environment at load time (verified: env-var
+# interpolation works in http MCP headers), so the literal secret never
+# lands in ~/.claude.json — the file is safe to sync or commit, and there's
+# no token-leak surface to guard. install.sh provisions SP_MCP_TOKEN from
+# the untracked ~/.config/local-models/mcp_auth_token file.
+_AUTH_HEADER_VALUE = f"Bearer ${{{SP_TOKEN_ENV}}}"
 
 
-def _unsafe_to_inline_token(path: Path) -> bool:
-    """True if writing a secret into `path` risks leaking it off this
-    machine: the file is readable by group/other, or it lives inside a git
-    work tree (spec §S4 — `~/.claude.json` and friends are often synced or
-    committed). Generalized beyond claude-mcp because the same file-leak
-    risk applies to every config file a fix might inline a token into
-    (~/.gemini/settings.json, ~/.codex/config.toml).
-
-    A file that does not exist yet is NOT unsafe by this check alone — the
-    fresh-machine case (no pre-existing file, ambient umask would otherwise
-    leave a world-readable file after write) is made safe by each caller's
-    `os.chmod(path, 0o600)` immediately after inlining a token, not here."""
-    if path.exists():
-        mode = os.stat(path).st_mode
-        if mode & (stat.S_IRGRP | stat.S_IROTH):
-            return True
-    return _in_git_worktree(path)
+def _http_mcp_entry() -> dict:
+    """Build a streamable-http MCP entry: X-SP-Client attribution + an
+    env-var-referenced bearer token (never the literal secret)."""
+    return {
+        "type": "http",
+        "url": SP_MCP_URL,
+        "headers": {
+            "Authorization": _AUTH_HEADER_VALUE,
+            "X-SP-Client": _client_hostname(),
+        },
+    }
 
 
-def _http_mcp_entry(token: Optional[str], target_path: Path) -> tuple[dict, bool]:
-    """Build a streamable-http MCP entry with X-SP-Client attribution.
-    Returns (entry, token_was_inlined)."""
-    headers = {"X-SP-Client": _client_hostname()}
-    inlined = False
-    if token and not _unsafe_to_inline_token(target_path):
-        headers = {"Authorization": f"Bearer {token}", **headers}
-        inlined = True
-    return {"type": "http", "url": SP_MCP_URL, "headers": headers}, inlined
-
-
-def _mcp_fix_summary(check_id: str, path: Path, token: Optional[str], inlined: bool) -> str:
-    if token and not inlined:
-        return (
-            f"{check_id}: wrote mcpServers.local-models to {path} "
-            "(token referenced, not inlined — target is world-readable or under a git work tree)"
-        )
-    if inlined:
-        return f"{check_id}: wrote mcpServers.local-models to {path} (token inlined)"
-    return f"{check_id}: wrote mcpServers.local-models to {path} (no token provided)"
+def _mcp_fix_summary(check_id: str, path: Path) -> str:
+    return (f"{check_id}: registered mcpServers.local-models in {path} "
+            f"(token via ${{{SP_TOKEN_ENV}}}, not inlined)")
 
 
 # ── Claude Code ──────────────────────────────────────────────────────────
@@ -223,19 +209,31 @@ def _check_claude_mcp(home: Path) -> Check:
 
 def _fix_claude_mcp(home: Path, token: Optional[str]) -> str:
     path = home / ".claude.json"
-    entry, inlined = _http_mcp_entry(token, path)
-    merge_json_key(path, "mcpServers.local-models", entry)
-    if inlined:
-        os.chmod(path, 0o600)
-    return _mcp_fix_summary("claude-mcp", path, token, inlined)
+    merge_json_key(path, "mcpServers.local-models", _http_mcp_entry())
+    return _mcp_fix_summary("claude-mcp", path)
+
+
+def _has_local_models_guidance(text: str) -> bool:
+    """True if this agent-guidance file already tells the agent about the
+    local-models tools — our managed block OR the user's own hand-written
+    guidance. We never duplicate or overwrite guidance a user maintains
+    themselves; a distinctive tool reference is enough to call it present."""
+    if GUIDANCE_MARKERS[0] in text:
+        return True
+    low = text.lower()
+    return ("local_models_status" in low
+            or "local_dispatch" in low
+            or ("local-models" in low and "mcp" in low))
 
 
 def _check_claude_guidance(home: Path) -> Check:
     path = home / ".claude" / "CLAUDE.md"
     text = path.read_text(encoding="utf-8") if path.exists() else ""
-    if render_block() in text:
-        return Check("claude-guidance", "claude", "pass", f"guidance block current in {path}", True)
-    return Check("claude-guidance", "claude", "fail", f"guidance block missing or stale in {path}", True)
+    if _has_local_models_guidance(text):
+        return Check("claude-guidance", "claude", "pass",
+                     f"local-models guidance present in {path}", True)
+    return Check("claude-guidance", "claude", "fail",
+                 f"no local-models guidance in {path}", True)
 
 
 def _fix_claude_guidance(home: Path, token: Optional[str]) -> str:
@@ -308,19 +306,17 @@ def _upsert_marked_text(text: str, markers: tuple, block: str) -> str:
     return f"{text}{sep}{block}\n"
 
 
-def _codex_managed_block(token: Optional[str], unsafe: bool) -> str:
-    lines = [
+def _codex_managed_block() -> str:
+    return "\n".join([
         CODEX_MARKERS[0],
         "[mcp_servers.local-models]",
         f'url = "{SP_MCP_URL}"',
         "",
         "[mcp_servers.local-models.headers]",
+        f'Authorization = "{_AUTH_HEADER_VALUE}"',
         f'X-SP-Client = "{_client_hostname()}"',
-    ]
-    if token and not unsafe:
-        lines.append(f'Authorization = "Bearer {token}"')
-    lines.append(CODEX_MARKERS[1])
-    return "\n".join(lines)
+        CODEX_MARKERS[1],
+    ])
 
 
 def _check_codex_mcp(home: Path) -> Check:
@@ -349,20 +345,11 @@ def _fix_codex_mcp(home: Path, token: Optional[str]) -> str:
             tomllib.loads(existing)
         except tomllib.TOMLDecodeError as e:
             raise ValueError(f"refusing to touch unparseable {path}: {e}") from e
-    unsafe = _unsafe_to_inline_token(path)
-    new_text = _upsert_marked_text(existing, CODEX_MARKERS, _codex_managed_block(token, unsafe))
+    new_text = _upsert_marked_text(existing, CODEX_MARKERS, _codex_managed_block())
     tomllib.loads(new_text)  # sanity: our own managed section must itself parse
     atomic_write(path, new_text)
-    if token and not unsafe:
-        os.chmod(path, 0o600)
-    if token and unsafe:
-        return (
-            f"codex-mcp: appended managed [mcp_servers.local-models] section to {path} "
-            "(token referenced, not inlined — target is world-readable or under a git work tree)"
-        )
-    if token:
-        return f"codex-mcp: appended managed [mcp_servers.local-models] section to {path} (token inlined)"
-    return f"codex-mcp: appended managed [mcp_servers.local-models] section to {path} (no token provided)"
+    return (f"codex-mcp: appended managed [mcp_servers.local-models] section to {path} "
+            f"(token via ${{{SP_TOKEN_ENV}}}, not inlined)")
 
 
 def _check_codex_guidance(home: Path) -> Check:
@@ -371,9 +358,9 @@ def _check_codex_guidance(home: Path) -> Check:
         return Check("codex-guidance", "codex", "n/a", "Codex not installed (~/.codex absent)", False)
     path = codex_dir / "AGENTS.md"
     text = path.read_text(encoding="utf-8") if path.exists() else ""
-    if render_block() in text:
-        return Check("codex-guidance", "codex", "pass", f"guidance block current in {path}", True)
-    return Check("codex-guidance", "codex", "fail", f"guidance block missing or stale in {path}", True)
+    if _has_local_models_guidance(text):
+        return Check("codex-guidance", "codex", "pass", f"local-models guidance present in {path}", True)
+    return Check("codex-guidance", "codex", "fail", f"no local-models guidance in {path}", True)
 
 
 def _fix_codex_guidance(home: Path, token: Optional[str]) -> str:
@@ -406,11 +393,8 @@ def _check_gemini_mcp(home: Path) -> Check:
 def _fix_gemini_mcp(home: Path, token: Optional[str]) -> str:
     gemini_dir = _require_tool_dir(home, ".gemini", "Gemini CLI")
     path = gemini_dir / "settings.json"
-    entry, inlined = _http_mcp_entry(token, path)
-    merge_json_key(path, "mcpServers.local-models", entry)
-    if inlined:
-        os.chmod(path, 0o600)
-    return _mcp_fix_summary("gemini-mcp", path, token, inlined)
+    merge_json_key(path, "mcpServers.local-models", _http_mcp_entry())
+    return _mcp_fix_summary("gemini-mcp", path)
 
 
 def _check_gemini_guidance(home: Path) -> Check:
@@ -419,9 +403,9 @@ def _check_gemini_guidance(home: Path) -> Check:
         return Check("gemini-guidance", "gemini", "n/a", "Gemini CLI not installed (~/.gemini absent)", False)
     path = gemini_dir / "GEMINI.md"
     text = path.read_text(encoding="utf-8") if path.exists() else ""
-    if render_block() in text:
-        return Check("gemini-guidance", "gemini", "pass", f"guidance block current in {path}", True)
-    return Check("gemini-guidance", "gemini", "fail", f"guidance block missing or stale in {path}", True)
+    if _has_local_models_guidance(text):
+        return Check("gemini-guidance", "gemini", "pass", f"local-models guidance present in {path}", True)
+    return Check("gemini-guidance", "gemini", "fail", f"no local-models guidance in {path}", True)
 
 
 def _fix_gemini_guidance(home: Path, token: Optional[str]) -> str:
