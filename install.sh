@@ -517,14 +517,18 @@ if [ -f "$CLAUDE_JSON" ]; then
         claude mcp remove local-models -s local 2>/dev/null || true
         claude mcp remove local-models -s user 2>/dev/null || true
         CLIENT_HOST=$(scutil --get LocalHostName 2>/dev/null || hostname -s)
-        ENTRY='{"type":"http","url":"http://127.0.0.1:8100/mcp"'
-        HEADERS='"X-SP-Client":"'"$CLIENT_HOST"'"'
-        if [ -n "$MCP_TOKEN" ]; then
-            HEADERS='"Authorization":"Bearer '"$MCP_TOKEN"'",'"$HEADERS"
-        fi
-        ENTRY="$ENTRY"',"headers":{'"$HEADERS"'}}'
+        # The token is referenced by env var, NOT inlined: Claude Code expands
+        # ${SP_MCP_TOKEN} from the environment at load time, so the literal
+        # secret never lands in ~/.claude.json (safe to sync/commit). The
+        # ${SP_MCP_TOKEN} below is single-quoted so the shell leaves it literal.
+        ENTRY='{"type":"http","url":"http://127.0.0.1:8100/mcp","headers":{"Authorization":"Bearer ${SP_MCP_TOKEN}","X-SP-Client":"'"$CLIENT_HOST"'"}}'
         claude mcp add-json -s user local-models "$ENTRY" 2>/dev/null
         echo "  Registered local-models MCP (streamable-http on port 8100)"
+        echo "  → The MCP entry reads the token from \$SP_MCP_TOKEN. Make it available"
+        echo "    to your shell (so 'claude' inherits it). Add to your shell rc:"
+        echo "        export SP_MCP_TOKEN=\"\$(cat ~/.config/local-models/mcp_auth_token)\""
+        echo "    (or from the keychain, if you keep it there). GUI-launched Claude"
+        echo "    needs it in the GUI environment too — 'launchctl setenv SP_MCP_TOKEN ...'."
         # Register open-websearch if not already present
         if ! grep -q '"open-websearch"' ~/.claude.json 2>/dev/null; then
             claude mcp add-json -s user open-websearch \

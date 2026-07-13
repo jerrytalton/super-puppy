@@ -122,17 +122,16 @@ def test_fix_mcp_then_passes(tmp_path):
     assert results["claude-mcp"]["status"] == "pass"
 
 
-def test_fix_mcp_inlines_token_when_safe(tmp_path):
-    # Explicitly private (0600): not group/other-readable and not inside a
-    # git tree. Deterministic regardless of the ambient umask — a freshly
-    # `write_text`-created file is typically 0644 (world-readable) under a
-    # standard umask, which the guard correctly treats as unsafe.
+def test_fix_mcp_references_token_by_env_var_never_inlines(tmp_path):
+    # The token is referenced via ${SP_MCP_TOKEN}, never written literally —
+    # so ~/.claude.json holds no secret and is safe to sync/commit.
     home = _fake_home(tmp_path)
     cj = home / ".claude.json"
-    cj.chmod(0o600)
     audit.fix("claude-mcp", home=home, token="secret")
-    entry = json.loads(cj.read_text())["mcpServers"]["local-models"]
-    assert entry["headers"]["Authorization"] == "Bearer secret"
+    text = cj.read_text()
+    assert "secret" not in text                       # literal token absent
+    entry = json.loads(text)["mcpServers"]["local-models"]
+    assert entry["headers"]["Authorization"] == "Bearer ${SP_MCP_TOKEN}"
     assert entry["headers"]["X-SP-Client"]
 
 
@@ -160,37 +159,30 @@ def test_fix_hook_then_passes(tmp_path):
     assert len(data["hooks"]["SessionStart"]) == 1
 
 
-def test_mcp_fix_refuses_token_in_world_readable(tmp_path):
+def test_mcp_fix_never_inlines_even_in_world_readable_file(tmp_path):
     import stat
     home = _fake_home(tmp_path)
     cj = home / ".claude.json"
     cj.chmod(cj.stat().st_mode | stat.S_IROTH)  # world-readable
     audit.fix("claude-mcp", home=home, token="secret")
-    entry = json.loads(cj.read_text())["mcpServers"]["local-models"]
-    # token must NOT be inlined into a world-readable file
-    assert "secret" not in json.dumps(entry)
-    # but the entry is still written (headers/url present) so the check still passes
+    # the literal token is never written, world-readable or not
+    assert "secret" not in cj.read_text()
     results = {c["id"]: c for c in audit.run_all(home=home)}
     assert results["claude-mcp"]["status"] == "pass"
 
 
-def test_mcp_fix_absent_file_creates_private_token_file(tmp_path):
-    # Fresh-machine case: ~/.claude.json does not exist yet. Before the fix,
-    # _unsafe_to_inline_token() returned False for a nonexistent path, the
-    # token was inlined, and atomic_write created the file under the ambient
-    # umask (typically 0644 — world-readable). The chmod(0o600) after the
-    # write is what must close that leak.
+def test_mcp_fix_absent_file_has_no_secret(tmp_path):
+    # Fresh-machine case: ~/.claude.json doesn't exist yet. The env-var
+    # reference means the created file never contains the literal token.
     home = tmp_path
     (home / ".claude").mkdir()
     cj = home / ".claude.json"
     assert not cj.exists()
     audit.fix("claude-mcp", home=home, token="secret")
     assert cj.exists()
-    mode = stat.S_IMODE(os.stat(cj).st_mode)
-    assert mode == 0o600
-    assert mode & (stat.S_IRGRP | stat.S_IROTH) == 0
+    assert "secret" not in cj.read_text()
     entry = json.loads(cj.read_text())["mcpServers"]["local-models"]
-    assert entry["headers"]["Authorization"] == "Bearer secret"
+    assert entry["headers"]["Authorization"] == "Bearer ${SP_MCP_TOKEN}"
     assert entry["headers"]["X-SP-Client"]
 
 
@@ -213,15 +205,15 @@ def test_mcp_fix_absent_file_no_world_readable_intermediate(tmp_path):
         assert bak_mode & (stat.S_IRGRP | stat.S_IROTH) == 0
 
 
-def test_mcp_fix_refuses_token_inside_git_worktree(tmp_path):
+def test_mcp_fix_no_secret_even_inside_git_worktree(tmp_path):
+    # Env-var reference means the token is never written, so a config tracked
+    # in a git work tree can't leak it — the old inline-guard is unneeded.
     import subprocess
     home = _fake_home(tmp_path)
     subprocess.run(["git", "init", "-q"], cwd=home, check=True)
     cj = home / ".claude.json"
-    cj.chmod(0o600)  # private permissions, but tracked inside a git work tree
     audit.fix("claude-mcp", home=home, token="secret")
-    entry = json.loads(cj.read_text())["mcpServers"]["local-models"]
-    assert "secret" not in json.dumps(entry)
+    assert "secret" not in cj.read_text()
 
 
 def test_token_present_check(tmp_path):
@@ -368,18 +360,15 @@ def test_fix_gemini_mcp_refuses_token_in_world_readable(tmp_path):
     assert "secret" not in json.dumps(entry)
 
 
-def test_fix_gemini_mcp_absent_file_creates_private_token_file(tmp_path):
+def test_fix_gemini_mcp_references_token_by_env_var(tmp_path):
     home = _fake_home(tmp_path)
     (home / ".gemini").mkdir()
     settings = home / ".gemini" / "settings.json"
-    assert not settings.exists()
     audit.fix("gemini-mcp", home=home, token="secret")
     assert settings.exists()
-    mode = stat.S_IMODE(os.stat(settings).st_mode)
-    assert mode == 0o600
-    assert mode & (stat.S_IRGRP | stat.S_IROTH) == 0
+    assert "secret" not in settings.read_text()
     entry = json.loads(settings.read_text())["mcpServers"]["local-models"]
-    assert entry["headers"]["Authorization"] == "Bearer secret"
+    assert entry["headers"]["Authorization"] == "Bearer ${SP_MCP_TOKEN}"
     assert entry["headers"]["X-SP-Client"]
 
 
@@ -483,3 +472,57 @@ def test_run_all_survives_ascii_locale_with_non_ascii_config(tmp_path):
         f"run_all crashed under ASCII locale: {proc.stderr}")
     assert "UnicodeDecodeError" not in proc.stderr
     assert "UnicodeEncodeError" not in proc.stderr
+
+
+def test_fix_group_only_touches_its_group(tmp_path):
+    from lib import audit
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude.json").write_text("{}", encoding="utf-8")
+    (home / ".claude" / "CLAUDE.md").write_text("# rules\n", encoding="utf-8")
+    (home / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
+    summaries = audit.fix_group("claude", home=home, token="tok")
+    assert len(summaries) == 3  # mcp, guidance, hook
+    after = {c["id"]: c["status"] for c in audit.run_all(home=home)}
+    assert after["claude-mcp"] == "pass"
+    assert after["claude-guidance"] == "pass"
+    assert after["claude-hook"] == "pass"
+    # codex/gemini absent → still n/a, untouched by a claude fix
+    assert after["codex-mcp"] == "n/a"
+
+
+def test_fix_group_unknown_is_noop(tmp_path):
+    from lib import audit
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude.json").write_text("{}", encoding="utf-8")
+    assert audit.fix_group("nonesuch", home=home) == []
+
+
+def test_atomic_write_preserves_symlink(tmp_path):
+    # Regression: a CLAUDE.md symlinked into a dotfiles repo must stay a
+    # symlink after a fix; os.replace on the link used to clobber it with a
+    # plain file, silently detaching it from the repo.
+    from lib import audit
+    real = tmp_path / "dotfiles" / "CLAUDE.md"
+    real.parent.mkdir(parents=True)
+    real.write_text("# original\n", encoding="utf-8")
+    link = tmp_path / "CLAUDE.md"
+    link.symlink_to(real)
+    audit.atomic_write(link, "# updated\n")
+    assert link.is_symlink(), "the symlink was clobbered into a plain file"
+    assert real.read_text() == "# updated\n", "write did not reach the symlink target"
+    assert link.resolve() == real.resolve()
+
+
+def test_guidance_check_respects_existing_handwritten_section(tmp_path):
+    # A user's own '## Local Models' section (no managed markers) must count
+    # as guidance present — the audit must not fail-and-duplicate it.
+    from lib import audit
+    home = tmp_path
+    (home / ".claude").mkdir()
+    (home / ".claude" / "CLAUDE.md").write_text(
+        "# My rules\n\n## Local Models\nUse the local-models MCP server; call "
+        "local_models_status for what's live.\n", encoding="utf-8")
+    result = {c["id"]: c for c in audit.run_all(home=home)}["claude-guidance"]
+    assert result["status"] == "pass", "hand-written guidance should count as present"

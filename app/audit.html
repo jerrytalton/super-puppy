@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Super Puppy — Audit</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/pwa/icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
+<style>
+:root {
+  --bg: #f5f5f7; --surface: #fff; --surface2: #f0f0f2;
+  --text: #1d1d1f; --text2: #86868b; --text3: #aeaeb2;
+  --border: #d2d2d7; --accent: #007aff;
+  --green: #34c759; --amber: #ff9f0a; --red: #ff3b30;
+  --r: 12px; --rs: 8px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #000; --surface: #1c1c1e; --surface2: #2c2c2e;
+    --text: #f5f5f7; --text2: #98989d; --text3: #636366;
+    --border: #38383a;
+  }
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  background: var(--bg); color: var(--text);
+  padding: 24px 32px; max-width: 820px; margin: 0 auto;
+  -webkit-font-smoothing: antialiased;
+  padding-top: env(safe-area-inset-top, 24px);
+  overflow-x: hidden;  /* the page must never scroll sideways; content wraps */
+}
+
+/* ── Nav (matches the other pages) ── */
+nav {
+  display: none; gap: 4px; margin-bottom: 24px;
+  border-bottom: 1px solid var(--border); padding-bottom: 12px;
+}
+@media (max-width: 600px) { nav { display: flex; } }
+@media (display-mode: standalone) { nav { display: flex; } }
+nav a {
+  padding: 6px 16px; border-radius: 20px; text-decoration: none;
+  color: var(--text2); font-size: 13px; font-weight: 500; transition: all 0.15s;
+}
+nav a:hover { color: var(--text); background: var(--surface2); }
+nav a.active { color: #fff; background: var(--accent); }
+
+/* ── Header ── */
+header { margin-bottom: 20px; }
+h1 { font-size: 24px; font-weight: 700; letter-spacing: -0.02em; }
+.sub { color: var(--text2); font-size: 14px; margin-top: 4px; max-width: 60ch; }
+
+/* ── Summary chips ── */
+.summary { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0 24px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 20px; padding: 5px 13px 5px 11px; font-size: 13px; font-weight: 500;
+}
+.chip .dot { width: 9px; height: 9px; border-radius: 50%; }
+.chip b { font-weight: 700; font-variant-numeric: tabular-nums; }
+.toolbar { margin-left: auto; display: flex; gap: 8px; }
+
+/* ── Group card ── */
+.group {
+  background: var(--surface); border: 1px solid var(--border);
+  border-left: 3px solid var(--border); border-radius: var(--rs);
+  margin-bottom: 14px; overflow: hidden;
+}
+.group.s-pass { border-left-color: var(--green); }
+.group.s-fail { border-left-color: var(--red); }
+.group.s-warn { border-left-color: var(--amber); }
+.group.s-na   { border-left-color: var(--text3); }
+
+.group-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 14px 16px;
+}
+.group-title { font-size: 15px; font-weight: 650; }
+.group-status { font-size: 12.5px; color: var(--text2); }
+.group-status.bad  { color: var(--red); }
+.group-status.ok   { color: var(--green); }
+.group-status.warn { color: var(--amber); }
+
+/* ── Fix button ── */
+.fix-btn {
+  margin-left: auto; flex-shrink: 0;
+  padding: 6px 15px; border-radius: 18px; border: none;
+  background: var(--accent); color: #fff; font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: opacity 0.15s, transform 0.05s;
+}
+.fix-btn:hover { opacity: 0.9; }
+.fix-btn:active { transform: scale(0.97); }
+.fix-btn:disabled { background: var(--surface2); color: var(--text3); cursor: default; }
+.fix-btn.busy { pointer-events: none; opacity: 0.7; }
+
+/* ── Check rows ── */
+.checks { border-top: 1px solid var(--border); }
+.check {
+  display: flex; align-items: flex-start; gap: 11px; min-width: 0;
+  padding: 11px 16px; border-top: 1px solid var(--border);
+}
+.check:first-child { border-top: none; }
+.check.na { opacity: 0.5; }
+.check .dot {
+  width: 10px; height: 10px; border-radius: 50%; margin-top: 4px; flex-shrink: 0;
+}
+.dot.pass { background: var(--green); }
+.dot.fail { background: var(--red); }
+.dot.warn { background: var(--amber); }
+.dot.na   { background: var(--text3); }
+.check-body { flex: 1; min-width: 0; }
+.check-name { font-size: 14px; font-weight: 550; }
+.check-detail {
+  font-size: 12.5px; color: var(--text2); margin-top: 1px;
+  overflow-wrap: anywhere;  /* long paths/ids break instead of overflowing */
+}
+
+.empty-state { color: var(--text2); text-align: center; padding: 40px 16px; }
+.note {
+  font-size: 12.5px; color: var(--text2); background: var(--surface2);
+  border-radius: var(--rs); padding: 8px 12px; margin: 0 16px 14px;
+}
+.refresh-btn {
+  padding: 6px 14px; border-radius: 18px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text2); font-size: 13px;
+  font-weight: 500; cursor: pointer; transition: all 0.15s;
+}
+.refresh-btn:hover { color: var(--text); border-color: var(--text3); }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* ── Mobile: tighten margins; the fix button gets its own full-width row so
+      the head never forces the card wider than the screen. ── */
+@media (max-width: 600px) {
+  body { padding: 20px 16px; padding-top: env(safe-area-inset-top, 20px); }
+  h1 { font-size: 22px; }
+  .summary .toolbar { margin-left: 0; width: 100%; }
+  .group-title { flex: 1; min-width: 0; }
+  .fix-btn { margin-left: 0; order: 99; flex-basis: 100%; text-align: center; }
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <a href="/profiles">Models</a>
+  <a href="/tools">Playground</a>
+  <a href="/activity">Activity</a>
+  <a href="/audit" class="active">Audit</a>
+</nav>
+
+<header>
+  <h1>Configuration Audit</h1>
+  <div class="sub">Which AI agents on this machine are wired to use Super Puppy — MCP registration, usage guidance, and the session-start hook. Fix a tool with one click.</div>
+</header>
+
+<div class="summary" id="summary"></div>
+
+<div id="groups">
+  <div class="empty-state">Running checks…</div>
+</div>
+
+<script>
+let _authToken = '';
+(function () {
+  const params = new URLSearchParams(location.search);
+  if (params.has('token')) {
+    _authToken = params.get('token');
+    sessionStorage.setItem('sp_token', _authToken);
+    params.delete('token');
+    history.replaceState(null, '', location.pathname + (params.toString() ? '?' + params : ''));
+  } else {
+    _authToken = sessionStorage.getItem('sp_token') || '';
+  }
+})();
+function _authHeaders(opts = {}) {
+  if (!_authToken) return opts;
+  const h = new Headers(opts.headers || {});
+  h.set('Authorization', 'Bearer ' + _authToken);
+  return { ...opts, headers: h };
+}
+
+// Human-facing labels — the interface names things by what people recognize,
+// not by the check id.
+const GROUP_LABEL = {
+  shared: 'Super Puppy', claude: 'Claude Code', codex: 'Codex',
+  gemini: 'Gemini', other: 'Other agents',
+};
+const GROUP_ORDER = ['claude', 'codex', 'gemini', 'shared', 'other'];
+const CHECK_LABEL = {
+  'token-present': 'Auth token', 'other-agents': 'Other agents',
+  'claude-mcp': 'MCP server registered', 'claude-guidance': 'Usage guidance',
+  'claude-hook': 'Session-start hook',
+  'codex-mcp': 'MCP server registered', 'codex-guidance': 'Usage guidance',
+  'gemini-mcp': 'MCP server registered', 'gemini-guidance': 'Usage guidance',
+};
+function checkLabel(c) { return CHECK_LABEL[c.id] || c.id; }
+
+function groupStatus(checks) {
+  if (checks.some(c => c.status === 'fail')) return 'fail';
+  if (checks.some(c => c.status === 'warn')) return 'warn';
+  if (checks.every(c => c.status === 'n/a')) return 'na';
+  return 'pass';
+}
+const DOT_CLASS = { pass: 'pass', fail: 'fail', warn: 'warn', 'n/a': 'na' };
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;   // textContent: server strings never become markup
+  return e;
+}
+
+function renderSummary(checks) {
+  const pass = checks.filter(c => c.status === 'pass').length;
+  const fail = checks.filter(c => c.status === 'fail').length;
+  const na = checks.filter(c => c.status === 'n/a').length;
+  const warn = checks.filter(c => c.status === 'warn').length;
+  const wrap = document.getElementById('summary');
+  wrap.replaceChildren();
+  const chip = (color, n, label) => {
+    const c = el('span', 'chip');
+    const d = el('span', 'dot'); d.style.background = color; c.appendChild(d);
+    const b = el('b', null, String(n)); c.appendChild(b);
+    c.appendChild(document.createTextNode(' ' + label));
+    return c;
+  };
+  wrap.appendChild(chip('var(--green)', pass, 'passing'));
+  if (fail) wrap.appendChild(chip('var(--red)', fail, 'to fix'));
+  if (warn) wrap.appendChild(chip('var(--amber)', warn, 'warnings'));
+  wrap.appendChild(chip('var(--text3)', na, 'not applicable'));
+  const tb = el('div', 'toolbar');
+  const refresh = el('button', 'refresh-btn', 'Re-run');
+  refresh.onclick = () => load();
+  tb.appendChild(refresh);
+  wrap.appendChild(tb);
+}
+
+function renderGroup(key, checks) {
+  const status = groupStatus(checks);
+  const card = el('div', 'group s-' + status);
+
+  const head = el('div', 'group-head');
+  head.appendChild(el('span', 'group-title', GROUP_LABEL[key] || key));
+
+  const fixable = checks.filter(c => c.status === 'fail' && c.fixable);
+  const naOnly = checks.every(c => c.status === 'n/a');
+  let statusText, statusCls = '';
+  const warns = checks.filter(c => c.status === 'warn').length;
+  if (naOnly) statusText = 'Not installed';
+  else if (fixable.length) { statusText = fixable.length + (fixable.length === 1 ? ' issue' : ' issues'); statusCls = 'bad'; }
+  else if (checks.some(c => c.status === 'fail')) { statusText = 'Needs attention'; statusCls = 'bad'; }
+  else if (warns) { statusText = warns + (warns === 1 ? ' to review' : ' to review'); statusCls = 'warn'; }
+  else { statusText = 'All good'; statusCls = 'ok'; }
+  head.appendChild(el('span', 'group-status ' + statusCls, statusText));
+
+  if (fixable.length) {
+    const btn = el('button', 'fix-btn', 'Fix ' + (GROUP_LABEL[key] || key));
+    btn.onclick = () => fixGroup(key, btn);
+    head.appendChild(btn);
+  }
+  card.appendChild(head);
+
+  const list = el('div', 'checks');
+  for (const c of checks) {
+    const row = el('div', 'check' + (c.status === 'n/a' ? ' na' : ''));
+    row.appendChild(el('span', 'dot ' + (DOT_CLASS[c.status] || 'na')));
+    const body = el('div', 'check-body');
+    body.appendChild(el('div', 'check-name', checkLabel(c)));
+    if (c.detail) body.appendChild(el('div', 'check-detail', c.detail));
+    row.appendChild(body);
+    list.appendChild(row);
+  }
+  card.appendChild(list);
+  return card;
+}
+
+function render(checks) {
+  renderSummary(checks);
+  const byGroup = {};
+  for (const c of checks) (byGroup[c.tool] = byGroup[c.tool] || []).push(c);
+  const container = document.getElementById('groups');
+  container.replaceChildren();
+  const keys = [...GROUP_ORDER.filter(k => byGroup[k]),
+               ...Object.keys(byGroup).filter(k => !GROUP_ORDER.includes(k))];
+  for (const k of keys) container.appendChild(renderGroup(k, byGroup[k]));
+}
+
+async function load() {
+  try {
+    const resp = await fetch('/api/audit', _authHeaders());
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    render(await resp.json());
+  } catch (e) {
+    document.getElementById('groups').replaceChildren(
+      el('div', 'empty-state', 'Could not run the audit: ' + e.message));
+  }
+}
+
+async function fixGroup(group, btn) {
+  const label = btn.textContent;
+  btn.classList.add('busy');
+  btn.textContent = 'Fixing…';
+  try {
+    const resp = await fetch('/api/audit/fix', _authHeaders({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ group }),
+    }));
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || ('HTTP ' + resp.status));
+    render(data.checks || []);
+    if (Array.isArray(data.summaries) && data.summaries.length) {
+      // Surface what the fix did, above the groups, for a few seconds.
+      const groups = document.getElementById('groups');
+      const note = el('div', 'note', data.summaries.join('  •  '));
+      groups.insertBefore(note, groups.firstChild);
+      setTimeout(() => note.remove(), 8000);
+    }
+  } catch (e) {
+    btn.classList.remove('busy');
+    btn.textContent = label;
+    const groups = document.getElementById('groups');
+    const note = el('div', 'note', 'Fix failed: ' + e.message);
+    groups.insertBefore(note, groups.firstChild);
+  }
+}
+
+load();
+</script>
+</body>
+</html>
