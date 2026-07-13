@@ -33,6 +33,7 @@ from flask import (Flask, Response, after_this_request, jsonify, request,
                      send_file, send_from_directory)
 
 from lib import activity
+from lib import audit
 from lib.hf_scanner import (
     check_wan_snapshot_ready,
     hf_newest_snapshot as _hf_newest_snapshot,
@@ -3099,6 +3100,38 @@ def api_fleet():
 @app.route("/activity")
 def activity_page():
     return send_file(os.path.join(SCRIPT_DIR, "activity.html"))
+
+
+@app.route("/audit")
+def audit_page():
+    return send_file(os.path.join(SCRIPT_DIR, "audit.html"))
+
+
+@app.route("/api/audit")
+def api_audit():
+    proxied = _proxy_to_desktop("/api/audit", method="GET")
+    if proxied is not None:
+        return proxied
+    return jsonify(audit.run_all())
+
+
+@app.route("/api/audit/fix", methods=["POST"])
+def api_audit_fix():
+    """Apply the fixable failing checks for one tool group and return the
+    fresh audit. Config-writing fixes are user-initiated (this endpoint is
+    only reached from an explicit "Fix" click) — spec §S2."""
+    proxied = _proxy_to_desktop("/api/audit/fix")
+    if proxied is not None:
+        return proxied
+    body = request.get_json(silent=True) or {}
+    group = str(body.get("group", ""))
+    if not group.isalnum():
+        return jsonify({"error": "invalid group"}), 400
+    try:
+        summaries = audit.fix_group(group, token=_PROFILE_AUTH_TOKEN or None)
+    except Exception as e:
+        return jsonify({"error": f"fix failed: {e}"}), 500
+    return jsonify({"summaries": summaries, "checks": audit.run_all()})
 
 
 @app.route("/diagnostics")

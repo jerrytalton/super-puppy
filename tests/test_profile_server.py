@@ -1328,3 +1328,16 @@ def test_api_activity_carries_csp_header(client):
     assert csp is not None
     assert "default-src 'none'" in csp
     assert "script-src 'self' 'unsafe-inline'" in csp
+
+
+class TestAuditRoutes:
+    def test_api_audit_returns_check_list(self, client):
+        r = client.get("/api/audit")
+        assert r.status_code == 200
+        data = r.get_json()
+        assert isinstance(data, list) and data
+        assert {"id", "tool", "status", "detail", "fixable"} <= set(data[0])
+
+    def test_api_audit_fix_rejects_bad_group(self, client):
+        r = client.post("/api/audit/fix", json={"group": "../etc"})
+        assert r.status_code == 400
