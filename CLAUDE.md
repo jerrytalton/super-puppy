@@ -76,7 +76,7 @@ The MCP server attributes each request to the machine that made it by reading a 
 
 The menu bar app POSTs each machine's 7-day usage summary (`local_usage_summary`) + a fresh audit run to the fleet server's `POST /api/fleet/report` every 15 minutes (fire-and-forget, https via Tailscale FQDN in client mode / localhost in server mode, bearer auth). The endpoint validates `machine`/`version`/`mode`/usage-item fields, rate-limits one report per machine per 5 minutes, stamps `last_seen` server-side, and rejects malformed bodies with 400. `GET /api/fleet` serves the aggregated `fleet_usage`/`fleet_machines` tables (idempotent upsert, 30-day retention) to the Fleet view in `app/activity.html` — per-machine cards (version, mode, last-seen, calls today/7d, sessions 7d, calls-per-session, audit badge), rendered via `textContent` only behind a CSP header, polling every 10s.
 
-`lib/audit.py` + `bin/sp-doctor` check whether Claude Code / Codex / Gemini are wired to use SP (MCP registration, a managed guidance block, the SessionStart hook) and can fix what's missing; also surfaced as the menu bar's "Audit…" item. Per §S2 of the design, guidance-block fixes are a code-vs-prompt trust boundary and are **always user-confirmed** (`sp-doctor --fix` / menubar "Fix" / install.sh opt-in) — never auto-applied on a version bump.
+`lib/audit.py` + `bin/sp-doctor` check whether Claude Code / Codex / Gemini are wired to use SP (MCP registration; usage guidance — the managed block **or** the user's own hand-written section; the SessionStart hook). Surfaced as the menu bar's **Audit** page (`app/audit.html` at `/audit` — grouped per-tool cards with per-group Fix buttons, `POST /api/audit/fix` → `audit.fix_group`). The registered MCP entry references the token by env var (`Authorization: Bearer ${SP_MCP_TOKEN}`, expanded by Claude Code at load time), so the literal secret never lands in `~/.claude.json`. Per §S2, config-writing fixes are diagnostic-by-default and **explicit opt-in, add-only**: `install.sh` registers MCP and *reports* the audit but does not auto-write guidance/hooks; `sp-doctor --fix` (or an Audit-page Fix button) appends/merges — never overwrites hand-maintained content, writes through symlinks — and is never auto-applied on a version bump. See `docs/usage-telemetry.md`.
 
 ### Key files at runtime
 
@@ -93,6 +93,7 @@ The menu bar app POSTs each machine's 7-day usage summary (`local_usage_summary`
 | Activity DB | `~/.config/local-models/activity.db` (`SP_ACTIVITY_DB` override) |
 | Fleet report endpoint | `POST https://{fqdn}:8101/api/fleet/report` |
 | Fleet view endpoint | `GET https://{fqdn}:8101/api/fleet` |
+| Audit page + API | `GET /audit` (`app/audit.html`), `GET /api/audit`, `POST /api/audit/fix` (profile server) |
 | Session-start hook script | `bin/sp-session-ping` (symlinked to `~/.local/bin/`) |
 | Config audit script | `bin/sp-doctor` (symlinked to `~/.local/bin/`) |
 | Menu bar log | `/tmp/local-models-menubar.log` |
