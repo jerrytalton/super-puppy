@@ -501,3 +501,20 @@ def fix_all(home: Optional[Path] = None, token: Optional[str] = None) -> list[st
         if result.status == "fail":
             summaries.append(fix_fn(home, token))
     return summaries
+
+
+def fix_group(group: str, home: Optional[Path] = None,
+              token: Optional[str] = None) -> list[str]:
+    """Apply every fixable failing check whose `tool` equals `group`
+    (e.g. "claude", "codex", "gemini"). Returns one summary per fix.
+    Lets a fix's own error propagate — a config we can't parse must not
+    be silently overwritten (spec §S2/S6)."""
+    home = Path(home) if home is not None else Path.home()
+    summaries = []
+    for check_fn, fix_fn in _REGISTRY.values():
+        if fix_fn is None:
+            continue
+        result = check_fn(home)
+        if result.tool == group and result.status == "fail":
+            summaries.append(fix_fn(home, token))
+    return summaries

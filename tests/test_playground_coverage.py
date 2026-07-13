@@ -129,3 +129,12 @@ def test_activity_page_has_fleet_view():
     html = (REPO / "app" / "activity.html").read_text()
     assert "/api/fleet" in html
     assert "Fleet" in html
+
+
+def test_audit_page_and_api_exist():
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    html = (root / "app" / "audit.html").read_text(encoding="utf-8")
+    assert "/api/audit" in html and "Configuration Audit" in html
+    server = (root / "app" / "profile-server.py").read_text(encoding="utf-8")
+    assert '"/audit"' in server and '"/api/audit/fix"' in server

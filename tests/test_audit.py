@@ -483,3 +483,28 @@ def test_run_all_survives_ascii_locale_with_non_ascii_config(tmp_path):
         f"run_all crashed under ASCII locale: {proc.stderr}")
     assert "UnicodeDecodeError" not in proc.stderr
     assert "UnicodeEncodeError" not in proc.stderr
+
+
+def test_fix_group_only_touches_its_group(tmp_path):
+    from lib import audit
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude.json").write_text("{}", encoding="utf-8")
+    (home / ".claude" / "CLAUDE.md").write_text("# rules\n", encoding="utf-8")
+    (home / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
+    summaries = audit.fix_group("claude", home=home, token="tok")
+    assert len(summaries) == 3  # mcp, guidance, hook
+    after = {c["id"]: c["status"] for c in audit.run_all(home=home)}
+    assert after["claude-mcp"] == "pass"
+    assert after["claude-guidance"] == "pass"
+    assert after["claude-hook"] == "pass"
+    # codex/gemini absent → still n/a, untouched by a claude fix
+    assert after["codex-mcp"] == "n/a"
+
+
+def test_fix_group_unknown_is_noop(tmp_path):
+    from lib import audit
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude.json").write_text("{}", encoding="utf-8")
+    assert audit.fix_group("nonesuch", home=home) == []
