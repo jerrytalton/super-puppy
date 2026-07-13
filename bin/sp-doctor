@@ -44,11 +44,18 @@ def main():
         print(f"  {icons.get(c['status'],'?')} {c['id']:<18} {c['detail']}")
     failed = [c for c in results if c["status"] == "fail" and c["fixable"]]
     if args.fix and failed:
+        # Fixes only ADD (append a guidance block / a hook, or merge one MCP
+        # entry key) — they never overwrite content you maintain. Each is
+        # shown and confirmed before anything is written, unless --yes.
+        print("\nThe following can be fixed. Each writes to the file named,"
+              "\nappending or merging — never overwriting your own content.\n")
         for c in failed:
+            print(f"  {c['id']}: {c['detail']}")
             if not args.yes:
-                if input(f"Fix {c['id']}? [y/N] ").strip().lower() != "y":
+                if input("    apply this fix? [y/N] ").strip().lower() != "y":
+                    print("    skipped")
                     continue
-            print("  " + audit.fix(c["id"], home=HOME, token=_token()))
+            print("    " + audit.fix(c["id"], home=HOME, token=_token()))
     return exit_code
 
 
