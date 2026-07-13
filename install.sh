@@ -537,8 +537,18 @@ if [ -f "$CLAUDE_JSON" ]; then
         else
             echo "  open-websearch MCP already registered"
         fi
-        ~/.local/bin/sp-doctor --fix --yes 2>/dev/null || true
-        echo "  Ran SP config audit (sp-doctor)"
+        # Report the wiring status, but do NOT auto-write to files you
+        # hand-maintain (CLAUDE.md / settings.json). The guidance block and
+        # session-start hook are opt-in: run `sp-doctor --fix`, which shows
+        # each change and asks before writing. (MCP registration above went
+        # to ~/.claude.json, a Claude-managed config, preserving your other
+        # servers.)
+        echo ""
+        ~/.local/bin/sp-doctor 2>/dev/null || true
+        echo ""
+        echo "  MCP registered. SP did not touch your CLAUDE.md or settings.json."
+        echo "  To add agent guidance + the session-start hook (each change is"
+        echo "  shown and confirmed first), run:  sp-doctor --fix"
     else
         echo "  claude CLI not found — install Claude Code first, then re-run install.sh"
     fi
