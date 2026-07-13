@@ -1371,6 +1371,7 @@ class LocalModelsApp(rumps.App):
         self.profile_window = None
         self.tools_window = None
         self.activity_window = None
+        self.audit_window = None
         self._win_delegate = None
         self._tools_delegate = None
 
@@ -1402,7 +1403,7 @@ class LocalModelsApp(rumps.App):
         self.menu_tools_sub = rumps.MenuItem("Tools")
         self.menu_tools_sub.add(rumps.MenuItem("Activity Log",
                                               callback=self.open_activity))
-        self.menu_tools_sub.add(rumps.MenuItem("Audit…",
+        self.menu_tools_sub.add(rumps.MenuItem("Audit",
                                               callback=self.open_audit))
         self.menu_tools_sub.add(rumps.MenuItem("Diagnostics",
                                               callback=self.open_diagnostics))
@@ -2913,6 +2914,11 @@ class LocalModelsApp(rumps.App):
                         "title": "Activity Log",
                         "path": "/activity",
                         "size": (720, 600)},
+        "audit":       {"attr": "audit_window",
+                        "delegate_attr": "_audit_delegate",
+                        "title": "Audit",
+                        "path": "/audit",
+                        "size": (720, 640)},
         "diagnostics": {"attr": "diagnostics_window",
                         "delegate_attr": "_diagnostics_delegate",
                         "title": "Diagnostics",
@@ -2973,23 +2979,8 @@ class LocalModelsApp(rumps.App):
         self._open_or_focus("activity")
 
     def open_audit(self, _):
-        """Run the Super Puppy configuration audit and offer fixes."""
-        try:
-            from lib import audit
-            results = audit.run_all()
-            fails = [c for c in results if c["status"] == "fail"]
-            lines = "\n".join(f"{c['status'].upper():5} {c['id']}: {c['detail']}" for c in results)
-            if not fails:
-                rumps.alert("Super Puppy Audit", "All checks pass.\n\n" + lines)
-                return
-            resp = rumps.alert("Super Puppy Audit",
-                               lines + "\n\nApply fixes to the failing checks?",
-                               ok="Fix All", cancel="Close")
-            if resp == 1:
-                summaries = audit.fix_all()
-                rumps.alert("Fixes applied", "\n".join(summaries) or "Nothing to fix.")
-        except Exception as e:
-            rumps.alert("Audit Error", f"An error occurred while running the audit:\n\n{e}")
+        """Open the configuration-audit page (grouped checks + per-tool fixes)."""
+        self._open_or_focus("audit")
 
     def open_diagnostics(self, _):
         """Open the diagnostics pane."""
