@@ -291,15 +291,24 @@ let historyVisible = PAGE_SIZE;
 let _authToken = '';
 
 (function() {
+  // Preferred: the WKWebView injects window.__SP_TOKEN__ before any page JS
+  // runs (menubar.py _open_webview). The page must read it — the token on the
+  // initial page request does NOT carry over to fetch()/XHR, so without this
+  // every /api/* fetch 403s and the dashboard renders empty.
+  if (typeof window.__SP_TOKEN__ === 'string' && window.__SP_TOKEN__) {
+    _authToken = window.__SP_TOKEN__;
+    sessionStorage.setItem('sp_token', _authToken);
+    return;
+  }
   const params = new URLSearchParams(location.search);
   if (params.has('token')) {
     _authToken = params.get('token');
     sessionStorage.setItem('sp_token', _authToken);
     params.delete('token');
     history.replaceState(null, '', location.pathname + (params.toString() ? '?' + params : ''));
-  } else {
-    _authToken = sessionStorage.getItem('sp_token') || '';
+    return;
   }
+  _authToken = sessionStorage.getItem('sp_token') || '';
 })();
 
 function _authHeaders(opts = {}) {
