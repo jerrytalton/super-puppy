@@ -16,6 +16,16 @@ Every MCP and Playground request is written to a local SQLite DB at `~/.config/l
 
 The MCP server reads an `X-SP-Client` header (validated against `^[A-Za-z0-9._-]{1,64}$`) off each request and stamps it as the `machine` column via `log_request`. `install.sh` writes that header into the MCP entry it registers in `~/.claude.json`; an invalid or missing header is stamped `unknown-client` rather than silently attributed to the server's own hostname.
 
+### The MCP token — by env var, not inlined
+
+The MCP entry's `Authorization` header is `Bearer ${SP_MCP_TOKEN}`, not a literal token. Claude Code expands `${SP_MCP_TOKEN}` from the environment at load time, so the secret never lands in `~/.claude.json` (the file is safe to sync or commit). Provision the env var from the untracked token file — e.g. in your shell rc:
+
+```bash
+export SP_MCP_TOKEN="$(cat ~/.config/local-models/mcp_auth_token 2>/dev/null)"
+```
+
+If `SP_MCP_TOKEN` is unset or wrong, the MCP server returns 403 (tools unavailable) — a clean failure, not a silent one. GUI-launched Claude Code needs the var in the GUI environment too (`launchctl setenv SP_MCP_TOKEN …`).
+
 ## Fleet heartbeat
 
 The menu bar app pushes a heartbeat every 15 minutes (and once ~30 seconds after startup):
@@ -50,26 +60,32 @@ If a period has no requests, the page shows "No requests in this period — last
 
 ## `sp-doctor`
 
-Checks (and optionally fixes) whether this machine's agent tools are wired to use Super Puppy: MCP registration, the managed guidance block, and the `SessionStart` hook, for Claude Code, Codex, and Gemini CLI. Symlinked to `~/.local/bin/sp-doctor` by `install.sh`.
+Checks (and, only when you ask, fixes) whether this machine's agent tools are wired to use Super Puppy: MCP registration, usage guidance, and the `SessionStart` hook, for Claude Code, Codex, and Gemini CLI. Symlinked to `~/.local/bin/sp-doctor` by `install.sh`.
+
+The audit is **diagnostic by default** — `sp-doctor` (no flag), the menu bar's **Audit** page, and `install.sh` only *report*. Nothing writes to your config until you explicitly run `sp-doctor --fix` (or click a Fix button on the Audit page) and confirm. See [Consent model](#consent-model).
 
 ### Usage
 
 ```bash
-sp-doctor              # print the audit table
-sp-doctor --fix        # apply fixable failures, prompting per fix
-sp-doctor --fix --yes  # apply without prompting (used by install.sh)
+sp-doctor              # print the audit table (read-only)
+sp-doctor --fix        # apply fixable failures — shows each change, asks first
+sp-doctor --fix --yes  # apply without prompting (power users / scripts)
 sp-doctor --json       # machine-readable output, for scripting
 ```
 
 Exit code is `1` if any check reports `fail`, `0` otherwise (all `pass`/`warn`/`n/a`) — safe to use as a CI-style gate.
+
+### The Audit page
+
+The menu bar's **Audit** item opens a web page (`app/audit.html`, served at `/audit`) — grouped cards per tool (Claude Code / Codex / Gemini / Super Puppy / Other), a colored status dot per check (green pass, red fail, amber warn, grey n/a), inapplicable checks greyed out, and a per-group **Fix** button that applies just that tool's fixable findings (`POST /api/audit/fix` → `audit.fix_group`). Rendered XSS-safe via `textContent` behind the profile server's CSP.
 
 ### What each check verifies
 
 | Check | Verifies | Fix |
 |---|---|---|
 | `token-present` | `~/.config/local-models/mcp_auth_token` exists and is non-empty | none — points you at `install.sh` |
-| `claude-mcp` | `~/.claude.json` has `mcpServers.local-models` with a URL and an `X-SP-Client` header | Writes the entry (token inlined only if safe — see below) |
-| `claude-guidance` | The managed guidance block is present and current in `~/.claude/CLAUDE.md` | Inserts/refreshes the block between markers |
+| `claude-mcp` | `~/.claude.json` has `mcpServers.local-models` with a URL and an `X-SP-Client` header | Merges the entry (one key; other MCP servers untouched); token by `${SP_MCP_TOKEN}`, never inlined |
+| `claude-guidance` | `~/.claude/CLAUDE.md` contains local-models guidance — the managed block **or** your own hand-written section | Appends the managed block only if the file has none; never duplicates or overwrites your own |
 | `claude-hook` | A `SessionStart` hook invoking `sp-session-ping` exists in `~/.claude/settings.json` | Adds the hook, preserving any other hooks already configured |
 | `codex-mcp` / `codex-guidance` | Same MCP-entry / guidance-block checks for `~/.codex/config.toml` / `~/.codex/AGENTS.md` | Same, TOML-aware; `n/a` if `~/.codex` doesn't exist |
 | `gemini-mcp` / `gemini-guidance` | Same for `~/.gemini/settings.json` / `~/.gemini/GEMINI.md` | Same; `n/a` if `~/.gemini` doesn't exist |
@@ -79,23 +95,28 @@ A check reports `n/a` (not `fail`) when the corresponding tool isn't installed, 
 
 ### The managed guidance block
 
-Each fix writes (or refreshes) a block delimited by HTML comment markers — `<!-- >>> super-puppy >>> -->` … `<!-- <<< super-puppy <<< -->` — into the tool's guidance file (`CLAUDE.md`, `AGENTS.md`, or `GEMINI.md`). Content: what Super Puppy is, a need→tool trigger table (e.g. "Look at an image or screenshot" → `local_vision`), and a directive to run work on the local cluster in parallel. Nothing outside the markers is ever touched, and re-running the fix is idempotent (refresh is by content, not a version bump).
+If a guidance file (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`) has *no* local-models guidance, the fix **appends** a block delimited by HTML comment markers — `<!-- >>> super-puppy >>> -->` … `<!-- <<< super-puppy <<< -->`. Content: what Super Puppy is, a need→tool trigger table (e.g. "Look at an image or screenshot" → `local_vision`), and a directive to run work on the local cluster in parallel.
 
-**To opt out**, delete the block (the two marker lines and everything between them) from the file — `sp-doctor` will report `claude-guidance` (or the Codex/Gemini equivalent) as failing, but nothing re-adds it unless you run `--fix` again.
+**If you already maintain your own guidance** — a `## Local Models` section, or any mention of the tools (`local_models_status`, `local_dispatch`, …) — the check *passes* and the fix does nothing. The audit never duplicates or overwrites guidance you wrote yourself.
 
-**Fixes are always user-confirmed.** `sp-doctor --fix` prompts per finding unless you pass `--yes`; `install.sh` uses `--yes` only because you've already opted in during setup. Guidance-block writes in particular are never applied automatically on a version bump — see Security posture, §S2, below.
+Writes go **through symlinks** to the real target (a `CLAUDE.md` symlinked into a dotfiles repo keeps its link and stays in sync), atomically, `.bak` first. **To opt out** entirely, delete the block (the two markers and everything between); `sp-doctor` reports `claude-guidance` as failing, but nothing re-adds it unless you run `--fix`.
 
-### Token-leak guard
+### Consent model
 
-When a fix needs to write the auth token into a config file (`claude-mcp`, `codex-mcp`, `gemini-mcp`), it inlines the token only if the target file is not group/other-readable and not inside a git work tree; otherwise it writes the entry without the token and says so in its output. Whenever a token *is* inlined, the file is `chmod`'d `0600` immediately after — including the fresh-machine case, where an ambient umask would otherwise leave a newly created file world-readable.
+The audit never writes to files you hand-maintain without your explicit say-so:
+
+- **`install.sh`** registers the MCP entry (to `~/.claude.json`, a Claude-managed config, preserving your other servers) and *reports* the audit — it does **not** auto-apply the guidance block or session hook. It prints the `sp-doctor --fix` command to opt into those.
+- **`sp-doctor --fix`** states that fixes append or merge — never overwrite your own content — shows each change's target file, and asks per item (unless you deliberately pass `--yes`).
+- **The Audit page's Fix buttons** are explicit clicks, per tool group.
+- **Every fix only adds**: guidance appends-or-skips, the hook appends (preserving other hooks), the MCP entry merges one key. Nothing you wrote is rewritten. And no fix is ever applied automatically on a version-bump auto-update.
 
 ## Security posture
 
 From the design's red-team pass (spec §S1–S6):
 
 - **S1 — Dashboard XSS.** Every fleet-supplied field is attacker-influenceable. The Fleet view renders exclusively via `textContent`, backed by a `Content-Security-Policy` header and server-side field validation on ingest.
-- **S2 — Trust boundary.** The audit writes into files an AI agent treats as instructions. Those writes are never automatic — always an explicit `sp-doctor --fix` / menubar "Fix" / opted-in `install.sh` run — so a routine signed-tag auto-update can never silently rewrite every machine's agent guidance.
+- **S2 — Trust boundary.** The audit writes into files an AI agent treats as instructions. Those writes are never automatic — only an explicit `sp-doctor --fix`, a Fix button on the Audit page, or your own re-run — and `install.sh` reports rather than fixes (see [Consent model](#consent-model)). So a routine signed-tag auto-update can never silently rewrite every machine's agent guidance.
 - **S3 — No SQL injection.** `sp-session-ping` writes via bound parameters, never string-interpolated SQL; its one argument is validated against `^[a-z0-9-]{1,32}$` before use.
-- **S4 — Token handling.** The audit refuses to inline the auth token into a world-readable or git-tracked config file (token-leak guard, above); per-machine tokens are a documented future hardening, not required for this version.
+- **S4 — Token handling.** The auth token is referenced by env var (`${SP_MCP_TOKEN}`), never written into a config file — so there's no inlined secret to leak, and `~/.claude.json` is safe to sync or commit. (This supersedes the earlier inline-with-guard approach; per-machine tokens remain a documented future hardening.)
 - **S5 — Multi-writer SQLite.** Every writer (MCP server, profile server, `sp-session-ping`) sets `busy_timeout`; `fleet_usage`/`fleet_machines` get the same 30-day retention as `requests`' existing 90-day prune.
 - **S6 — Config-write safety.** All audit fixes write atomically (temp file + rename, `.bak` of the prior content) and merge rather than replace — existing hooks and MCP server entries are preserved.
