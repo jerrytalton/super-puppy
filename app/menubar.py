@@ -1550,6 +1550,7 @@ class LocalModelsApp(rumps.App):
         update was fine. The check now runs from `_finish_refresh` once
         services have settled.
         """
+        self._provision_mcp_token_env()
         self.start_services()
         with self._lock:
             if self.desktop:
@@ -1557,6 +1558,23 @@ class LocalModelsApp(rumps.App):
             else:
                 self._refresh_client_mode()
         self._main_thread_update()
+
+    def _provision_mcp_token_env(self):
+        """Publish SP_MCP_TOKEN into the GUI login session so GUI-launched
+        Claude Code — which doesn't source the shell rc — can expand the
+        `${SP_MCP_TOKEN}` reference in its MCP entry (see docs/usage-telemetry).
+        Runs on every app start (login + update), so it's re-set each boot
+        without a dedicated LaunchAgent. Terminal launches get the token from
+        the shell rc instead. Best-effort: a failure just means GUI Claude
+        needs the var provisioned another way; nothing here can break startup.
+        """
+        if not _AUTH_TOKEN:
+            return
+        try:
+            subprocess.run(["launchctl", "setenv", "SP_MCP_TOKEN", _AUTH_TOKEN],
+                           timeout=5, check=False)
+        except Exception as e:
+            logging.debug("launchctl setenv SP_MCP_TOKEN failed: %s", e)
 
     # -------------------------------------------------------------------
     # Service management

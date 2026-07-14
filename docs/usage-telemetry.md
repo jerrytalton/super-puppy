@@ -24,7 +24,9 @@ The MCP entry's `Authorization` header is `Bearer ${SP_MCP_TOKEN}`, not a litera
 export SP_MCP_TOKEN="$(cat ~/.config/local-models/mcp_auth_token 2>/dev/null)"
 ```
 
-If `SP_MCP_TOKEN` is unset or wrong, the MCP server returns 403 (tools unavailable) — a clean failure, not a silent one. GUI-launched Claude Code needs the var in the GUI environment too (`launchctl setenv SP_MCP_TOKEN …`).
+If `SP_MCP_TOKEN` is unset or wrong, the MCP server returns 403 (tools unavailable) — a clean failure, not a silent one.
+
+**GUI-launched Claude Code** (the desktop app) doesn't source the shell rc, so the menu bar app publishes the token into the GUI login session on startup via `launchctl setenv SP_MCP_TOKEN …`. It runs on every app start (login + update), so it's re-set each boot without a dedicated LaunchAgent. Because it's session-global, any GUI process you run can read it — no wider in practice than the 0600 token file, which any process running as you can already read. One timing note: if Claude Code is already running when the app sets the var, relaunch Claude to pick it up (a non-issue on a fresh login, where the menu bar app comes up first).
 
 ## Fleet heartbeat
 
