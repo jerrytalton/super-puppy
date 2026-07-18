@@ -49,6 +49,17 @@ link bin/post-update.sh            ~/.local/bin/post-update.sh
 link bin/sp-session-ping           ~/.local/bin/sp-session-ping
 link bin/sp-doctor                 ~/.local/bin/sp-doctor
 
+# Tailscale CLI shim (see bin/tailscale). The macOS app ships its CLI only
+# inside the bundle; we expose it via a wrapper — but ONLY when the app is
+# present and nothing else already provides `tailscale`, so we never shadow a
+# Homebrew or official-CLI install. Our own wrapper counts as "provided", so
+# re-running this never flip-flops.
+_ts_have="$(command -v tailscale 2>/dev/null || true)"
+if [ -x "/Applications/Tailscale.app/Contents/MacOS/Tailscale" ] \
+   && { [ -z "$_ts_have" ] || [ "$_ts_have" = "$HOME/.local/bin/tailscale" ]; }; then
+    link bin/tailscale             ~/.local/bin/tailscale
+fi
+
 # MLX configs (copied on first install, new models merged on update)
 MLX_DIR="$HOME/.config/mlx-server"
 mkdir -p "$MLX_DIR"
