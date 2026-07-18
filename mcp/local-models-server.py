@@ -80,7 +80,15 @@ _transport_security = TransportSecuritySettings(
     enable_dns_rebinding_protection=True,
     allowed_hosts=_allowed_hosts,
 )
+_SERVER_INSTRUCTIONS = (
+    "Super Puppy — local model infrastructure on your own hardware/tailnet. "
+    "Reach for these tools whenever a task needs a capability you lack "
+    "(vision, audio, image/video) or cheap parallel compute (bulk transforms, "
+    "second opinions, delegated reasoning while you keep working). "
+    "Call local_models_status for what's live."
+)
 mcp = FastMCP("local-models", host=MCP_HOST, port=MCP_PORT,
+              instructions=_SERVER_INSTRUCTIONS,
               transport_security=_transport_security)
 
 

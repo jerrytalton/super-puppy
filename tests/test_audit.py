@@ -526,3 +526,122 @@ def test_guidance_check_respects_existing_handwritten_section(tmp_path):
         "local_models_status for what's live.\n", encoding="utf-8")
     result = {c["id"]: c for c in audit.run_all(home=home)}["claude-guidance"]
     assert result["status"] == "pass", "hand-written guidance should count as present"
+
+
+# ── Multiple Claude Code accounts (CLAUDE_CONFIG_DIR) ────────────────────────
+#
+# One machine, several logins, each selected by pointing CLAUDE_CONFIG_DIR at a
+# different config home. The audit must grade EVERY account, not just the
+# default — that blind spot let work/Illinois logins sit unconfigured while the
+# Audit page showed "good".
+
+def _add_zshrc_account(home, rel="work/.claude-work", wire=False):
+    """Register an extra Claude login the way the real machine does — a
+    CLAUDE_CONFIG_DIR assignment in ~/.zshrc — and create its config dir."""
+    home.joinpath(".zshrc").write_text(
+        'claude() {\n'
+        f'  CLAUDE_CONFIG_DIR="$HOME/{rel}" command claude "$@"\n'
+        '}\n', encoding="utf-8")
+    d = home / rel
+    d.mkdir(parents=True)
+    d.joinpath(".claude.json").write_text("{}", encoding="utf-8")
+    d.joinpath("settings.json").write_text("{}", encoding="utf-8")
+    return d
+
+
+def test_audits_extra_account_discovered_from_zshrc(tmp_path):
+    home = _fake_home(tmp_path)
+    _add_zshrc_account(home)
+    ids = {c["id"]: c for c in audit.run_all(home=home)}
+    # extra account gets suffixed ids, all failing (unwired), grouped as claude
+    for base in ("claude-mcp", "claude-guidance", "claude-hook"):
+        assert ids[f"{base}@work"]["status"] == "fail"
+        assert ids[f"{base}@work"]["tool"] == "claude"
+        assert base in ids  # default account keeps the bare id
+
+
+def test_extra_account_guidance_via_import_counts_as_present(tmp_path):
+    # An account whose CLAUDE.md only does `@~/.claude/CLAUDE.md` inherits the
+    # global guidance; the audit must follow the import rather than false-fail.
+    home = _fake_home(tmp_path)
+    home.joinpath(".claude", "CLAUDE.md").write_text(
+        "# global\nUse local-models MCP; call local_models_status.\n", encoding="utf-8")
+    d = _add_zshrc_account(home)
+    d.joinpath("CLAUDE.md").write_text("# work login\n@~/.claude/CLAUDE.md\n", encoding="utf-8")
+    ids = {c["id"]: c for c in audit.run_all(home=home)}
+    assert ids["claude-guidance@work"]["status"] == "pass"
+
+
+def test_fix_group_claude_fixes_every_account(tmp_path):
+    home = _fake_home(tmp_path)
+    d = _add_zshrc_account(home)
+    summaries = audit.fix_group("claude", home=home, token="tok")
+    assert len(summaries) == 6  # 3 checks × (default + work)
+    ids = {c["id"]: c["status"] for c in audit.run_all(home=home)}
+    for cid in ("claude-mcp", "claude-guidance", "claude-hook",
+                "claude-mcp@work", "claude-guidance@work", "claude-hook@work"):
+        assert ids[cid] == "pass", cid
+    assert "tok" not in d.joinpath(".claude.json").read_text()  # env-var, not literal
+
+
+def test_fix_targets_one_account_by_suffixed_id(tmp_path):
+    home = _fake_home(tmp_path)
+    d = _add_zshrc_account(home)
+    msg = audit.fix("claude-mcp@work", home=home, token="tok")
+    assert "@work" in msg
+    entry = json.loads(d.joinpath(".claude.json").read_text())["mcpServers"]["local-models"]
+    assert entry["headers"]["Authorization"] == "Bearer ${SP_MCP_TOKEN}"
+    assert json.loads(home.joinpath(".claude.json").read_text()) == {}  # default untouched
+
+
+def test_audits_extra_account_from_declarative_list_file(tmp_path):
+    home = _fake_home(tmp_path)
+    d = home / "illinois" / ".claude-illinois"
+    d.mkdir(parents=True)
+    d.joinpath(".claude.json").write_text("{}", encoding="utf-8")
+    lf = home / ".config" / "local-models" / "claude_config_dirs"
+    lf.parent.mkdir(parents=True, exist_ok=True)
+    lf.write_text("# my university login\n$HOME/illinois/.claude-illinois\n", encoding="utf-8")
+    ids = {c["id"] for c in audit.run_all(home=home)}
+    assert "claude-mcp@illinois" in ids
+
+
+def test_listed_but_missing_config_dir_is_skipped(tmp_path):
+    home = _fake_home(tmp_path)
+    lf = home / ".config" / "local-models" / "claude_config_dirs"
+    lf.parent.mkdir(parents=True, exist_ok=True)
+    lf.write_text("$HOME/ghost/.claude-gone\n", encoding="utf-8")
+    ids = {c["id"] for c in audit.run_all(home=home)}
+    assert not any("@" in i for i in ids), "a non-existent dir must not become a phantom account"
+
+
+def test_default_config_dir_never_double_counted(tmp_path):
+    # Even if the default dir is redundantly named in a shell rc, it stays the
+    # single bare-id account — no `claude-mcp@claude` duplicate.
+    home = _fake_home(tmp_path)
+    home.joinpath(".zshrc").write_text('export CLAUDE_CONFIG_DIR="$HOME/.claude"\n', encoding="utf-8")
+    ids = [c["id"] for c in audit.run_all(home=home)]
+    assert ids.count("claude-mcp") == 1
+    assert not any("@" in i for i in ids)
+
+
+def test_account_label_prefers_parent_for_dotclaude_dirs():
+    from pathlib import Path as _P
+    assert audit._account_label(_P("/u/Blacklake/.claude-work"), set()) == "Blacklake"
+    assert audit._account_label(_P("/u/plain-login"), set()) == "plainlogin"
+
+
+def test_duplicate_account_labels_are_disambiguated():
+    from pathlib import Path as _P
+    used = set()
+    a = audit._account_label(_P("/a/one/.claude-x"), used)
+    b = audit._account_label(_P("/a/one/.claude-y"), used)  # same parent "one"
+    assert a == "one" and b == "one2"
+
+
+def test_guidance_import_cycle_terminates(tmp_path):
+    # A self-referential import must not hang; it simply yields no guidance.
+    home = _fake_home(tmp_path)
+    home.joinpath(".claude", "CLAUDE.md").write_text("@./CLAUDE.md\n# just rules\n", encoding="utf-8")
+    result = {c["id"]: c for c in audit.run_all(home=home)}["claude-guidance"]
+    assert result["status"] == "fail"
