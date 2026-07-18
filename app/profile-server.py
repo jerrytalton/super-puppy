@@ -10,6 +10,7 @@ and which back each MCP tool task. Launched from the menu bar app.
 """
 
 import argparse
+import copy
 import errno
 import fcntl
 import json
@@ -1265,14 +1266,14 @@ def load_profiles():
             # concurrent writer, or genuine corruption. Either way, never
             # clobber it with defaults (that would wipe custom profiles); serve
             # defaults in memory and leave the file for the next clean read.
-            return {**DEFAULT_PROFILES}
+            return copy.deepcopy(DEFAULT_PROFILES)
         if data.get("version", 0) == PROFILES_VERSION:
             return data
         refreshed = migrate_profiles(data)
         save_profiles(refreshed)
         return refreshed
     save_profiles(DEFAULT_PROFILES)
-    return {**DEFAULT_PROFILES}
+    return copy.deepcopy(DEFAULT_PROFILES)
 
 
 def save_profiles(data):
