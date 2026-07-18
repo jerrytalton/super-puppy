@@ -413,6 +413,20 @@ class TestRoutes:
         resp = client.post("/api/profiles", json={"label": "No name"})
         assert resp.status_code == 400
 
+    def test_saving_profile_does_not_mutate_shared_default_presets(self, client, profiles_dir):
+        # Regression: load_profiles() shallow-copied DEFAULT_PROFILES, so the
+        # returned dict's ["profiles"] aliased the shared constant. Saving a
+        # custom profile then mutated the in-process presets — corrupting the
+        # canonical map that migrate_profiles uses to decide what's a preset
+        # (so the custom profile would later be dropped) and that warm-set
+        # logic falls back to (a bogus preset with warm=None renders 0B warm).
+        probe = "pollution_probe_9f3a"
+        assert probe not in ps.DEFAULT_PROFILES["profiles"]  # sanity: name is unique
+        resp = client.post("/api/profiles", json={"name": probe, "tasks": {}})
+        assert resp.status_code == 200
+        assert probe not in ps.DEFAULT_PROFILES["profiles"], \
+            "save leaked a custom profile into the shared DEFAULT_PROFILES constant"
+
     def test_api_profiles_delete(self, client, profiles_dir):
         ps.save_profiles({
             "version": ps.PROFILES_VERSION,
