@@ -201,3 +201,30 @@ static in `~/.config/mlx-server/config.yaml` (drop their
 `on_demand`/`on_demand_idle_timeout` lines — they're 1.6GB and 3GB, fine to
 keep resident). post-update.sh merges rather than overwrites, so the edit
 survives updates.
+
+## Menu bar log spams `resolve_desktop_tailscale exception: No such file or directory: 'tailscale'`
+
+Remote-access features shell out to the `tailscale` CLI by name. The macOS
+**standalone ("macsys") Tailscale** — the recommended build — ships its CLI
+*only inside the app bundle* (`/Applications/Tailscale.app/Contents/MacOS/Tailscale`)
+and never puts a `tailscale` on `PATH`, so every ~32s probe fails with ENOENT.
+The Tailscale app IS running and the tunnel works; only the CLI is unreachable.
+
+Do **not** fix this with a bare symlink. The macsys binary derives its bundle
+identity from its own executable path, so invoking it through a symlink outside
+the bundle fatal-errors: `The current bundleIdentifier is unknown to the
+registry`. The fix is a **wrapper** that `exec`s the full bundle path (exactly
+what Tailscale's own `InstallTailscaleCLI.scpt` writes to `/usr/local/bin`).
+
+Super Puppy ships that wrapper as `bin/tailscale` and `install.sh` /
+`post-update.sh` link it to `~/.local/bin/tailscale` **only when** the app is
+present and no other `tailscale` is already on `PATH` (so it never shadows a
+Homebrew or official-CLI install). If you hit this on an existing install,
+re-run `install.sh` or `bin/post-update.sh`, or link it by hand:
+
+```sh
+ln -sfn "$(git -C <repo> rev-parse --show-toplevel)/bin/tailscale" ~/.local/bin/tailscale
+```
+
+(`~/.local/bin` is first on the menu bar app's PATH — the C launcher sets it —
+so the running app picks it up on the next probe; no restart needed.)
