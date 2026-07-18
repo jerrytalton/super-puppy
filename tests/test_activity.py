@@ -294,7 +294,11 @@ def test_local_usage_summary_groups_by_day_tool_source(tmp_path):
 
 def test_fleet_upsert_is_idempotent(tmp_path):
     activity.init_db()
-    usage = [{"day": "2026-07-10", "tool": "vision", "source": "mcp",
+    # query_fleet() only returns usage from the last 7 days, so the day must be
+    # inside that window — derive it from the clock rather than hardcoding a
+    # literal that silently ages out (it did, on 2026-07-18).
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    usage = [{"day": today, "tool": "vision", "source": "mcp",
               "count": 5, "errors": 0, "avg_ms": 120}]
     activity.upsert_fleet_report("laptop", "v1.2.0", "client", usage, '{"ok":true}', time.time())
     activity.upsert_fleet_report("laptop", "v1.2.0", "client", usage, '{"ok":true}', time.time())
