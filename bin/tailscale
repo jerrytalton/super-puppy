@@ -1,0 +1,19 @@
+#!/bin/sh
+# Super Puppy — Tailscale CLI shim.
+#
+# Why this exists: the macOS "macsys" (standalone) Tailscale ships its CLI only
+# inside the app bundle. That binary derives its bundle identity from its own
+# executable path, so reaching it through a bare PATH symlink dies with
+# "The current bundleIdentifier is unknown to the registry". Exec'ing the FULL
+# bundle path — exactly what Tailscale's own InstallTailscaleCLI.scpt does when
+# it writes /usr/local/bin/tailscale — keeps the identity intact.
+#
+# Super Puppy's menu bar app calls `tailscale` by name (subprocess), so this
+# shim on ~/.local/bin makes the CLI resolvable without sudo. install.sh only
+# links it in when no other `tailscale` is already on PATH.
+for app in "/Applications/Tailscale.app" "$HOME/Applications/Tailscale.app"; do
+    bin="$app/Contents/MacOS/Tailscale"
+    [ -x "$bin" ] && exec "$bin" "$@"
+done
+echo "tailscale: Tailscale.app not found in /Applications or ~/Applications" >&2
+exit 127

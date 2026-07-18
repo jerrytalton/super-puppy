@@ -61,6 +61,7 @@ if $UNINSTALL; then
         ~/.local/bin/local-models-mcp-detect \
         ~/.local/bin/local-models-mcp-auth \
         ~/.local/bin/tailscale-status \
+        ~/.local/bin/tailscale \
         ~/.local/bin/post-update.sh \
         ~/.local/bin/sp-session-ping \
         ~/.local/bin/sp-doctor \
@@ -69,6 +70,7 @@ if $UNINSTALL; then
         ~/bin/local-models-mcp-detect \
         ~/bin/local-models-mcp-auth \
         ~/bin/tailscale-status \
+        ~/bin/tailscale \
         ~/bin/post-update.sh \
         ~/bin/sp-session-ping \
         ~/bin/sp-doctor \
@@ -153,6 +155,21 @@ validate_hostname() {
     fi
 }
 
+# Expose the macOS app's Tailscale CLI when it's bundle-only (see bin/tailscale).
+# The standalone (macsys) build ships no `tailscale` on PATH, so `command -v`
+# reports "not installed" even though the app is present. Link our shim — but
+# only when nothing else already provides `tailscale`, so we never shadow a
+# Homebrew or official-CLI install. Our own shim counts as "provided".
+ensure_tailscale_wrapper() {
+    local have; have="$(command -v tailscale 2>/dev/null || true)"
+    if [ -x "/Applications/Tailscale.app/Contents/MacOS/Tailscale" ] \
+       && { [ -z "$have" ] || [ "$have" = "$HOME/.local/bin/tailscale" ]; }; then
+        mkdir -p "$HOME/.local/bin"
+        ln -sfn "$REPO_DIR/bin/tailscale" "$HOME/.local/bin/tailscale"
+        hash -r 2>/dev/null || true   # drop cached "not found" so command -v re-resolves
+    fi
+}
+
 echo "Installing Super Puppy..."
 echo ""
 
@@ -234,6 +251,10 @@ if $RECONFIGURE; then
     if [[ "$setup_tailscale_input" =~ ^[Yy] ]]; then
         SETUP_TAILSCALE=true
 
+        # The app may be installed with its CLI only inside the bundle; link our
+        # shim so `command -v tailscale` reflects reality, not a missing symlink.
+        ensure_tailscale_wrapper
+
         if ! command -v tailscale > /dev/null 2>&1; then
             echo ""
             echo "  Tailscale is not installed."
@@ -246,6 +267,8 @@ if $RECONFIGURE; then
             read -r ts_wait
             if [[ "$ts_wait" =~ ^[Ss] ]]; then
                 SETUP_TAILSCALE=false
+            else
+                ensure_tailscale_wrapper   # they may have just installed the app
             fi
         fi
 
