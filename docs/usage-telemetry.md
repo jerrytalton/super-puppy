@@ -81,14 +81,29 @@ Exit code is `1` if any check reports `fail`, `0` otherwise (all `pass`/`warn`/`
 
 The menu bar's **Audit** item opens a web page (`app/audit.html`, served at `/audit`) — grouped cards per tool (Claude Code / Codex / Gemini / Super Puppy / Other), a colored status dot per check (green pass, red fail, amber warn, grey n/a), inapplicable checks greyed out, and a per-group **Fix** button that applies just that tool's fixable findings (`POST /api/audit/fix` → `audit.fix_group`). Rendered XSS-safe via `textContent` behind the profile server's CSP.
 
+### Multiple Claude Code accounts
+
+Some machines run several Claude Code logins side by side — a personal account plus work/university ones — each selected by pointing `CLAUDE_CONFIG_DIR` at its own config directory (typically via a shell wrapper that swaps it by working directory). Every such directory is a full config home: its own `.claude.json`, `settings.json`, and `CLAUDE.md`. Auditing only the default login silently graded one account "good" while the others had no SP wiring at all.
+
+The audit now grades **every** account. It discovers the extra config dirs the same way the machine selects them:
+
+- **Shell rc scan** (default, zero-maintenance): reads `CLAUDE_CONFIG_DIR=…` assignments out of `~/.zshrc`, `~/.zshenv`, `~/.zprofile`, `~/.bashrc`, `~/.bash_profile`, `~/.profile`.
+- **Declarative list** (escape hatch for non-shell setups): one config-dir path per line in `~/.config/local-models/claude_config_dirs` (`#` comments and `$HOME`/`~` allowed).
+
+Only existing directories are audited; the default (`~/.claude`) is never double-counted. Each extra account's checks carry an `@<account>` suffix — `claude-mcp@Blacklake`, `claude-guidance@dddg` — where the label comes from the directory (the parent dir name for a dotted `.claude-*` dir). They share the **Claude Code** group, so the CLI, `--json`, and the Audit page's one **Fix Claude Code** button all cover every account at once.
+
+The `claude-guidance` check is **import-aware**: an account whose `CLAUDE.md` is just `@~/.claude/CLAUDE.md` (Claude Code's file-import syntax) inherits the global guidance, so the check follows the import (up to 4 hops, cycle-guarded) and passes rather than false-failing.
+
 ### What each check verifies
+
+Claude checks are listed by their default-account id; extra accounts get the same checks with an `@<account>` suffix (see [above](#multiple-claude-code-accounts)).
 
 | Check | Verifies | Fix |
 |---|---|---|
 | `token-present` | `~/.config/local-models/mcp_auth_token` exists and is non-empty | none — points you at `install.sh` |
-| `claude-mcp` | `~/.claude.json` has `mcpServers.local-models` with a URL and an `X-SP-Client` header | Merges the entry (one key; other MCP servers untouched); token by `${SP_MCP_TOKEN}`, never inlined |
-| `claude-guidance` | `~/.claude/CLAUDE.md` contains local-models guidance — the managed block **or** your own hand-written section | Appends the managed block only if the file has none; never duplicates or overwrites your own |
-| `claude-hook` | A `SessionStart` hook invoking `sp-session-ping` exists in `~/.claude/settings.json` | Adds the hook, preserving any other hooks already configured |
+| `claude-mcp` | the account's `.claude.json` has `mcpServers.local-models` with a URL and an `X-SP-Client` header | Merges the entry (one key; other MCP servers untouched); token by `${SP_MCP_TOKEN}`, never inlined |
+| `claude-guidance` | the account's `CLAUDE.md` contains local-models guidance — the managed block, your own hand-written section, **or** an `@import` that pulls guidance in | Appends the managed block only if the file has none; never duplicates or overwrites your own |
+| `claude-hook` | A `SessionStart` hook invoking `sp-session-ping` exists in the account's `settings.json` | Adds the hook, preserving any other hooks already configured |
 | `codex-mcp` / `codex-guidance` | Same MCP-entry / guidance-block checks for `~/.codex/config.toml` / `~/.codex/AGENTS.md` | Same, TOML-aware; `n/a` if `~/.codex` doesn't exist |
 | `gemini-mcp` / `gemini-guidance` | Same for `~/.gemini/settings.json` / `~/.gemini/GEMINI.md` | Same; `n/a` if `~/.gemini` doesn't exist |
 | `other-agents` | Detects Cursor / opencode / Windsurf config directories | Report-only — points at `docs/troubleshooting.md`, never writes anything |

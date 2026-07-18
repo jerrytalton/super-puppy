@@ -207,7 +207,13 @@ const CHECK_LABEL = {
   'codex-mcp': 'MCP server registered', 'codex-guidance': 'Usage guidance',
   'gemini-mcp': 'MCP server registered', 'gemini-guidance': 'Usage guidance',
 };
-function checkLabel(c) { return CHECK_LABEL[c.id] || c.id; }
+function checkLabel(c) {
+  // Extra Claude logins carry an "@account" suffix (e.g. claude-mcp@Blacklake);
+  // show the friendly base label with the account appended.
+  const at = c.id.indexOf('@');
+  if (at < 0) return CHECK_LABEL[c.id] || c.id;
+  return (CHECK_LABEL[c.id.slice(0, at)] || c.id.slice(0, at)) + ' · ' + c.id.slice(at + 1);
+}
 
 function groupStatus(checks) {
   if (checks.some(c => c.status === 'fail')) return 'fail';
