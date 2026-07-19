@@ -129,6 +129,30 @@ The `mcp/local-models-server.py` MCP server runs as a persistent streamable-HTTP
 
 Dependencies are pinned to exact versions in PEP 723 inline metadata.
 
+### Offload invocation layer (recon-local)
+
+SP *exposes* local tools; getting Claude Code to *invoke* them is a separate
+problem (see `docs/superpowers/specs/2026-07-18-local-offload-invocation-design.md`).
+The highest-value, lowest-risk pattern is **reconnaissance/context-offload** — do
+the heavy reading/searching on the local GPU and hand the main thread a digest,
+saving frontier tokens on ingestion. Three pieces, installed user-level (all
+accounts) and symlinked by `post-update.sh`:
+
+- **`config/claude-agents/recon-local.md`** — a Haiku-driven subagent restricted
+  to read-only + `local-models` tools; routes reading/summarizing/semantic search
+  to the cluster, returns a compressed digest, capability-gated on
+  `local_models_status` (won't hand back a weak digest when the big box is down).
+- **`bin/sp-recon-nudge`** — a `UserPromptSubmit` hook that injects a
+  "delegate recon to the cluster" reminder on recon-shaped prompts and stays
+  silent on edit-shaped ones (fail-open, never blocks).
+- **`permissions.allow: mcp__local-models__*`** in each `settings.json` — removes
+  prompt friction.
+
+**Never route the primary edit turn to a local model** (corrupted diffs); surgical
+edits stay on the frontier model with exact bytes. Tool descriptions in
+`mcp/local-models-server.py` are kept keyword-rich because Claude Code's Tool
+Search hides MCP tools until they match a need.
+
 ## Testing
 
 Run all tests: `uv run --with pytest --with flask --with pyyaml --with requests --with pillow --with "transformers==5.12.1" --with "mlx-audio[tts] @ git+https://github.com/Blaizzy/mlx-audio.git@e42e1431fcf89af313375296c46d03a0153c4aa7" pytest tests/ -v`

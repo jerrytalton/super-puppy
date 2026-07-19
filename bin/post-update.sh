@@ -48,6 +48,8 @@ link bin/tailscale-status          ~/.local/bin/tailscale-status
 link bin/post-update.sh            ~/.local/bin/post-update.sh
 link bin/sp-session-ping           ~/.local/bin/sp-session-ping
 link bin/sp-doctor                 ~/.local/bin/sp-doctor
+link bin/sp-recon-nudge            ~/.local/bin/sp-recon-nudge
+link config/claude-agents/recon-local.md ~/.claude/agents/recon-local.md
 
 # Tailscale CLI shim (see bin/tailscale). The macOS app ships its CLI only
 # inside the bundle; we expose it via a wrapper — but ONLY when the app is

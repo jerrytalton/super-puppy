@@ -65,6 +65,8 @@ if $UNINSTALL; then
         ~/.local/bin/post-update.sh \
         ~/.local/bin/sp-session-ping \
         ~/.local/bin/sp-doctor \
+        ~/.local/bin/sp-recon-nudge \
+        ~/.claude/agents/recon-local.md \
         ~/bin/start-local-models \
         ~/bin/local-models-menubar \
         ~/bin/local-models-mcp-detect \

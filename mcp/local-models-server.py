@@ -1543,10 +1543,14 @@ async def local_summarize(
     model: str | None = None,
     max_tokens: int = 4096,
 ) -> str:
-    """Summarize large files using a local model with long context.
+    """Read and digest large files/logs on the local GPU instead of loading raw
+    into Claude's context — saves frontier tokens on ingestion.
 
-    Use instead of feeding huge files directly to Claude. The local model
-    condenses them first so Claude gets a concise overview.
+    Reconnaissance / context-offload: hand it big files, logs, or a directory
+    listing and get a concise digest back, so Claude never pays to read the raw
+    material. Use before ingesting anything large you only need to *understand*
+    (not edit byte-for-byte). Keywords: read, summarize, large file, log,
+    understand codebase, offload, save tokens.
 
     Args:
         file_paths: Absolute paths to files to summarize.
@@ -1697,10 +1701,13 @@ async def local_similarity_search(
     model: str | None = None,
     top_k: int = 5,
 ) -> str:
-    """Find files most semantically similar to a query.
+    """Semantic codebase reconnaissance: find which files relate to a concept
+    without reading them all into Claude's context.
 
-    Embeds the query and all files, then ranks by cosine similarity.
-    Use for "which files relate to X?" questions.
+    Embeds the query and all files locally, ranks by cosine similarity. Use for
+    "where is X handled?" / "which files touch Y?" so Claude greps the whole
+    tree on the local GPU and only reads the top hits. Keywords: find files,
+    where is, codebase, semantic search, reconnaissance, locate, offload.
 
     Args:
         query: The search query (e.g. "authentication logic", "database connection handling").
@@ -1773,14 +1780,15 @@ async def local_dispatch(
     context_files: list[str] | None = None,
     task_type: str = "reasoning",
 ) -> str:
-    """Start a local model working on a task in the background. Returns immediately.
+    """Offload an independent subtask to the local GPU and keep working — returns
+    immediately with a job_id; fetch the result later with local_collect.
 
-    Use this to get a parallel second opinion while you continue thinking.
-    Call local_collect with the returned job_id when you're ready for the result.
-
-    This is true parallelism: the local model runs on GPU while you run on
-    Anthropic's servers. Use it for architecture review, code review,
-    alternative approaches — anything where a second perspective helps.
+    True parallelism: the local model runs on GPU while Claude keeps reasoning,
+    and the subtask costs no frontier tokens. Best for parallelizable/bulk work
+    you don't want to block on — per-file analysis, candidate generation, bulk
+    transforms, background reconnaissance. (A cross-model view can also flag a
+    confident error, but treat it as a flag to re-examine, not a verdict.)
+    Keywords: offload, parallel, background, dispatch, bulk, keep working.
 
     Args:
         prompt: The task or question for the local model.
