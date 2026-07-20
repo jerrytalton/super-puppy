@@ -196,14 +196,16 @@ function _authHeaders(opts = {}) {
 // Human-facing labels — the interface names things by what people recognize,
 // not by the check id.
 const GROUP_LABEL = {
-  shared: 'Super Puppy', claude: 'Claude Code', codex: 'Codex',
-  gemini: 'Gemini', other: 'Other agents',
+  shared: 'Super Puppy', claude: 'Claude Code', offload: 'Local-model offload',
+  codex: 'Codex', gemini: 'Gemini', other: 'Other agents',
 };
-const GROUP_ORDER = ['claude', 'codex', 'gemini', 'shared', 'other'];
+const GROUP_ORDER = ['claude', 'offload', 'codex', 'gemini', 'shared', 'other'];
 const CHECK_LABEL = {
   'token-present': 'Auth token', 'other-agents': 'Other agents',
   'claude-mcp': 'MCP server registered', 'claude-guidance': 'Usage guidance',
   'claude-hook': 'Session-start hook',
+  'offload-agent': 'Recon subagent', 'offload-hook': 'Offload nudge hook',
+  'offload-permission': 'Auto-approve local tools',
   'codex-mcp': 'MCP server registered', 'codex-guidance': 'Usage guidance',
   'gemini-mcp': 'MCP server registered', 'gemini-guidance': 'Usage guidance',
 };

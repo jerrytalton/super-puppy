@@ -66,7 +66,6 @@ if $UNINSTALL; then
         ~/.local/bin/sp-session-ping \
         ~/.local/bin/sp-doctor \
         ~/.local/bin/sp-recon-nudge \
-        ~/.claude/agents/recon-local.md \
         ~/bin/start-local-models \
         ~/bin/local-models-menubar \
         ~/bin/local-models-mcp-detect \
@@ -86,6 +85,15 @@ if $UNINSTALL; then
             fi
         fi
     done
+
+    # Reverse the opt-in offload wiring in EVERY Claude account (recon-local
+    # agent symlink, UserPromptSubmit nudge hook, local-models permission) so no
+    # dangling hook reference or orphaned auto-approve is left behind. Removes
+    # only SP's own entries — the user's other hooks/permissions are preserved.
+    echo "Removing offload wiring (all accounts)..."
+    python3 -c "import sys; sys.path.insert(0, '$REPO_DIR'); from lib import audit; \
+[print('  ' + m) for m in audit.remove_all_offload()]" || \
+        echo "  WARNING: offload cleanup did not complete — check accounts by hand"
 
     # Remove MLX configs (may be real files, not symlinks)
     MLX_CONF_DIR="$HOME/.config/mlx-server"

@@ -33,6 +33,15 @@ _EDIT = re.compile(
     r"delete|remove|replace|update the|patch|commit|push|run the|install)\b",
     re.IGNORECASE,
 )
+# Suppress on non-genuine-prompt turns: system notifications, tool/hook plumbing,
+# and our OWN injected nudge text (which contains "reconnaissance" and would
+# otherwise re-trigger the hook on itself). This is what made it fire on a
+# task-notification turn.
+_NOT_A_PROMPT = re.compile(
+    r"\[SYSTEM NOTIFICATION|</?task-notification>|automated background-task|"
+    r"this prompt looks like reconnaissance \(understanding",  # our own injected nudge
+    re.IGNORECASE,
+)
 
 _MSG = (
     "This prompt looks like reconnaissance (understanding/exploring code or "
@@ -52,6 +61,8 @@ def main() -> int:
         return 0  # fail open — never block the prompt
     if not prompt:
         return 0
+    if _NOT_A_PROMPT.search(prompt):
+        return 0  # system/hook/injected text — not a genuine recon request
     if _RECON.search(prompt) and not _EDIT.search(prompt):
         json.dump(
             {"hookSpecificOutput": {

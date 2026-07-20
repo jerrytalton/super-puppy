@@ -112,6 +112,28 @@ def _load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _load_dict_or_none(path) -> Optional[dict]:
+    """For TEARDOWN only: return the dict, or None for missing/empty/unparseable/
+    non-dict. A file we can't read as an object has nothing of ours to safely
+    remove — skip it rather than raising and aborting the whole cleanup."""
+    path = Path(path)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, ValueError, OSError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _cmd_has_token(command: Optional[str], name: str) -> bool:
+    """True if `name` is the program (basename of the first token) of `command`.
+    Precise enough that a user's `my-sp-recon-nudge-wrapper` doesn't match
+    `sp-recon-nudge`."""
+    toks = (command or "").split()
+    return bool(toks) and os.path.basename(toks[0]) == name
+
+
 def merge_json_key(path, dotted_key: str, value) -> None:
     """Read-modify-write `path`, setting `dotted_key` (e.g. "a.b.c") to
     `value` without disturbing sibling keys at any level. Creates the
@@ -126,19 +148,87 @@ def merge_json_key(path, dotted_key: str, value) -> None:
     atomic_write(path, json.dumps(data, indent=2))
 
 
-def append_hook(settings_path, hook_entry: dict) -> None:
-    """Merge `hook_entry` into hooks.SessionStart, preserving existing
-    hooks (including other hook events like PreToolUse) and skipping the
-    append if an identical `command` is already present."""
+def append_hook(settings_path, hook_entry: dict, event: str = "SessionStart") -> None:
+    """Merge `hook_entry` into hooks.<event>, preserving existing hooks (other
+    events and other commands under the same event) and skipping the append if
+    an identical `command` is already present."""
     path = Path(settings_path)
     data = _load_json(path)
     hooks = data.setdefault("hooks", {})
-    arr = hooks.setdefault("SessionStart", [])
+    arr = hooks.setdefault(event, [])
     existing_commands = {h.get("command") for e in arr for h in e.get("hooks", [])}
     new_commands = {h.get("command") for h in hook_entry.get("hooks", [])}
     if not (new_commands & existing_commands):
         arr.append(hook_entry)
     atomic_write(path, json.dumps(data, indent=2))
+
+
+def add_to_json_list(path, dotted_key: str, value) -> None:
+    """Append `value` to the list at `dotted_key` (creating file/dicts/list),
+    without duplicating it or disturbing siblings. Raises on malformed JSON."""
+    path = Path(path)
+    data = _load_json(path)
+    node = data
+    keys = dotted_key.split(".")
+    for k in keys[:-1]:
+        node = node.setdefault(k, {})
+    arr = node.setdefault(keys[-1], [])
+    if value not in arr:
+        arr.append(value)
+    atomic_write(path, json.dumps(data, indent=2))
+
+
+def remove_hook_command(settings_path, event: str, command_name: str) -> bool:
+    """Remove hook entries under hooks.<event> whose command's program is
+    `command_name` (basename of its first token); prune now-empty entries and
+    the event key. Returns True if changed. Teardown-safe: a missing/empty/
+    unparseable/non-dict file has nothing of ours to remove → returns False,
+    never raises. Never touches other events or other commands."""
+    data = _load_dict_or_none(settings_path)
+    if data is None:
+        return False
+    arr = data.get("hooks", {}).get(event)
+    if not isinstance(arr, list):
+        return False
+    changed = False
+    new_arr = []
+    for entry in arr:
+        orig = entry.get("hooks", [])
+        kept = [h for h in orig if not _cmd_has_token(h.get("command"), command_name)]
+        if len(kept) != len(orig):
+            changed = True
+        if kept:
+            new_arr.append({**entry, "hooks": kept})
+        elif not orig:
+            new_arr.append(entry)  # already-empty entry left as-is
+        # entries emptied by our removal are dropped
+    if changed:
+        if new_arr:
+            data["hooks"][event] = new_arr
+        else:
+            data["hooks"].pop(event, None)
+        atomic_write(Path(settings_path), json.dumps(data, indent=2))
+    return changed
+
+
+def remove_from_json_list(path, dotted_key: str, value) -> bool:
+    """Remove `value` from the list at `dotted_key` if present. Returns True if
+    changed. Teardown-safe (missing/empty/unparseable/non-dict → False, no
+    raise). Leaves siblings and the (possibly-empty) list intact."""
+    data = _load_dict_or_none(path)
+    if data is None:
+        return False
+    node = data
+    for k in dotted_key.split(".")[:-1]:
+        node = node.get(k) if isinstance(node, dict) else None
+        if node is None:
+            return False
+    arr = node.get(dotted_key.split(".")[-1]) if isinstance(node, dict) else None
+    if not isinstance(arr, list) or value not in arr:
+        return False
+    node[dotted_key.split(".")[-1]] = [v for v in arr if v != value]
+    atomic_write(path, json.dumps(data, indent=2))
+    return True
 
 
 # ── Check registry ──────────────────────────────────────────────────────
@@ -419,6 +509,127 @@ def _fix_claude_hook(account: ClaudeAccount, token: Optional[str]) -> str:
     return f"{account.cid('claude-hook')}: added SessionStart hook to {path}"
 
 
+# ── Local-model offload invocation layer (recon-local) ───────────────────
+#
+# Opt-in, add-only, per-account — same §S2 discipline as the guidance/hook
+# fixes: `install.sh` reports, `sp-doctor --fix` (or the Audit page's own
+# "offload" group Fix button) applies, never auto-written on a version bump.
+# Removal (uninstall) reverses exactly these three writes in every account.
+
+REPO_DIR = Path(__file__).resolve().parent.parent
+RECON_AGENT_SRC = REPO_DIR / "config" / "claude-agents" / "recon-local.md"
+RECON_HOOK_ENTRY = {"matcher": "", "hooks": [{"type": "command", "command": "sp-recon-nudge"}]}
+LOCAL_MODELS_PERMISSION = "mcp__local-models__*"
+
+
+def _check_offload_agent(account: ClaudeAccount, home: Path) -> Check:
+    cid = account.cid("offload-agent")
+    link = account.config_dir / "agents" / "recon-local.md"
+    if link.exists() and os.path.realpath(link) == os.path.realpath(RECON_AGENT_SRC):
+        return Check(cid, "offload", "pass", f"recon-local subagent installed in {link}", True)
+    return Check(cid, "offload", "fail", f"recon-local subagent not installed in {link.parent}", True)
+
+
+def _fix_offload_agent(account: ClaudeAccount, token: Optional[str]) -> str:
+    link = account.config_dir / "agents" / "recon-local.md"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if link.is_symlink() and os.path.realpath(link) == os.path.realpath(RECON_AGENT_SRC):
+        return f"{account.cid('offload-agent')}: recon-local subagent already linked → {link}"
+    note = ""
+    if link.is_symlink() or link.exists():
+        # Never silently destroy a user's own recon-local.md (real file or a
+        # symlink pointing elsewhere) — move it aside first.
+        bak = link.with_name(link.name + ".bak")
+        os.replace(link, bak)
+        note = f" (backed up existing → {bak})"
+    os.symlink(RECON_AGENT_SRC, link)
+    return f"{account.cid('offload-agent')}: linked recon-local subagent → {link}{note}"
+
+
+def _has_recon_hook(data: dict) -> bool:
+    for entry in data.get("hooks", {}).get("UserPromptSubmit", []):
+        for h in entry.get("hooks", []):
+            if _cmd_has_token(h.get("command"), "sp-recon-nudge"):
+                return True
+    return False
+
+
+def _check_offload_hook(account: ClaudeAccount, home: Path) -> Check:
+    cid, path = account.cid("offload-hook"), account.config_dir / "settings.json"
+    try:
+        data = _load_json(path)
+    except json.JSONDecodeError as e:
+        return Check(cid, "offload", "fail", f"{path} is not valid JSON: {e}", True)
+    if _has_recon_hook(data):
+        return Check(cid, "offload", "pass", f"recon nudge hook present in {path}", True)
+    return Check(cid, "offload", "fail", f"recon nudge (UserPromptSubmit) hook missing in {path}", True)
+
+
+def _fix_offload_hook(account: ClaudeAccount, token: Optional[str]) -> str:
+    path = account.config_dir / "settings.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    append_hook(path, RECON_HOOK_ENTRY, event="UserPromptSubmit")
+    return f"{account.cid('offload-hook')}: added recon nudge hook to {path}"
+
+
+def _check_offload_permission(account: ClaudeAccount, home: Path) -> Check:
+    cid, path = account.cid("offload-permission"), account.config_dir / "settings.json"
+    try:
+        data = _load_json(path)
+    except json.JSONDecodeError as e:
+        return Check(cid, "offload", "fail", f"{path} is not valid JSON: {e}", True)
+    if LOCAL_MODELS_PERMISSION in data.get("permissions", {}).get("allow", []):
+        return Check(cid, "offload", "pass", f"local-models auto-approved in {path}", True)
+    return Check(cid, "offload", "fail", f"local-models not in permissions.allow of {path}", True)
+
+
+def _fix_offload_permission(account: ClaudeAccount, token: Optional[str]) -> str:
+    path = account.config_dir / "settings.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    add_to_json_list(path, "permissions.allow", LOCAL_MODELS_PERMISSION)
+    return f"{account.cid('offload-permission')}: allowed {LOCAL_MODELS_PERMISSION} in {path}"
+
+
+_OFFLOAD_CHECKS: dict[str, tuple] = {
+    "offload-agent": (_check_offload_agent, _fix_offload_agent),
+    "offload-hook": (_check_offload_hook, _fix_offload_hook),
+    "offload-permission": (_check_offload_permission, _fix_offload_permission),
+}
+
+
+def remove_offload(account: ClaudeAccount) -> list[str]:
+    """Reverse exactly the three offload writes for one account (for uninstall):
+    the recon-local agent symlink (only if it points into this repo), the
+    UserPromptSubmit recon hook, and the local-models permission. Add-only in
+    reverse — never touches the user's other hooks/permissions/agents."""
+    removed = []
+    link = account.config_dir / "agents" / "recon-local.md"
+    if link.is_symlink() and os.path.realpath(link) == os.path.realpath(RECON_AGENT_SRC):
+        link.unlink()
+        removed.append(f"unlinked {link}")
+    sj = account.config_dir / "settings.json"
+    if remove_hook_command(sj, "UserPromptSubmit", "sp-recon-nudge"):
+        removed.append(f"removed recon hook from {sj}")
+    if remove_from_json_list(sj, "permissions.allow", LOCAL_MODELS_PERMISSION):
+        removed.append(f"removed {LOCAL_MODELS_PERMISSION} from {sj}")
+    return removed
+
+
+def remove_all_offload(home: Optional[Path] = None) -> list[str]:
+    """Reverse the offload wiring in every discovered Claude account. Used by
+    the uninstaller so no orphaned hook/permission/agent is left behind. Each
+    account is isolated: a failure on one (e.g. an unreadable file) is surfaced
+    as a WARNING and does NOT abort cleanup of the others."""
+    home = Path(home) if home is not None else Path.home()
+    out = []
+    for account in _claude_accounts(home):
+        try:
+            out.extend(remove_offload(account))
+        except Exception as e:
+            out.append(f"WARNING: could not fully clean account {account.label}: {e}")
+    return out
+
+
 def _require_tool_dir(home: Path, dirname: str, tool_label: str) -> Path:
     """A fix must never invent a config directory for a tool that isn't
     installed — raise instead (same 'don't touch a target you don't
@@ -616,7 +827,7 @@ def _enumerate(home: Path):
     single-context registry checks. The fix callable closes over its context
     (account or home) and takes only the token, so callers never re-derive it."""
     for account in _claude_accounts(home):
-        for check_fn, fix_fn in _CLAUDE_CHECKS.values():
+        for check_fn, fix_fn in list(_CLAUDE_CHECKS.values()) + list(_OFFLOAD_CHECKS.values()):
             check = check_fn(account, home)
             cb = (lambda tok, _f=fix_fn, _a=account: _f(_a, tok))
             yield check, cb

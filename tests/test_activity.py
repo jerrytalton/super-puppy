@@ -261,9 +261,9 @@ def test_init_db_prune_runs_once_via_version_guard(tmp_db):
     from lib import models
 
     activity.init_db()
-    # Fresh DB must reach version 2
+    # Fresh DB must reach the current schema version
     v = sqlite3.connect(str(tmp_db)).execute("PRAGMA user_version").fetchone()[0]
-    assert v == 2
+    assert v == 3
 
     # Log a junk-named row AFTER the one-shot migration
     now = time.time()
@@ -306,6 +306,51 @@ def test_fleet_upsert_is_idempotent(tmp_path):
     rows = [u for u in fleet["usage"] if u["machine"] == "laptop"]
     assert len(rows) == 1 and rows[0]["count"] == 5   # upsert replaced, not doubled
     assert fleet["machines"][0]["machine"] == "laptop"
+
+
+def test_offload_savings_rolls_up_token_accounting(tmp_path):
+    activity.init_db()
+    now = time.time()
+    # two offloads: raw read on cluster vs digest returned
+    activity.log_request(tool="chat", model="q", backend="ollama", source="mcp",
+                         status="ok", duration_ms=100, started_at=now, completed_at=now,
+                         input_tokens=8000, output_tokens=500)
+    activity.log_request(tool="chat", model="q", backend="ollama", source="mcp",
+                         status="ok", duration_ms=100, started_at=now, completed_at=now,
+                         input_tokens=2000, output_tokens=300)
+    # a degenerate offload (digest > raw) must contribute 0 to avoided, not a
+    # negative that eats into the others (red-team: per-row clamp, not aggregate)
+    activity.log_request(tool="chat", model="q", backend="ollama", source="mcp",
+                         status="ok", duration_ms=100, started_at=now, completed_at=now,
+                         input_tokens=10, output_tokens=999)
+    # a normal (non-offload) call must NOT count toward savings
+    activity.log_request(tool="chat", model="q", backend="ollama", source="mcp",
+                         status="ok", duration_ms=100, started_at=now, completed_at=now)
+    s = activity.offload_savings(3600)
+    assert s["offloads"] == 3
+    assert s["raw_tokens"] == 10010
+    assert s["digest_tokens"] == 1799
+    assert s["tokens_avoided"] == 9200  # (8000-500)+(2000-300)+0, NOT max(0, 10010-1799)
+
+
+def test_schema_v3_migrates_existing_v2_db(tmp_path, monkeypatch):
+    import importlib, sqlite3
+    db = tmp_path / "v2.db"
+    monkeypatch.setenv("SP_ACTIVITY_DB", str(db))
+    import lib.models, lib.activity as act
+    importlib.reload(lib.models); importlib.reload(act)
+    # hand-build a v2 table (no token columns) and stamp user_version=2
+    conn = sqlite3.connect(str(db))
+    conn.execute("""CREATE TABLE requests (id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tool TEXT NOT NULL, model TEXT NOT NULL, backend TEXT NOT NULL,
+        source TEXT NOT NULL, status TEXT NOT NULL, error_msg TEXT,
+        duration_ms INTEGER NOT NULL, started_at REAL NOT NULL,
+        completed_at REAL NOT NULL, machine TEXT NOT NULL DEFAULT '')""")
+    conn.execute("PRAGMA user_version = 2")
+    conn.commit(); conn.close()
+    act.init_db()  # should add the token columns without error
+    cols = {r[1] for r in sqlite3.connect(str(db)).execute("PRAGMA table_info(requests)")}
+    assert "input_tokens" in cols and "output_tokens" in cols
 
 
 def test_fleet_last_seen_is_server_stamped(tmp_path):

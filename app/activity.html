@@ -254,6 +254,16 @@ nav a.active { color: #fff; background: var(--accent); }
   <div class="stat"><div class="stat-value" id="s-uptime">--</div><div class="stat-label">Uptime</div></div>
 </div>
 
+<div class="section-title" id="offload-title" style="display:none">Local-model offload</div>
+<div class="stats" id="offload-stats" style="display:none">
+  <div class="stat"><div class="stat-value" id="o-count">0</div><div class="stat-label">Recon offloads</div></div>
+  <div class="stat"><div class="stat-value" id="o-raw">0</div><div class="stat-label">Raw tokens read on cluster</div></div>
+  <div class="stat"><div class="stat-value" id="o-avoided">0</div><div class="stat-label">≈ frontier tokens avoided</div></div>
+</div>
+<div id="offload-note" style="display:none;font-size:12px;color:var(--text2);margin:-4px 0 10px;max-width:60ch">
+  Estimated (chars/4): reconnaissance/reading offloaded to your local GPUs — you paid frontier rates only for the digest, not the raw material.
+</div>
+
 <div class="section-title">Active Requests</div>
 <div class="active-list" id="active-list">
   <div class="empty-state">No active requests</div>
@@ -335,6 +345,13 @@ function fmtDuration(ms) {
   return (ms / 60000).toFixed(1) + 'm';
 }
 
+function fmtNum(n) {
+  n = n || 0;
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return String(n);
+}
+
 function fmtUptime(s) {
   if (s < 60) return s + 's';
   if (s < 3600) return Math.floor(s / 60) + 'm';
@@ -368,6 +385,17 @@ function render(data) {
   errEl.textContent = data.errors;
   errEl.classList.toggle('has-errors', data.errors > 0);
   document.getElementById('s-uptime').textContent = fmtUptime(data.server_uptime_s);
+
+  // Local-model offload savings (hidden until there's at least one offload)
+  const off = data.offload || {offloads: 0, raw_tokens: 0, tokens_avoided: 0};
+  const showOff = off.offloads > 0;
+  for (const id of ['offload-title', 'offload-stats', 'offload-note'])
+    document.getElementById(id).style.display = showOff ? '' : 'none';
+  if (showOff) {
+    document.getElementById('o-count').textContent = off.offloads;
+    document.getElementById('o-raw').textContent = fmtNum(off.raw_tokens);
+    document.getElementById('o-avoided').textContent = fmtNum(off.tokens_avoided);
+  }
 
   // Active requests
   const activeEl = document.getElementById('active-list');

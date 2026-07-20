@@ -288,6 +288,11 @@ class _gpu_request:
         self.backend = backend
         self.description = description
         self.started = 0.0
+        # Offload accounting: a tool that reads raw material on the cluster and
+        # returns a digest sets these (estimated tokens) so the activity log can
+        # show frontier tokens the main thread avoided ingesting. 0 = not an offload.
+        self.input_tokens = 0
+        self.output_tokens = 0
 
     def __enter__(self):
         self.started = time.time()
@@ -329,6 +334,8 @@ class _gpu_request:
             started_at=self.started, completed_at=completed_at,
             error_msg=str(exc_val) if exc_val else None,
             machine=_current_client() or "unknown-client",
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
         )
 
 
@@ -654,13 +661,17 @@ async def chat_mlx(model: str, messages: list[dict],
 
 
 async def chat(model: str, backend: str, messages: list[dict],
-               max_tokens: int = 4096, think: bool = True) -> str:
-    with _gpu_request(backend, f"chat:{model}"):
+               max_tokens: int = 4096, think: bool = True,
+               offload_input_chars: int = 0) -> str:
+    with _gpu_request(backend, f"chat:{model}") as g:
         warning = _gpu_contention_warning(backend)
         if backend == "ollama":
             result = await chat_ollama(model, messages, max_tokens, think)
         else:
             result = await chat_mlx(model, messages, max_tokens, think)
+        if offload_input_chars > 0:  # a context-offload call — record what it saved
+            g.input_tokens = offload_input_chars // 4      # ~chars-per-token
+            g.output_tokens = len(result) // 4
         return warning + result
 
 
@@ -1582,7 +1593,8 @@ async def local_summarize(
     ]
 
     result = await chat(model_name, backend, messages, max_tokens,
-                        think=thinking_enabled("long_context"))
+                        think=thinking_enabled("long_context"),
+                        offload_input_chars=len(full_text))
     return f"[{model_name} via {backend}]\n\n{result}"
 
 

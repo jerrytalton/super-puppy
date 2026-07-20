@@ -135,8 +135,7 @@ SP *exposes* local tools; getting Claude Code to *invoke* them is a separate
 problem (see `docs/superpowers/specs/2026-07-18-local-offload-invocation-design.md`).
 The highest-value, lowest-risk pattern is **reconnaissance/context-offload** — do
 the heavy reading/searching on the local GPU and hand the main thread a digest,
-saving frontier tokens on ingestion. Three pieces, installed user-level (all
-accounts) and symlinked by `post-update.sh`:
+saving frontier tokens on ingestion. Three pieces:
 
 - **`config/claude-agents/recon-local.md`** — a Haiku-driven subagent restricted
   to read-only + `local-models` tools; routes reading/summarizing/semantic search
@@ -144,9 +143,21 @@ accounts) and symlinked by `post-update.sh`:
   `local_models_status` (won't hand back a weak digest when the big box is down).
 - **`bin/sp-recon-nudge`** — a `UserPromptSubmit` hook that injects a
   "delegate recon to the cluster" reminder on recon-shaped prompts and stays
-  silent on edit-shaped ones (fail-open, never blocks).
+  silent on edit-shaped ones (fail-open; suppresses on system/notification text).
 - **`permissions.allow: mcp__local-models__*`** in each `settings.json` — removes
   prompt friction.
+
+Wiring is **opt-in and audit-owned** (§S2): the `offload-agent`/`offload-hook`/
+`offload-permission` checks in `lib/audit.py` are a per-account `offload` group,
+installed only via `sp-doctor --fix` or the Audit page's "Fix Local-model offload"
+button (never auto-written on install/update — `post-update.sh` only links the
+nudge script). Uninstall reverses exactly those three writes in every account
+(`audit.remove_all_offload`), preserving the user's own hooks/permissions.
+
+**Savings are measured**: `local_summarize` records raw-vs-digest token estimates
+(`chat(offload_input_chars=…)` → `_gpu_request` → activity DB `input/output_tokens`,
+schema v3); `activity.offload_savings()` rolls them up into the Activity page's
+"Local-model offload" card (frontier tokens avoided, labeled an estimate).
 
 **Never route the primary edit turn to a local model** (corrupted diffs); surgical
 edits stay on the frontier model with exact bytes. Tool descriptions in

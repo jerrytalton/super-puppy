@@ -49,7 +49,9 @@ link bin/post-update.sh            ~/.local/bin/post-update.sh
 link bin/sp-session-ping           ~/.local/bin/sp-session-ping
 link bin/sp-doctor                 ~/.local/bin/sp-doctor
 link bin/sp-recon-nudge            ~/.local/bin/sp-recon-nudge
-link config/claude-agents/recon-local.md ~/.claude/agents/recon-local.md
+# The recon-local subagent + its hook/permission are OPT-IN (§S2): installed
+# per-account via `sp-doctor --fix` / the Audit page's "offload" group, never
+# auto-written on update. Only the nudge script (harmless on PATH) is linked here.
 
 # Tailscale CLI shim (see bin/tailscale). The macOS app ships its CLI only
 # inside the bundle; we expose it via a wrapper — but ONLY when the app is

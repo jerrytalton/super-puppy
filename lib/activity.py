@@ -52,7 +52,9 @@ def init_db() -> None:
             duration_ms INTEGER NOT NULL,
             started_at REAL NOT NULL,
             completed_at REAL NOT NULL,
-            machine TEXT NOT NULL DEFAULT ''
+            machine TEXT NOT NULL DEFAULT '',
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0
         )
     """)
     version = conn.execute("PRAGMA user_version").fetchone()[0]
@@ -67,6 +69,13 @@ def init_db() -> None:
         prune_junk_rows()
         conn = _connect()
         conn.execute("PRAGMA user_version = 2")
+        conn.commit()
+    if version < 3:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(requests)")}
+        for col in ("input_tokens", "output_tokens"):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE requests ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
+        conn.execute("PRAGMA user_version = 3")
         conn.commit()
     conn.execute("CREATE INDEX IF NOT EXISTS idx_completed_at ON requests(completed_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tool ON requests(tool)")
@@ -101,20 +110,45 @@ def log_request(
     completed_at: float,
     error_msg: str | None = None,
     machine: str = "",
+    input_tokens: int = 0,
+    output_tokens: int = 0,
 ) -> None:
     try:
         conn = _connect()
         conn.execute(
             "INSERT INTO requests (tool, model, backend, source, status, error_msg, "
-            "duration_ms, started_at, completed_at, machine) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "duration_ms, started_at, completed_at, machine, input_tokens, output_tokens) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (tool, model, backend, source, status, error_msg, duration_ms,
-             started_at, completed_at, machine),
+             started_at, completed_at, machine, int(input_tokens or 0), int(output_tokens or 0)),
         )
         conn.commit()
         conn.close()
     except Exception:
         pass  # never let logging failures break tool execution
+
+
+def offload_savings(period_seconds: int) -> dict:
+    """Roll up recon/context-offload accounting over the period: rows that
+    recorded token counts (input_tokens > 0) are offloads. `raw_tokens` is the
+    material a local model read on the cluster; `digest_tokens` is what came
+    back; `tokens_avoided` (raw − digest) estimates the frontier tokens the main
+    thread never had to ingest. All estimates (chars/4), not exact billing."""
+    conn = _connect()
+    cutoff = time.time() - period_seconds
+    row = conn.execute(
+        "SELECT COUNT(*) AS n, COALESCE(SUM(input_tokens), 0) AS raw, "
+        "COALESCE(SUM(output_tokens), 0) AS digest, "
+        # per-row clamp: a degenerate offload (digest > raw) contributes 0, not
+        # a negative that eats into the other offloads' savings.
+        "COALESCE(SUM(MAX(input_tokens - output_tokens, 0)), 0) AS avoided "
+        "FROM requests "
+        "WHERE completed_at > ? AND input_tokens > 0 AND source != 'session'",
+        (cutoff,),
+    ).fetchone()
+    conn.close()
+    return {"offloads": row["n"], "raw_tokens": row["raw"],
+            "digest_tokens": row["digest"], "tokens_avoided": row["avoided"]}
 
 
 def query_activity(period_seconds: int, limit: int = 200) -> dict:

@@ -3031,6 +3031,7 @@ def api_activity():
         "active": active,
         "server_uptime_s": server_uptime_s,
         "last_activity_at": activity.last_activity_at(),
+        "offload": activity.offload_savings(period),
         **db_data,
     })
 

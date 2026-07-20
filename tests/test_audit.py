@@ -639,6 +639,140 @@ def test_duplicate_account_labels_are_disambiguated():
     assert a == "one" and b == "one2"
 
 
+# ── Offload invocation layer (recon-local) ──────────────────────────────────
+
+def test_offload_checks_fail_then_fix_then_pass(tmp_path):
+    home = _fake_home(tmp_path)
+    ids = {c["id"]: c for c in audit.run_all(home=home)}
+    for base in ("offload-agent", "offload-hook", "offload-permission"):
+        assert ids[base]["status"] == "fail", base
+        assert ids[base]["tool"] == "offload"
+    for base in ("offload-agent", "offload-hook", "offload-permission"):
+        audit.fix(base, home=home, token="tok")
+    ids = {c["id"]: c["status"] for c in audit.run_all(home=home)}
+    assert ids["offload-agent"] == "pass"
+    assert ids["offload-hook"] == "pass"
+    assert ids["offload-permission"] == "pass"
+    # the agent is a symlink into the repo; the hook + permission landed in settings
+    assert (home / ".claude" / "agents" / "recon-local.md").is_symlink()
+    s = json.loads((home / ".claude" / "settings.json").read_text())
+    assert "sp-recon-nudge" in json.dumps(s["hooks"]["UserPromptSubmit"])
+    assert "mcp__local-models__*" in s["permissions"]["allow"]
+
+
+def test_offload_fix_is_add_only(tmp_path):
+    # A user's own UserPromptSubmit hook and permission must survive the fix.
+    home = _fake_home(tmp_path)
+    (home / ".claude" / "settings.json").write_text(json.dumps({
+        "hooks": {"UserPromptSubmit": [{"matcher": "", "hooks": [
+            {"type": "command", "command": "my-own-hook"}]}]},
+        "permissions": {"allow": ["Bash(ls *)"]},
+    }))
+    audit.fix("offload-hook", home=home)
+    audit.fix("offload-permission", home=home)
+    s = json.loads((home / ".claude" / "settings.json").read_text())
+    dumped = json.dumps(s)
+    assert "my-own-hook" in dumped and "sp-recon-nudge" in dumped
+    assert "Bash(ls *)" in s["permissions"]["allow"]
+    assert "mcp__local-models__*" in s["permissions"]["allow"]
+
+
+def test_offload_fix_is_idempotent(tmp_path):
+    home = _fake_home(tmp_path)
+    audit.fix("offload-hook", home=home)
+    audit.fix("offload-hook", home=home)
+    s = json.loads((home / ".claude" / "settings.json").read_text())
+    cmds = [h["command"] for e in s["hooks"]["UserPromptSubmit"] for h in e["hooks"]]
+    assert cmds.count("sp-recon-nudge") == 1
+
+
+def test_remove_offload_reverses_exactly_and_preserves_user_content(tmp_path):
+    home = _fake_home(tmp_path)
+    # user's own hook + permission alongside ours
+    (home / ".claude" / "settings.json").write_text(json.dumps({
+        "hooks": {"UserPromptSubmit": [{"matcher": "", "hooks": [
+            {"type": "command", "command": "my-own-hook"}]}]},
+        "permissions": {"allow": ["Bash(ls *)"]},
+    }))
+    for base in ("offload-agent", "offload-hook", "offload-permission"):
+        audit.fix(base, home=home)
+    from lib.audit import _claude_accounts, remove_offload
+    removed = remove_offload(_claude_accounts(home)[0])
+    assert len(removed) == 3
+    s = json.loads((home / ".claude" / "settings.json").read_text())
+    dumped = json.dumps(s)
+    assert "sp-recon-nudge" not in dumped and "mcp__local-models__*" not in dumped
+    assert "my-own-hook" in dumped                      # user's hook survived
+    assert "Bash(ls *)" in s["permissions"]["allow"]    # user's permission survived
+    assert not (home / ".claude" / "agents" / "recon-local.md").exists()
+
+
+def test_offload_checks_are_per_account(tmp_path):
+    home = _fake_home(tmp_path)
+    _add_zshrc_account(home)  # adds ~/work/.claude-work as "work"
+    ids = {c["id"] for c in audit.run_all(home=home)}
+    assert "offload-hook@work" in ids
+    assert "offload-agent@work" in ids
+
+
+def test_remove_offload_teardown_safe_on_empty_and_malformed_settings(tmp_path):
+    # Red-team SERIOUS 1: an empty/broken settings.json must NOT raise (which
+    # would abort multi-account cleanup) — it just has nothing of ours to remove.
+    from lib.audit import _claude_accounts, remove_offload
+    for i, bad in enumerate(("", "{ broken json", "[1,2,3]", "null")):
+        root = tmp_path / f"case{i}"
+        root.mkdir()
+        home = _fake_home(root)
+        audit.fix("offload-agent", home=home)  # a real symlink to remove
+        (home / ".claude" / "settings.json").write_text(bad)
+        removed = remove_offload(_claude_accounts(home)[0])   # must not raise
+        assert not (home / ".claude" / "agents" / "recon-local.md").exists()
+
+
+def test_remove_all_offload_isolates_a_broken_account(tmp_path):
+    # A broken account must not stop the others from being cleaned.
+    home = _fake_home(tmp_path)
+    d = home / "work" / ".claude-work"
+    d.mkdir(parents=True)
+    (d / ".claude.json").write_text("{}")
+    lf = home / ".config" / "local-models" / "claude_config_dirs"
+    lf.parent.mkdir(parents=True, exist_ok=True)
+    lf.write_text("$HOME/work/.claude-work\n")
+    for cid in ("offload-hook", "offload-permission", "offload-hook@work", "offload-permission@work"):
+        audit.fix(cid, home=home)
+    (home / ".claude" / "settings.json").write_text("{ broken")  # break the default
+    msgs = audit.remove_all_offload(home=home)                   # must not raise
+    s = json.loads((d / "settings.json").read_text())            # work still cleaned
+    assert "sp-recon-nudge" not in json.dumps(s)
+    assert "mcp__local-models__*" not in s.get("permissions", {}).get("allow", [])
+
+
+def test_fix_offload_agent_backs_up_a_user_file_never_destroys(tmp_path):
+    # Red-team SERIOUS 2: a user's real recon-local.md must be preserved, not
+    # silently unlinked.
+    home = _fake_home(tmp_path)
+    adir = home / ".claude" / "agents"
+    adir.mkdir(parents=True)
+    (adir / "recon-local.md").write_text("# my own agent\n")
+    audit.fix("offload-agent", home=home)
+    assert (adir / "recon-local.md").is_symlink()                 # ours now
+    assert (adir / "recon-local.md.bak").read_text() == "# my own agent\n"
+
+
+def test_offload_hook_matches_command_precisely(tmp_path):
+    # A user hook that merely CONTAINS 'sp-recon-nudge' is not ours.
+    home = _fake_home(tmp_path)
+    (home / ".claude" / "settings.json").write_text(json.dumps({
+        "hooks": {"UserPromptSubmit": [{"matcher": "", "hooks": [
+            {"type": "command", "command": "my-sp-recon-nudge-wrapper --flag"}]}]}}))
+    ids = {c["id"]: c for c in audit.run_all(home=home)}
+    assert ids["offload-hook"]["status"] == "fail"               # wrapper isn't ours
+    from lib.audit import _claude_accounts, remove_offload
+    remove_offload(_claude_accounts(home)[0])
+    s = json.loads((home / ".claude" / "settings.json").read_text())
+    assert "my-sp-recon-nudge-wrapper" in json.dumps(s)          # untouched
+
+
 def test_guidance_import_cycle_terminates(tmp_path):
     # A self-referential import must not hang; it simply yields no guidance.
     home = _fake_home(tmp_path)

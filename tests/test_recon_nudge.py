@@ -58,6 +58,29 @@ def test_silent_on_edit_and_action():
         assert not _nudged(p), f"expected silence for edit prompt: {p!r}"
 
 
+def test_silent_on_system_and_injected_text():
+    # Regression: it fired on a task-notification turn because it matched
+    # system/plumbing text (incl. its own injected nudge, which says
+    # "reconnaissance"). Suppress ONLY on structural markers, not topic words.
+    for p in [
+        "[SYSTEM NOTIFICATION - NOT USER INPUT] This is an automated background-task event",
+        "This prompt looks like reconnaissance (understanding/exploring code)...",
+        "<task-notification> Agent finished; summarize the findings",
+    ]:
+        assert not _nudged(p), f"expected silence for non-prompt text: {p!r}"
+
+
+def test_still_nudges_on_genuine_recon_about_plumbing_topics():
+    # A user may legitimately ask recon questions that mention hook/system
+    # terms — those must NOT be suppressed (red-team finding 3).
+    for p in [
+        "how does the system notification pipeline work?",
+        "where is additionalContext injected in the hook?",
+        "summarize what hookSpecificOutput does",
+    ]:
+        assert _nudged(p), f"expected nudge for genuine recon prompt: {p!r}"
+
+
 def test_fail_open_on_malformed_input():
     for junk in ["not json", "", "{}", '{"prompt": ""}', '[1,2,3]']:
         code, out = _run(junk)
