@@ -111,8 +111,10 @@ parallel tools. glm-5.2 (already served) fills a similar niche today.
 
 ## Open questions (resolve in the spike, before committing)
 
-1. **glm5.2 branch** — real/working or abandoned experiment? Only then is
-   "retire `apply-mlx-glm52-patch.sh`" on the table. (README doesn't document it.)
+1. **glm5.2 branch** — ✅ **exists on origin** (commit `bd89932`, confirmed
+   2026-07-20), though undocumented in the README. So "retire
+   `apply-mlx-glm52-patch.sh`" is on the table — but needs the big box to check
+   whether that branch actually serves SP's glm-5.2 well.
 2. **Real perf on the 512GB M3 Ultra** with PRO — tok/s, prefill, cold-load,
    KV-cache disk I/O — vs glm-5.2 today. Is V4 PRO actually *better* than what SP
    already runs, enough to justify a second big-model backend?
