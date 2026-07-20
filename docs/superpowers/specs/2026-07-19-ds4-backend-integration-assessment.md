@@ -24,9 +24,19 @@ Ran the laptop-first spike. **All build/interface/run questions: PASS.**
 | Weights obtainable? | ✅ 81 GB `q2-imatrix` from public `huggingface.co/antirez/deepseek-v4-gguf`, **no token**, resumable, ~60 MB/s. |
 | Runs on the 128GB laptop? | ✅ Loaded, served in ~4s (OS file-cache warm). M5 Max, Metal 4. |
 | OpenAI API + **tool-calling**? | ✅ **Proven** — a real `/v1/chat/completions` with `tools` returned a correct OpenAI `tool_call` (`get_weather{"city":"Paris"}`). This is the make-or-break integration feature. |
-| Generation speed? | ✅ **~32 tok/s** (300 tok, 18-tok prompt, 9.4s) — *faster* than the M3 Max's reported 26.7. Overnight/batch tier, but usable. Output accurate. |
-| RAM headroom? | ⚠️ **Tight.** Full residency dropped free RAM from 76% → **14%** (~18 GB left) alongside SP's services. Works, but concurrent MLX/Ollama on-demand loads could OOM. `--ssd-streaming` (tunable expert cache) is the mitigation — trades speed for RAM; not yet measured. |
-| Interface flags | `--port` (used :8002), `--metal`, `--ctx`, `--ssd-streaming`, disk KV cache (`--kv-disk-dir`). `/v1/models` returns `deepseek-v4-flash`, `supported_parameters` includes `tools`/`tool_choice`. |
+| Generation speed? | ✅ **~32 tok/s** full residency (300 tok, 18-tok prompt, 9.4s) — *faster* than the M3 Max's reported 26.7. Output accurate. |
+| RAM vs speed | ⚠️ Measured tradeoff (below). Full residency is fast but hogs RAM; a **bounded** SSD-streaming cache coexists with SP's services at ~half speed. |
+| Interface flags | `--port` (used :8002), `--metal`, `--ctx`, `--ssd-streaming` + `--ssd-streaming-cache-experts NGB`, disk KV cache (`--kv-disk-dir`). `/v1/models` returns `deepseek-v4-flash`, `supported_parameters` includes `tools`/`tool_choice`. |
+
+**RAM/speed tradeoff (measured on the M5 Max, 300-tok gens):**
+
+| Mode | Speed | Steady RAM free | Verdict |
+|---|---|---|---|
+| Full residency (~81 GB) | **~32 tok/s** | **14%** (~18 GB) | Fast, but hogs the laptop — risky alongside on-demand MLX/Ollama loads |
+| `--ssd-streaming` (default auto cache) | ~15–16 tok/s | drops to ~19% & climbing | **No real RAM win** — the auto budget is 80% of total RAM; it just defers residency |
+| `--ssd-streaming --ssd-streaming-cache-experts 24GB` | ~14–18 tok/s | **47%** (~60 GB) | **The coexistence sweet spot** — bounded RAM, ds4 lives beside SP's other services, at ~half speed |
+
+Takeaway: on a shared 128 GB laptop, the usable config is **bounded SSD streaming** (explicit expert-cache cap), accepting ~half the throughput for RAM headroom. Full residency only makes sense on a box dedicated to ds4. The 512 GB box would run PRO fully resident with room to spare.
 
 **Takeaway:** the *technical* integration is de-risked — build trivial, wire protocol is exactly SP's MLX pattern, tool-calling works, speed is fine. The **open question is now purely a product one** (below): is a *single-lane* V4 worth a second big-model backend when glm-5.2 already occupies that niche, and does the 512GB PRO variant justify it? The laptop can't answer that — needs the big box.
 
