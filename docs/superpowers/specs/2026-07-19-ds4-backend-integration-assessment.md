@@ -14,6 +14,22 @@ time-boxed spike, not a committed integration yet. It's a *single-lane
 frontier model*, not a parallel workhorse — which decides where (and whether)
 it fits.
 
+## Spike results (laptop M5 Max 128GB, 2026-07-20)
+
+Ran the laptop-first spike. **All build/interface/run questions: PASS.**
+
+| Question | Result |
+|---|---|
+| Builds on macOS? | ✅ `make` → `ds4-server` in ~30s with **Command Line Tools only** (shaders compile at runtime; no full Xcode). The earlier "needs Xcode" worry was wrong. |
+| Weights obtainable? | ✅ 81 GB `q2-imatrix` from public `huggingface.co/antirez/deepseek-v4-gguf`, **no token**, resumable, ~60 MB/s. |
+| Runs on the 128GB laptop? | ✅ Loaded, served in ~4s (OS file-cache warm). M5 Max, Metal 4. |
+| OpenAI API + **tool-calling**? | ✅ **Proven** — a real `/v1/chat/completions` with `tools` returned a correct OpenAI `tool_call` (`get_weather{"city":"Paris"}`). This is the make-or-break integration feature. |
+| Generation speed? | ✅ **~32 tok/s** (300 tok, 18-tok prompt, 9.4s) — *faster* than the M3 Max's reported 26.7. Overnight/batch tier, but usable. Output accurate. |
+| RAM headroom? | ⚠️ **Tight.** Full residency dropped free RAM from 76% → **14%** (~18 GB left) alongside SP's services. Works, but concurrent MLX/Ollama on-demand loads could OOM. `--ssd-streaming` (tunable expert cache) is the mitigation — trades speed for RAM; not yet measured. |
+| Interface flags | `--port` (used :8002), `--metal`, `--ctx`, `--ssd-streaming`, disk KV cache (`--kv-disk-dir`). `/v1/models` returns `deepseek-v4-flash`, `supported_parameters` includes `tools`/`tool_choice`. |
+
+**Takeaway:** the *technical* integration is de-risked — build trivial, wire protocol is exactly SP's MLX pattern, tool-calling works, speed is fine. The **open question is now purely a product one** (below): is a *single-lane* V4 worth a second big-model backend when glm-5.2 already occupies that niche, and does the 512GB PRO variant justify it? The laptop can't answer that — needs the big box.
+
 ## What ds4 is (primary-source facts)
 
 - antirez's (Redis creator) self-contained **pure-C** inference engine, **MIT**,
@@ -95,16 +111,18 @@ parallel tools. glm-5.2 (already served) fills a similar niche today.
 
 ## Recommendation
 
-Time-boxed spike, laptop first:
-1. `git clone antirez/ds4 && make`; `download_model.sh q2-imatrix`; run
-   `ds4-server` on :8002; `curl` a tool-calling `/v1/chat/completions` to confirm
-   the shape SP expects.
-2. If clean, wire a **read-only** discovery + a single "deep" profile pointing at
-   ds4 on the laptop, and measure a real long agentic run vs glm-5.2.
-3. Only then decide on big-box PRO + full install.sh/service integration.
+1. ~~Build + run + tool-calling spike on the laptop.~~ **DONE (2026-07-20) — all
+   pass** (see Spike results). ds4 lives at `~/experiments/ds4`, 81 GB q2 model on
+   disk, `ds4-server --metal --port 8002 -m ds4flash.gguf` serves it.
+2. **Next, the deciding test (needs the big box):** on the 512GB M3 Ultra, run
+   `pro-q2-imatrix` and compare a real long agentic run against glm-5.2 —
+   quality, tok/s, cold-load. Also check the `glm5.2` branch state. Only if V4
+   PRO clearly beats glm-5.2 is a second big-model backend worth it.
+3. If yes: wire read-only discovery + a "deep" profile + `install.sh`/service
+   integration (the low-cost plumbing above).
 
-Do **not** merge into main until the spike answers Q1–Q4. This branch holds the
-assessment; the spike would extend it.
+Do **not** merge into main until step 2 answers the product question. The
+technical feasibility is settled; the value question is not.
 
 ## Corrections to earlier (this session)
 - I said ds4 was "Grace-Blackwell/CUDA-oriented, useless to SP." **Wrong** — it's
