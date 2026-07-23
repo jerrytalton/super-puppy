@@ -1212,3 +1212,104 @@ class TestGlm52PatchRetired:
         assert "antirez/ds4" in text
         assert "GLM-5.2-UD-Q2_K_RoutedQ2K.gguf" in text
         assert "ds4flash.gguf" in text
+
+
+class TestInstallDs4CloneSurvivesBranchDeletion:
+    """install.sh pins ds4 by commit, but originally cloned by branch
+    (`--branch glm5.2`). If that branch is deleted/renamed upstream (the
+    repo is weeks old and still moving), the clone must still succeed by
+    falling back to the default branch and fetching the pinned sha
+    directly — the commit stays reachable even without the branch."""
+
+    def test_branch_clone_failure_falls_back_to_default_branch_and_pinned_sha(self):
+        text = (Path(__file__).parent.parent / "install.sh").read_text()
+        assert "git clone --branch glm5.2" in text
+        assert "cloning the default branch and checking out the pinned commit directly" in text
+        assert 'git clone https://github.com/antirez/ds4 "$DS4_DIR"' in text
+        assert 'fetch --quiet origin "$DS4_COMMIT"' in text
+
+
+class TestInstallDs4GgufSizeVerification:
+    """install.sh downloads a 244GiB file over hf; a truncated/corrupt
+    download must not be silently treated as ready to serve."""
+
+    def _extract_block(self):
+        text = (Path(__file__).parent.parent / "install.sh").read_text()
+        start = text.index('if hf download "$DS4_GGUF_REPO"')
+        end_marker = '            fi\n        else\n            echo "  Warning: hf CLI unavailable'
+        end = text.index(end_marker)
+        block = text[start:end] + "            fi\n"
+        assert "DS4_MODEL_BYTES" in block
+        assert "failed-size-check" in block
+        return block
+
+    def _run(self, tmp_path, actual_bytes, expected_bytes, fake_hf_ok=True):
+        gguf_dir = tmp_path / "gguf"
+        gguf_dir.mkdir()
+        gguf_file = "GLM-5.2-UD-Q2_K_RoutedQ2K.gguf"
+
+        # Fake repo checkout: a stub lib/models.py with a controllable
+        # DS4_MODEL_BYTES, so the test can exercise match/mismatch with
+        # small files instead of a real 244GiB download.
+        fake_repo = tmp_path / "fake_repo"
+        (fake_repo / "lib").mkdir(parents=True)
+        (fake_repo / "lib" / "__init__.py").write_text("")
+        (fake_repo / "lib" / "models.py").write_text(
+            f"DS4_MODEL_BYTES = {expected_bytes}\n")
+
+        fake_bin = tmp_path / "fakebin"
+        fake_bin.mkdir()
+        hf_stub = fake_bin / "hf"
+        if fake_hf_ok:
+            hf_stub.write_text(
+                "#!/bin/sh\n"
+                f"python3 -c \"open('{gguf_dir}/{gguf_file}', 'wb').write(b'x' * {actual_bytes})\"\n"
+                "exit 0\n")
+        else:
+            hf_stub.write_text("#!/bin/sh\nexit 1\n")
+        hf_stub.chmod(0o755)
+
+        script = (
+            "#!/bin/bash\n"
+            "set -u\n"
+            f'DS4_GGUF_REPO="antirez/GLM-5.2-GGUF"\n'
+            f'DS4_GGUF_FILE="{gguf_file}"\n'
+            f'DS4_DIR="{tmp_path}"\n'
+            f'REPO_DIR="{fake_repo}"\n'
+            + self._extract_block()
+        )
+        script_path = tmp_path / "run.sh"
+        script_path.write_text(script)
+        script_path.chmod(0o755)
+
+        env = dict(os.environ)
+        env["PATH"] = f"{fake_bin}:{env['PATH']}"
+        result = subprocess.run(
+            ["bash", str(script_path)], capture_output=True, text=True,
+            timeout=30, env=env)
+        return result, gguf_dir / gguf_file, gguf_dir / f"{gguf_file}.failed-size-check"
+
+    def test_matching_size_is_accepted(self, tmp_path):
+        result, good_path, failed_path = self._run(
+            tmp_path, actual_bytes=1000, expected_bytes=1000, fake_hf_ok=True)
+        assert result.returncode == 0, result.stderr
+        assert "size mismatch" not in result.stderr
+        assert good_path.exists()
+        assert not failed_path.exists()
+
+    def test_mismatched_size_is_warned_and_marked_failed(self, tmp_path):
+        result, good_path, failed_path = self._run(
+            tmp_path, actual_bytes=1234, expected_bytes=1000, fake_hf_ok=True)
+        assert result.returncode == 0, result.stderr
+        assert "size mismatch" in result.stderr
+        assert not good_path.exists()
+        assert failed_path.exists()
+        assert failed_path.read_bytes() == b"x" * 1234
+
+    def test_hf_download_failure_short_circuits_before_size_check(self, tmp_path):
+        result, good_path, failed_path = self._run(
+            tmp_path, actual_bytes=0, expected_bytes=1000, fake_hf_ok=False)
+        assert result.returncode == 0, result.stderr
+        assert "download failed" in result.stdout
+        assert not good_path.exists()
+        assert not failed_path.exists()

@@ -688,11 +688,23 @@ if [ "$RAM_CHECK" -ge 512 ]; then
         echo "  Building ds4 (glm-5.2 engine, pinned $DS4_COMMIT)..."
         if [ ! -d "$DS4_DIR/.git" ]; then
             mkdir -p "$DS4_DIR"
-            git clone --branch glm5.2 https://github.com/antirez/ds4 "$DS4_DIR" \
-                || echo "  Warning: ds4 clone failed (glm-5.2 will be unavailable)"
+            # Pin by commit, not by branch: the glm5.2 branch could be
+            # deleted/renamed upstream (antirez's repo is weeks old and
+            # still moving) without touching the pinned commit itself. If
+            # the branch clone fails, fall back to the default branch and
+            # fetch the pinned sha directly — the commit stays reachable
+            # even if the branch that once pointed at it is gone.
+            if ! git clone --branch glm5.2 https://github.com/antirez/ds4 "$DS4_DIR" 2>/dev/null; then
+                echo "  ds4: glm5.2 branch clone failed (deleted/renamed upstream?) — cloning the default branch and checking out the pinned commit directly."
+                rm -rf "$DS4_DIR"
+                mkdir -p "$DS4_DIR"
+                git clone https://github.com/antirez/ds4 "$DS4_DIR" \
+                    || echo "  Warning: ds4 clone failed (glm-5.2 will be unavailable)"
+            fi
         fi
         if [ -d "$DS4_DIR/.git" ]; then
-            git -C "$DS4_DIR" fetch --quiet origin glm5.2 || true
+            git -C "$DS4_DIR" fetch --quiet origin glm5.2 2>/dev/null || true
+            git -C "$DS4_DIR" fetch --quiet origin "$DS4_COMMIT" 2>/dev/null || true
             git -C "$DS4_DIR" checkout --quiet "$DS4_COMMIT" \
                 || echo "  Warning: pinned ds4 commit $DS4_COMMIT not found"
             (cd "$DS4_DIR" && make ds4-server) \
@@ -716,8 +728,23 @@ if [ "$RAM_CHECK" -ge 512 ]; then
             echo "           Free space and re-run install.sh to download it."
         elif command -v hf > /dev/null; then
             echo "  Downloading glm-5.2 GGUF (~244GiB — this takes a while)..."
-            hf download "$DS4_GGUF_REPO" "$DS4_GGUF_FILE" --local-dir "$DS4_DIR/gguf" \
-                || echo "  Warning: glm-5.2 GGUF download failed — re-run install.sh to retry."
+            if hf download "$DS4_GGUF_REPO" "$DS4_GGUF_FILE" --local-dir "$DS4_DIR/gguf"; then
+                DS4_GOT_BYTES=$(stat -f%z "$DS4_DIR/gguf/$DS4_GGUF_FILE" 2>/dev/null || true)
+                DS4_EXPECTED_BYTES=$(python3 -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from lib.models import DS4_MODEL_BYTES
+print(DS4_MODEL_BYTES)
+' "$REPO_DIR" 2>/dev/null || true)
+                if [ -n "$DS4_GOT_BYTES" ] && [ -n "$DS4_EXPECTED_BYTES" ] \
+                   && [ "$DS4_GOT_BYTES" != "$DS4_EXPECTED_BYTES" ]; then
+                    echo "  Warning: glm-5.2 GGUF size mismatch (got ${DS4_GOT_BYTES} bytes, expected ${DS4_EXPECTED_BYTES}) — download is likely corrupt or truncated." >&2
+                    mv "$DS4_DIR/gguf/$DS4_GGUF_FILE" "$DS4_DIR/gguf/$DS4_GGUF_FILE.failed-size-check"
+                    echo "           Marked as failed; re-run install.sh to retry." >&2
+                fi
+            else
+                echo "  Warning: glm-5.2 GGUF download failed — re-run install.sh to retry."
+            fi
         else
             echo "  Warning: hf CLI unavailable — cannot download the glm-5.2 GGUF."
         fi
