@@ -181,6 +181,14 @@ class TestCheckRepoUpdateAvailable:
 class TestApplyRepoUpdate:
     """Tests for apply_repo_update. All patch verify_tag_signature to isolate checkout logic."""
 
+    @pytest.fixture(autouse=True)
+    def _isolate_home(self, tmp_path, monkeypatch):
+        """_update_allowed_signers writes ~/.config/git/allowed_signers with a
+        real open() even when subprocess.run is mocked. Without this, the test
+        fixture's placeholder line clobbers the developer's real file (which is
+        a symlink into ~/dotfiles)."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+
     def _verified(self):
         return patch("app.menubar.verify_tag_signature", return_value=(True, "ok"))
 
