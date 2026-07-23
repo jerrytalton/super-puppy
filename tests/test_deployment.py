@@ -917,6 +917,7 @@ class TestWarmTickWiring:
         app.mode = "server"
         app.servers_started = True
         app.ollama_port, app.mlx_port = "11434", "8000"
+        app.mlx_config_info = {}
         with patch.object(menubar, "load_profiles", return_value={}), \
              patch.object(menubar, "warm_ping_targets",
                           return_value=[("m:1b", "ollama")]), \

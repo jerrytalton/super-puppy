@@ -698,6 +698,24 @@ class TestDefaultProfilesSeeding:
                     f"is not a served_model_name in mlx-server/config.yaml"
                 )
 
+    def test_warm_ping_targets_excludes_ds4_served_bare_names(self):
+        """A bare warm name that is NOT an MLX served-name is ds4-served:
+        always resident, no idle unload, so a keep-warm ping is useless —
+        and before ds4 existed the old heuristic would have pinged MLX for
+        a model MLX doesn't serve (404 every 240s)."""
+        data = {"active": "t", "profiles": {"t": {
+            "warm": ["general", "embedding"],
+            "tasks": {"general": "glm-5.2", "embedding": "qwen3.5-fast"}}}}
+        targets = dict(menubar.warm_ping_targets(
+            data, mlx_served={"qwen3.5-fast"}))
+        assert targets == {"qwen3.5-fast": "mlx"}
+
+    def test_warm_ping_targets_legacy_without_served_set(self):
+        """mlx_served=None keeps the old classify-bare-as-mlx behavior."""
+        data = {"active": "t", "profiles": {"t": {
+            "warm": ["general"], "tasks": {"general": "qwen3.5-fast"}}}}
+        assert menubar.warm_ping_targets(data) == [("qwen3.5-fast", "mlx")]
+
 
 class TestWarmGate:
     """Contention-aware warm pings: refreshes are free, reloads are gated."""

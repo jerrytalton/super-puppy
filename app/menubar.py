@@ -867,19 +867,25 @@ def load_profiles():
     return {"active": None, "profiles": {}}
 
 
-def warm_ping_targets(data):
+def warm_ping_targets(data, mlx_served=None):
     """(model, backend) for the active profile's warm models worth keep-warming.
 
-    backend: 'ollama' for ':' tags, 'mlx' for bare served-names. HuggingFace
-    repos ('/') are excluded — they're invoked per-call (mflux / mlx-audio),
-    not long-lived server models to keep resident.
+    backend: 'ollama' for ':' tags, 'mlx' for bare served-names present in
+    the MLX server config. HuggingFace repos ('/') are excluded — they're
+    invoked per-call (mflux / mlx-audio), not long-lived server models to
+    keep resident. Bare names NOT in `mlx_served` are ds4-served: always
+    resident with no idle unload, so they need no keep-warm ping.
+    mlx_served=None preserves the legacy classify-bare-as-mlx behavior for
+    callers without config access.
     """
     targets = []
     for model in sorted(warm_model_names(data)):
         if "/" in model and ":" not in model:
             continue
-        backend = "ollama" if ":" in model else "mlx"
-        targets.append((model, backend))
+        if ":" in model:
+            targets.append((model, "ollama"))
+        elif mlx_served is None or model in mlx_served:
+            targets.append((model, "mlx"))
     return targets
 
 
@@ -1666,7 +1672,8 @@ class LocalModelsApp(rumps.App):
         """Keep the active profile's warm models resident (re-ping before idle unload)."""
         if self.mode not in ("server", "offline") or not self.servers_started:
             return
-        targets = warm_ping_targets(load_profiles())
+        targets = warm_ping_targets(load_profiles(),
+                                    mlx_served=set(self.mlx_config_info))
         if not targets:
             return
         threading.Thread(target=ping_warm,
