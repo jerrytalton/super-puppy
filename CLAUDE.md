@@ -17,7 +17,7 @@ Local AI model infrastructure for Apple Silicon. Menu bar app + standard APIs + 
 
 - The MCP server discovers models live from Ollama, MLX, and ds4 at startup (parallel `/api/show` calls). Any new `ollama pull` is immediately available as a tool. ds4's `/v1/models` carries no metadata, so glm-5.2's params/context/size are hardcoded in `lib/models.py` (`DS4_*` constants).
 - The menu bar app queries model capabilities live from Ollama `/api/show` and MLX `config.json` files in the HuggingFace cache. No hardcoded param tables.
-- MLX models marked `on_demand: true` download on first use and unload after idle timeout.
+- MLX models marked `on_demand: true` download on first use and unload after idle timeout. glm-5.2 is NOT one of them anymore: it's served by ds4 (always resident) on the 512GB tier.
 - All remote access uses **Tailscale only** — no mDNS, no LAN binding. `tailscale serve` proxies all ports with TLS.
 - The `local-models-mcp-detect` wrapper probes the desktop via Tailscale before launching. Clients use the server if reachable, fall back to localhost.
 - **glm-5.2 (512gb tier) requires patched mlx-lm/mlx-openai-server.** Released mlx-lm can't load GLM-5.2's shared-indexer layout, and stock mlx-openai-server can't keep a 390GB on-demand model resident. `bin/apply-mlx-glm52-patch.sh` (run by install.sh on 512GB machines, idempotent, pinned to upstream PR ml-explore/mlx-lm#1463) fixes both; re-run it after any `uv tool upgrade mlx-openai-server`. Details: docs/troubleshooting.md.
@@ -91,7 +91,7 @@ The menu bar app POSTs each machine's 7-day usage summary (`local_usage_summary`
 | Mode override | `~/.config/local-models/mode.conf` |
 | Remote access toggle | `~/.config/local-models/remote_access.conf` |
 | Auth token | `~/.config/local-models/mcp_auth_token` |
-| MLX server config | `~/.config/mlx-server/config.yaml` (user-writable, survives updates) |
+| MLX server config | `~/.config/mlx-server/config.yaml` (user-writable, survives updates; one-shot exception — the ds4 migration removes a leftover glm-5.2 entry on 512GB machines) |
 | Claude MCP config | `~/.claude.json` |
 | Activity DB | `~/.config/local-models/activity.db` (`SP_ACTIVITY_DB` override) |
 | Fleet report endpoint | `POST https://{fqdn}:8101/api/fleet/report` |

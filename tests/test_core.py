@@ -686,16 +686,17 @@ class TestDefaultProfilesSeeding:
         assert targets == {"qwen3.6:27b-mlx": "ollama", "embed:8b": "ollama"}
         # HF-repo TTS excluded (not a keep-warm server target); non-warm 'code' absent
 
-    def test_warm_models_bare_names_are_mlx_served(self):
+    def test_warm_models_bare_names_are_mlx_or_ds4_served(self):
         """Every bare-name (no ':' and no '/') warm model in a shipped preset
-        must appear as a served_model_name in config/mlx-server/config.yaml.
-        This guards the string-shape heuristic in warm_ping_targets: a bare name
-        is classified as 'mlx', so a bare name that isn't in the MLX config would
-        silently ping the wrong backend (or no backend at all)."""
+        must be either a served_model_name in config/mlx-server/config.yaml
+        or the ds4-served model. This guards warm_ping_targets' string-shape
+        heuristic: a bare name in neither set would silently ping the wrong
+        backend (or no backend at all)."""
         import yaml
+        from lib.models import DS4_MODEL_NAME
         cfg_path = Path(__file__).resolve().parent.parent / "config" / "mlx-server" / "config.yaml"
         cfg = yaml.safe_load(cfg_path.read_text())
-        served = {m["served_model_name"] for m in cfg["models"]}
+        served = {m["served_model_name"] for m in cfg["models"]} | {DS4_MODEL_NAME}
         for name, prof in menubar.DEFAULT_PROFILES["profiles"].items():
             tasks = prof["tasks"]
             for key in prof.get("warm", []):
@@ -704,8 +705,21 @@ class TestDefaultProfilesSeeding:
                     continue  # ollama tag or HF repo — fine, warm_ping_targets handles them
                 assert model in served, (
                     f"profile {name!r} warm bare-name {model!r} "
-                    f"is not a served_model_name in mlx-server/config.yaml"
+                    f"is neither an MLX served_model_name nor ds4-served"
                 )
+
+    def test_512gb_warm_ping_skips_glm52(self):
+        """The concrete ship assertion: with the real repo yaml (glm-5.2
+        removed) and the real 512gb preset, warm pings no longer target
+        glm-5.2 — it dropped out naturally by leaving the served set."""
+        import yaml
+        cfg_path = Path(__file__).resolve().parent.parent / "config" / "mlx-server" / "config.yaml"
+        served = {m["served_model_name"]
+                  for m in yaml.safe_load(cfg_path.read_text())["models"]}
+        data = {"active": "512gb", "profiles": menubar.DEFAULT_PROFILES["profiles"]}
+        targets = dict(menubar.warm_ping_targets(data, mlx_served=served))
+        assert "glm-5.2" not in targets
+        assert targets.get("qwen3-embedding:8b") == "ollama"
 
     def test_warm_ping_targets_excludes_ds4_served_bare_names(self):
         """A bare warm name that is NOT an MLX served-name is ds4-served:

@@ -478,7 +478,7 @@ TASK_FILTERS: dict[str, dict[str, Any]] = {
 # max_ram_gb cap gates model-pull validation in install.sh and the profile
 # server. The active default is 64gb (fits M5 / mid GPU class).
 
-PROFILES_VERSION = 31  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 32  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,

@@ -267,7 +267,7 @@ under contention it lapses instead of competing.
 
 ### MLX Models
 
-Edit `~/.config/mlx-server/config.yaml`. Every model is `on_demand: true` (loads when first requested, unloads after an idle timeout) — the active profile decides what's actually pulled and kept warm, so one config serves all tiers. Use `model_type: multimodal` for vision models. Your edits persist across auto-updates.
+Edit `~/.config/mlx-server/config.yaml`. Every model is `on_demand: true` (loads when first requested, unloads after an idle timeout) — the active profile decides what's actually pulled and kept warm, so one config serves all tiers. Use `model_type: multimodal` for vision models. Your edits persist across auto-updates. One exception: the retired glm-5.2 MLX entry is removed once on 512GB machines by the ds4 migration (it moved to the ds4 backend).
 
 
 ## CLAUDE.md Setup

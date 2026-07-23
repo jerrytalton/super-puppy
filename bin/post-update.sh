@@ -112,6 +112,20 @@ PYEOF
     fi
 done
 
+# One-shot migration (2026-07 ds4 ship): glm-5.2 is served by ds4 on the
+# 512GB tier now. The merge above is append-only and will never remove the
+# user's old glm-5.2 MLX entry, which would double-serve the name (MLX
+# claims it first in discovery order) and keep 418GB of dead weights.
+# Failure-tolerant on purpose: post-update.sh failing rolls back the whole
+# update (menubar._auto_update), and a cosmetic yaml migration must never
+# do that.
+if [ "$(sysctl -n hw.memsize | awk '{printf "%d", $1 / 1073741824}')" -ge 512 ] \
+   && [ -f "$MLX_DIR/config.yaml" ]; then
+    python3 "$REPO_DIR/bin/migrate-mlx-config.py" "$MLX_DIR/config.yaml" glm-5.2 \
+        && log "MLX config migration checked (glm-5.2 → ds4)" \
+        || log "WARNING: glm-5.2 MLX-entry migration failed (non-fatal)"
+fi
+
 # LaunchAgent — reload if ProgramArguments changed so launchd uses the new path
 PLIST_DST="$HOME/Library/LaunchAgents/com.local-models.menubar.plist"
 PLIST_LABEL="com.local-models.menubar"

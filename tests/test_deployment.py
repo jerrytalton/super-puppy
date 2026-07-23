@@ -12,6 +12,7 @@ Covers:
 - _post_update_health_check: regression detection
 """
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -959,3 +960,84 @@ class TestCopyPlaygroundUrl:
 
     def test_copied_url_omits_empty_token(self):
         assert self._run_copy("") == "https://box.tail.ts.net:8101/tools"
+
+
+# ---------------------------------------------------------------------------
+# bin/migrate-mlx-config.py — glm-5.2 → ds4 one-shot migration
+# ---------------------------------------------------------------------------
+
+def _load_migrate_module():
+    path = Path(__file__).parent.parent / "bin" / "migrate-mlx-config.py"
+    spec = importlib.util.spec_from_file_location("migrate_mlx_config", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+SAMPLE_YAML = """\
+server:
+  host: "127.0.0.1"
+  port: 8000
+
+models:
+  # Tiny model to verify server works
+  - model_path: mlx-community/Llama-3.2-3B-Instruct-4bit
+    model_type: lm
+    served_model_name: llama-3b
+    context_length: 8192
+
+  # Frontier (512GB tier) — GLM-5.2, ~418GB at 4-bit
+  - model_path: mlx-community/GLM-5.2-4bit
+    model_type: lm
+    served_model_name: glm-5.2
+    context_length: 131072
+    on_demand: true
+    on_demand_idle_timeout: 300
+
+  # User-added custom model — must survive untouched
+  - model_path: mlx-community/My-Custom-7B
+    model_type: lm
+    served_model_name: my-custom
+    context_length: 4096
+"""
+
+
+class TestMigrateMlxConfig:
+    def test_removes_glm52_block_and_its_comment(self):
+        mod = _load_migrate_module()
+        out, removed = mod.remove_served_model(SAMPLE_YAML, "glm-5.2")
+        assert removed is True
+        assert "glm-5.2" not in out
+        assert "GLM-5.2-4bit" not in out
+        assert "Frontier (512GB tier)" not in out          # comment gone too
+
+    def test_preserves_other_entries_including_user_custom(self):
+        mod = _load_migrate_module()
+        out, _ = mod.remove_served_model(SAMPLE_YAML, "glm-5.2")
+        assert "served_model_name: llama-3b" in out
+        assert "served_model_name: my-custom" in out
+        assert "User-added custom model" in out
+
+    def test_idempotent_second_run(self):
+        """post-update.sh runs on every update; the second run must be a
+        no-op, not a crash or a mangled file."""
+        mod = _load_migrate_module()
+        once, _ = mod.remove_served_model(SAMPLE_YAML, "glm-5.2")
+        twice, removed = mod.remove_served_model(once, "glm-5.2")
+        assert removed is False
+        assert twice == once
+
+    def test_cli_rewrites_file_and_exits_zero(self, tmp_path):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(SAMPLE_YAML)
+        script = Path(__file__).parent.parent / "bin" / "migrate-mlx-config.py"
+        result = subprocess.run(
+            ["python3", str(script), str(cfg), "glm-5.2"],
+            capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0, result.stderr
+        assert "glm-5.2" not in cfg.read_text()
+        # And again — idempotent at the CLI level too.
+        result = subprocess.run(
+            ["python3", str(script), str(cfg), "glm-5.2"],
+            capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0
