@@ -899,7 +899,7 @@ for nm in served:
             echo "           'hf auth login' or set HF_TOKEN to enable them." >&2
         fi
         HF_CACHE="$HOME/.cache/huggingface/hub"
-        total=${#HF_MODELS[@]}; current=0; pulled=0
+        total=${#HF_MODELS[@]}; current=0; pulled=0; hf_failed=0
         for model in "${HF_MODELS[@]}"; do
             current=$((current + 1))
             cache_name="models--${model//\//--}"
@@ -909,10 +909,17 @@ for nm in served:
                 continue
             fi
             echo "  [$current/$total] huggingface: $model — downloading"
-            hf download "$model" || true
-            pulled=$((pulled + 1))
+            # Retry with xet disabled: the xet backend can fail on large files
+            # ("Unable to parse string as hex hash value"); plain HTTP works.
+            if hf download "$model" || { echo "  download failed — retrying without xet..."
+                                         HF_HUB_DISABLE_XET=1 hf download "$model"; }; then
+                pulled=$((pulled + 1))
+            else
+                hf_failed=$((hf_failed + 1))
+                echo "  WARNING: download failed for $model — re-run install.sh to retry."
+            fi
         done
-        echo "  HuggingFace: $pulled downloaded, $((total - pulled)) already present."
+        echo "  HuggingFace: $pulled downloaded, $hf_failed failed, $((total - pulled - hf_failed)) already present."
     else
         echo "  WARNING: hf install failed. HuggingFace models will download on first use."
     fi
