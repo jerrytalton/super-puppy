@@ -887,10 +887,12 @@ for nm in served:
             fi
         elif [ -t 0 ]; then
             # Interactive terminal: prompt for a one-time login so downloads
-            # aren't silently anonymous/rate-limited.
+            # aren't silently anonymous/rate-limited. --force because whoami
+            # just failed: any stored token is stale, and without it hf
+            # no-ops ("already logged in") and the install proceeds to 401.
             echo "  Not logged in to HuggingFace — starting login"
             echo "  (create a token at https://huggingface.co/settings/tokens):"
-            hf auth login || echo "  WARNING: login skipped/failed — gated repos will 401."
+            hf auth login --force || echo "  WARNING: login skipped/failed — gated repos will 401."
         else
             echo "  WARNING: not logged in to HuggingFace and no HF_TOKEN set — downloads"
             echo "           will be anonymous (gated repos like FLUX will 401). Run"
