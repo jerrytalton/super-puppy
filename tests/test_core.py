@@ -355,6 +355,63 @@ class TestValidateNetworkConf:
         assert any("not valid JSON" in w for w in warnings)
 
 
+class TestDs4Constants:
+    def test_llm_backends_includes_all_three_chat_backends(self):
+        from lib.models import LLM_BACKENDS
+        assert LLM_BACKENDS == {"ollama", "mlx", "ds4"}
+
+    def test_ds4_metadata_constants(self):
+        # These hardcoded values feed BOTH discovery paths (MCP + profile
+        # server); a typo here silently drops glm-5.2 from task lists
+        # (TASK_FILTERS min_active_b/min_ctx gates) or corrupts memory math.
+        from lib import models
+        assert models.DS4_MODEL_NAME == "glm-5.2"
+        assert models.DS4_MODEL_BYTES == 262_036_650_048
+        assert models.DS4_TOTAL_PARAMS_B == 380
+        assert models.DS4_ACTIVE_PARAMS_B == 32
+        assert models.DS4_CONTEXT == 131072
+
+    def test_ds4_dir_default_and_override(self, tmp_path):
+        from lib import models
+        conf = tmp_path / "network.conf"
+        conf.write_text('DS4_PORT=8002\nDS4_DIR="/opt/ds4"\n')
+        with patch.object(models, "NETWORK_CONF", conf):
+            assert models.ds4_dir() == Path("/opt/ds4")
+        conf.write_text("DS4_PORT=8002\n")
+        with patch.object(models, "NETWORK_CONF", conf):
+            assert models.ds4_dir() == Path(
+                "~/.local/share/super-puppy/ds4").expanduser()
+
+    def test_ds4_installed_requires_server_binary(self, tmp_path):
+        from lib import models
+        conf = tmp_path / "network.conf"
+        conf.write_text(f'DS4_DIR="{tmp_path}/ds4"\n')
+        with patch.object(models, "NETWORK_CONF", conf):
+            assert models.ds4_installed() is False
+            (tmp_path / "ds4").mkdir()
+            (tmp_path / "ds4" / "ds4-server").write_bytes(b"#!/bin/sh\n")
+            assert models.ds4_installed() is True
+
+    def test_ds4_port_repaired_when_non_numeric(self, tmp_path):
+        from lib import models
+        conf = tmp_path / "network.conf"
+        conf.write_text("DS4_PORT=8002abc\n")
+        with patch.object(models, "NETWORK_CONF", conf), \
+             patch.object(models, "CONFIG_DIR", tmp_path):
+            warnings = models.validate_network_conf()
+        assert any("non-numeric" in w for w in warnings)
+        assert "DS4_PORT=8002" in conf.read_text()
+
+    def test_network_conf_template_has_ds4_keys(self):
+        # _NETWORK_DEFAULTS "must match config/local-models/network.conf"
+        # (lib/models.py comment) — this catches template drift.
+        template = (Path(__file__).resolve().parent.parent
+                    / "config" / "local-models" / "network.conf")
+        content = template.read_text()
+        assert "DS4_PORT=8002" in content
+        assert "DS4_DIR=" in content
+
+
 class TestModelHasVision:
     def test_model_info_vision_keys_signal_vision(self):
         """GGUF vision models carry the vision tower; Ollama exposes it

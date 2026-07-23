@@ -30,6 +30,8 @@ _NETWORK_DEFAULTS = {
     "TAILSCALE_HOSTNAME": "super-puppy",
     "OLLAMA_PORT": "11434",
     "MLX_PORT": "8000",
+    "DS4_PORT": "8002",
+    "DS4_DIR": "",
     "SERVER_RAM_GB": "0",
     "PROBE_TIMEOUT": "2",
     "PROFILE_PORT": "8101",
@@ -38,7 +40,8 @@ _NETWORK_DEFAULTS = {
     "AUTO_UPDATE": "true",
 }
 
-_NUMERIC_KEYS = {"OLLAMA_PORT", "MLX_PORT", "SERVER_RAM_GB", "PROBE_TIMEOUT", "PROFILE_PORT"}
+_NUMERIC_KEYS = {"OLLAMA_PORT", "MLX_PORT", "DS4_PORT", "SERVER_RAM_GB",
+                 "PROBE_TIMEOUT", "PROFILE_PORT"}
 
 
 def validate_network_conf(logger=None) -> list[str]:
@@ -104,6 +107,55 @@ def validate_network_conf(logger=None) -> list[str]:
             warn(f"{MCP_PREFS_FILE} is not valid JSON: {e}")
 
     return warnings
+
+
+# ── Chat backends & ds4 ──────────────────────────────────────────────
+# Three chat-LLM backends. "ds4" is antirez/ds4 serving glm-5.2 on the
+# 512GB tier (OpenAI-compatible, localhost:8002, internal-only — never
+# tailscale-served; client-mode traffic is brokered by the desktop's MCP
+# and profile server).
+
+LLM_BACKENDS: frozenset[str] = frozenset({"ollama", "mlx", "ds4"})
+
+# ds4's /v1/models returns one model with NO params/context/vision
+# metadata, and its GGUF lives outside every existing sizing path (not an
+# HF snapshot, not an Ollama blob). Discovery must hardcode these values;
+# without them TASK_FILTERS min_active_b/min_ctx silently drop glm-5.2
+# from every task list. DS4_MODEL_BYTES is the exact on-disk size of
+# GLM-5.2-UD-Q2_K_RoutedQ2K.gguf.
+DS4_MODEL_NAME = "glm-5.2"
+DS4_MODEL_BYTES = 262_036_650_048
+DS4_TOTAL_PARAMS_B = 380
+DS4_ACTIVE_PARAMS_B = 32
+DS4_CONTEXT = 131072
+
+DS4_DIR_DEFAULT = "~/.local/share/super-puppy/ds4"
+
+
+def ds4_dir() -> Path:
+    """The ds4 checkout/build/gguf directory.
+
+    network.conf's DS4_DIR overrides; default is DS4_DIR_DEFAULT. install.sh
+    provisions this directory on 512GB machines (and symlinks an existing
+    ~/experiments/ds4 checkout when present).
+    """
+    if NETWORK_CONF.exists():
+        for line in NETWORK_CONF.read_text().splitlines():
+            stripped = line.strip()
+            if stripped.startswith("DS4_DIR="):
+                val = stripped.partition("=")[2].strip().strip('"').strip("'")
+                if val:
+                    return Path(val).expanduser()
+    return Path(DS4_DIR_DEFAULT).expanduser()
+
+
+def ds4_installed() -> bool:
+    """True only where install.sh actually provisioned ds4 (512GB tier).
+
+    Gates every ds4 surface that would otherwise show a permanently-red
+    service on machines that never run it.
+    """
+    return (ds4_dir() / "ds4-server").exists()
 
 
 # ── MoE active parameter table ───────────────────────────────────────

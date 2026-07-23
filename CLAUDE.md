@@ -120,6 +120,7 @@ Single source of truth for constants and logic used by menubar, MCP server, and 
 - `STANDARD_TASKS`, `SPECIAL_TASKS`, `TASK_FILTERS` — task definitions and model filtering
 - `DEFAULT_PROFILES`, `PROFILES_VERSION` — preset profile definitions (task→model maps). Seeded by the menu bar app on startup (`seed_profiles_if_missing()`), migrated/served by the profile server, and read by `install.sh` to know which models to pull. Bump `PROFILES_VERSION` to force-refresh presets on all machines.
 - `active_params_b()` — 4-strategy MoE active parameter computation (AXB parse → known table → FFN subtraction → ratio fallback)
+- `LLM_BACKENDS` — the three chat backends (`ollama`, `mlx`, `ds4`); `DS4_MODEL_NAME`/`DS4_MODEL_BYTES`/`DS4_TOTAL_PARAMS_B`/`DS4_ACTIVE_PARAMS_B`/`DS4_CONTEXT` — hardcoded glm-5.2 metadata for ds4 discovery (ds4's `/v1/models` returns none); `ds4_dir()`/`ds4_installed()` — DS4_DIR resolution and presence gate
 - `model_matches_filter()` — check if a model qualifies for a task
 - Config path constants (`PROFILES_FILE`, `MCP_PREFS_FILE`, `CLAUDE_CONFIG_FILE`, etc.)
 
