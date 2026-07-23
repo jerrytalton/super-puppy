@@ -125,7 +125,7 @@ class TestChatDs4Dispatch:
         r.raise_for_status = MagicMock()
         return r
 
-    def test_chat_ds4_posts_to_ds4_without_think_toggle(self):
+    def test_chat_ds4_posts_to_ds4_without_mlx_shim(self):
         """think=False must NOT forward chat_template_kwargs to ds4
         (verified broken: reasoning migrates into content), and the reply
         must survive raw control chars in reasoning_content (ds4 encoder
@@ -145,7 +145,37 @@ class TestChatDs4Dispatch:
         assert out == "pong"
         assert captured["url"] == "http://localhost:8002/v1/chat/completions"
         assert "chat_template_kwargs" not in captured["body"]
-        assert "think" not in captured["body"]
+
+    def test_chat_ds4_think_false_sends_native_thinking_disabled(self):
+        """ds4's native thinking control (verified live 2026-07-23):
+        thinking is default-on, and think=False disables it via
+        `"thinking": {"type": "disabled"}`."""
+        raw = '{"choices":[{"message":{"content":"pong"}}]}'
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["body"] = json
+            return self._resp(raw)
+
+        with patch.object(ps.requests, "post", side_effect=fake_post):
+            ps._chat("glm-5.2", "ds4",
+                     [{"role": "user", "content": "ping"}], think=False)
+        assert captured["body"]["thinking"] == {"type": "disabled"}
+
+    def test_chat_ds4_think_true_omits_thinking_key(self):
+        """think=True (or the default) must omit the `thinking` key so
+        ds4's default (thinking on) applies."""
+        raw = '{"choices":[{"message":{"content":"pong"}}]}'
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["body"] = json
+            return self._resp(raw)
+
+        with patch.object(ps.requests, "post", side_effect=fake_post):
+            ps._chat("glm-5.2", "ds4",
+                     [{"role": "user", "content": "ping"}], think=True)
+        assert "thinking" not in captured["body"]
 
     def test_chat_ds4_falls_back_to_reasoning_content(self):
         raw = ('{"choices":[{"message":{"content":"",'
@@ -155,6 +185,44 @@ class TestChatDs4Dispatch:
             out = ps._chat("glm-5.2", "ds4",
                            [{"role": "user", "content": "hi"}])
         assert out == "all reasoning, no answer"
+
+    def test_chat_stream_ds4_think_false_sends_native_thinking_disabled(self):
+        """Streaming ds4 dispatch must wire the same native thinking
+        control as non-streaming: think=False → `"thinking": {"type":
+        "disabled"}`, never the broken MLX chat_template_kwargs shim."""
+        lines = [b"data: [DONE]"]
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.iter_lines.return_value = iter(lines)
+        captured = {}
+
+        def fake_post(url, json=None, stream=None, timeout=None):
+            captured["body"] = json
+            return resp
+
+        with patch.object(ps.requests, "post", side_effect=fake_post):
+            list(ps._chat_stream(
+                "glm-5.2", "ds4", [{"role": "user", "content": "hi"}],
+                think=False))
+        assert captured["body"]["thinking"] == {"type": "disabled"}
+        assert "chat_template_kwargs" not in captured["body"]
+
+    def test_chat_stream_ds4_think_true_omits_thinking_key(self):
+        lines = [b"data: [DONE]"]
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.iter_lines.return_value = iter(lines)
+        captured = {}
+
+        def fake_post(url, json=None, stream=None, timeout=None):
+            captured["body"] = json
+            return resp
+
+        with patch.object(ps.requests, "post", side_effect=fake_post):
+            list(ps._chat_stream(
+                "glm-5.2", "ds4", [{"role": "user", "content": "hi"}],
+                think=True))
+        assert "thinking" not in captured["body"]
 
     def test_chat_stream_ds4_yields_tokens_with_tolerant_parse(self):
         """The streaming branch parses each SSE chunk; a chunk with a raw

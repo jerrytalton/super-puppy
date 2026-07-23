@@ -695,12 +695,16 @@ async def chat_mlx(model: str, messages: list[dict],
 
 async def chat_ds4(model: str, messages: list[dict],
                    max_tokens: int = 4096, think: bool = True) -> str:
-    # think is accepted for signature parity but deliberately NOT forwarded:
-    # ds4's chat_template_kwargs.enable_thinking is verified broken
-    # (2026-07-22) — HTTP 200, but the reasoning migrates into `content`
-    # with no think-block markers to strip. glm-5.2 on ds4 always thinks.
+    # ds4's own MLX-convention shim (chat_template_kwargs.enable_thinking)
+    # is verified broken (2026-07-22) — HTTP 200, but the reasoning migrates
+    # into `content` with no think-block markers to strip. That field must
+    # never be sent to ds4. ds4 has a NATIVE thinking control instead
+    # (verified live 2026-07-23): thinking is default-on; think=False
+    # disables it via `"thinking": {"type": "disabled"}`.
     body = {"model": model, "messages": messages, "max_tokens": max_tokens,
             "stream": False}
+    if not think:
+        body["thinking"] = {"type": "disabled"}
     try:
         # timeout=600: at ~11.5 tok/s a 4096-token generation takes ~356s,
         # and ds4 serializes requests (single live session) — 300s cut off

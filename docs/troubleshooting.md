@@ -184,12 +184,21 @@ upstream if you can reproduce a minimal case.
 
 ### "I disabled thinking but glm-5.2 still thinks" / reasoning shows up in the answer
 
-`chat_template_kwargs.enable_thinking: false` is **broken on ds4**: the
-server returns 200 but the model's reasoning simply moves from
-`reasoning_content` into `content` (no think-block markers to strip).
-Super Puppy never forwards the toggle to ds4 — glm-5.2 always thinks there.
-Budget tokens accordingly (it can burn a small `max_tokens` entirely on
-thinking; dispatchers fall back to surfacing `reasoning_content`).
+`chat_template_kwargs.enable_thinking: false` — the MLX-convention
+toggle Qwen3 uses — is **broken on ds4**: the server returns 200 but the
+model's reasoning simply moves from `reasoning_content` into `content`
+(no think-block markers to strip). Super Puppy never sends ds4 that key.
+
+ds4 has its own **native** thinking control instead: thinking is
+default-on, and Super Puppy's dispatchers (MCP `chat_ds4`, profile server
+`_chat`/`_chat_stream`) disable it by sending `"thinking": {"type":
+"disabled"}` in the request body when the caller's think toggle is off,
+and omit the key entirely otherwise. If you're calling `:8002` directly,
+do the same — don't reach for `chat_template_kwargs`.
+
+Budget tokens accordingly when thinking is left on (it can burn a small
+`max_tokens` entirely on thinking; dispatchers fall back to surfacing
+`reasoning_content`).
 
 ### glm-5.2 is missing from model lists
 

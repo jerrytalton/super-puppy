@@ -302,10 +302,11 @@ class TestChatDs4:
                 "glm-5.2", [{"role": "user", "content": "hi"}]))
         assert captured["client_kwargs"]["timeout"] == 600
 
-    def test_chat_ds4_never_forwards_think_toggle(self):
-        """enable_thinking is VERIFIED BROKEN on ds4 (200 OK but reasoning
-        migrates into content, no think-block markers to strip). think=False
-        must NOT put chat_template_kwargs on the wire."""
+    def test_chat_ds4_never_forwards_mlx_enable_thinking_shim(self):
+        """ds4's own MLX-convention shim (chat_template_kwargs.enable_thinking)
+        is VERIFIED BROKEN on ds4 (200 OK but reasoning migrates into content,
+        no think-block markers to strip). think=False must NOT put that key
+        on the wire — it uses ds4's native `thinking` field instead."""
         raw = '{"choices":[{"message":{"content":"hi"}}]}'
         captured = {}
         with patch.object(server.httpx, "AsyncClient",
@@ -313,7 +314,29 @@ class TestChatDs4:
             asyncio.run(server.chat_ds4(
                 "glm-5.2", [{"role": "user", "content": "hi"}], think=False))
         assert "chat_template_kwargs" not in captured["body"]
-        assert "think" not in captured["body"]
+
+    def test_chat_ds4_think_false_sends_native_thinking_disabled(self):
+        """ds4's native thinking control (verified live 2026-07-23):
+        thinking is default-on, and think=False disables it via
+        `"thinking": {"type": "disabled"}`."""
+        raw = '{"choices":[{"message":{"content":"hi"}}]}'
+        captured = {}
+        with patch.object(server.httpx, "AsyncClient",
+                          _fake_async_client(raw, captured)):
+            asyncio.run(server.chat_ds4(
+                "glm-5.2", [{"role": "user", "content": "hi"}], think=False))
+        assert captured["body"]["thinking"] == {"type": "disabled"}
+
+    def test_chat_ds4_think_true_omits_thinking_key(self):
+        """think=True (or the default) must omit the `thinking` key entirely
+        so ds4's default (thinking on) applies."""
+        raw = '{"choices":[{"message":{"content":"hi"}}]}'
+        captured = {}
+        with patch.object(server.httpx, "AsyncClient",
+                          _fake_async_client(raw, captured)):
+            asyncio.run(server.chat_ds4(
+                "glm-5.2", [{"role": "user", "content": "hi"}], think=True))
+        assert "thinking" not in captured["body"]
 
     def test_chat_ds4_falls_back_to_reasoning_content(self):
         """glm-5.2 on ds4 always thinks and can burn its whole token budget

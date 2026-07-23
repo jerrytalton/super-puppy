@@ -2232,7 +2232,9 @@ def _chat(model, backend, messages, timeout=600, tool="chat", image_b64=None, th
 
     think=False disables chain-of-thought for models that support it — Qwen3
     (including 3.6) via MLX uses `chat_template_kwargs.enable_thinking`;
-    Ollama uses its native `think: false` flag.
+    Ollama uses its native `think: false` flag; ds4 uses its own native
+    `"thinking": {"type": "disabled"}` field (its MLX-convention shim is
+    verified broken — never send it chat_template_kwargs).
 
     timeout=600 because a cold on-demand load of a frontier-tier MLX model
     (~400GB, 80-140s) stacks with a thinking-model generation; 300s cut off
@@ -2242,10 +2244,15 @@ def _chat(model, backend, messages, timeout=600, tool="chat", image_b64=None, th
     with _track_playground(tool, model, backend):
         try:
             if backend == "ds4":
-                # No think toggle: ds4's enable_thinking is verified broken
-                # (reasoning migrates into `content`) — never forward
-                # chat_template_kwargs. glm-5.2 on ds4 always thinks.
+                # ds4's own MLX-convention shim (chat_template_kwargs.
+                # enable_thinking) is verified broken (reasoning migrates
+                # into `content`) — never forward that key. ds4 has a
+                # NATIVE thinking control instead (verified live
+                # 2026-07-23): thinking is default-on; think=False disables
+                # it via `"thinking": {"type": "disabled"}`.
                 body = {"model": model, "messages": messages, "stream": False}
+                if not think:
+                    body["thinking"] = {"type": "disabled"}
                 resp = requests.post(f"{DS4_URL}/v1/chat/completions",
                                      json=body, timeout=timeout)
                 resp.raise_for_status()
@@ -2290,10 +2297,14 @@ def _chat_stream(model, backend, messages, think=True, tool="chat"):
                                            "started": time.time()}
     try:
         if backend == "ds4":
-            # OpenAI-style SSE like MLX, but: never forward the think
-            # toggle (broken on ds4), and parse chunks with strict=False
-            # (unescaped control chars in streamed reasoning/content).
+            # OpenAI-style SSE like MLX, but: never forward the MLX-
+            # convention chat_template_kwargs.enable_thinking shim (broken
+            # on ds4 — use ds4's native `thinking` field instead), and
+            # parse chunks with strict=False (unescaped control chars in
+            # streamed reasoning/content).
             body = {"model": model, "messages": messages, "stream": True}
+            if not think:
+                body["thinking"] = {"type": "disabled"}
             try:
                 resp = requests.post(f"{DS4_URL}/v1/chat/completions",
                                      json=body, stream=True, timeout=300)
