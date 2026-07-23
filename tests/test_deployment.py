@@ -1149,6 +1149,41 @@ class TestMigrateMlxConfig:
             capture_output=True, text=True, timeout=10)
         assert result.returncode == 0
 
+    def test_cli_writes_timestamped_backup_before_first_modification(self, tmp_path):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(SAMPLE_YAML)
+        script = Path(__file__).parent.parent / "bin" / "migrate-mlx-config.py"
+        result = subprocess.run(
+            ["python3", str(script), str(cfg), "glm-5.2"],
+            capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0, result.stderr
+        backups = list(tmp_path.glob("config.yaml.pre-ds4-*"))
+        assert len(backups) == 1, backups
+        assert backups[0].read_text() == SAMPLE_YAML
+
+    def test_cli_does_not_duplicate_backup_on_rerun(self, tmp_path):
+        """post-update.sh re-runs this on every update; only the FIRST
+        run's pre-migration state is worth keeping."""
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(SAMPLE_YAML)
+        script = Path(__file__).parent.parent / "bin" / "migrate-mlx-config.py"
+        subprocess.run(["python3", str(script), str(cfg), "glm-5.2"],
+                       capture_output=True, text=True, timeout=10)
+        subprocess.run(["python3", str(script), str(cfg), "glm-5.2"],
+                       capture_output=True, text=True, timeout=10)
+        backups = list(tmp_path.glob("config.yaml.pre-ds4-*"))
+        assert len(backups) == 1, backups
+
+    def test_no_backup_written_when_nothing_removed(self, tmp_path):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(SAMPLE_YAML.replace("glm-5.2", "already-gone"))
+        script = Path(__file__).parent.parent / "bin" / "migrate-mlx-config.py"
+        result = subprocess.run(
+            ["python3", str(script), str(cfg), "glm-5.2"],
+            capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0, result.stderr
+        assert list(tmp_path.glob("config.yaml.pre-ds4-*")) == []
+
 
 class TestGlm52PatchRetired:
     """The pinned mlx-lm patch is retired by the ds4 ship. A dangling

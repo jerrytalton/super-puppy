@@ -230,7 +230,11 @@ The MLX path still works if you need it, but order matters:
 2. Re-add the glm-5.2 entry to `~/.config/mlx-server/config.yaml`
    (`model_path: mlx-community/GLM-5.2-4bit`, `served_model_name: glm-5.2`,
    `on_demand: true`), download the 418GB 4-bit weights, and note you'd
-   also need the retired mlx-lm patch from a pre-ds4 release.
+   also need the retired mlx-lm patch from a pre-ds4 release. If the
+   migration already ran on this machine, `bin/migrate-mlx-config.py`
+   left a pre-migration backup next to the yaml —
+   `~/.config/mlx-server/config.yaml.pre-ds4-<timestamp>` — with the
+   original entry intact; diff it back in instead of retyping it.
 
 Practical only as a stopgap. Unlike earlier one-shot migrations elsewhere
 in this repo, the glm-5.2 migration is **not** one-shot — it re-checks and

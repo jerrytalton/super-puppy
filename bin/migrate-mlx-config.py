@@ -11,10 +11,19 @@ weights pullable. Stdlib-only and text-based (the system python3 that
 post-update.sh uses has no pyyaml): drops the matching model block — its
 leading comment lines through its last body line. Idempotent: exits 0 and
 leaves the file untouched when no entry matches.
+
+Before the FIRST actual modification, writes a timestamped backup of the
+pre-migration file (`config.yaml.pre-ds4-<YYYYmmddTHHMMSS>`) next to it —
+a manual rollback path (see docs/troubleshooting.md) if a user needs the
+original entry back. Skipped once any such backup already exists, since
+post-update.sh re-runs this on every update and only the first run's
+"before" state is worth keeping.
 """
 
 import re
 import sys
+from datetime import datetime
+from pathlib import Path
 
 _ENTRY_RE = re.compile(r"^\s*-\s*model_path:")
 _SERVED_RE = re.compile(r"^\s*served_model_name:\s*(\S+)\s*$")
@@ -50,6 +59,15 @@ def remove_served_model(text: str, served_name: str) -> tuple[str, bool]:
     return text, False
 
 
+def _write_backup_if_absent(cfg_path: Path, original_text: str) -> None:
+    """Write a timestamped pre-migration backup unless one already exists."""
+    if any(cfg_path.parent.glob(f"{cfg_path.name}.pre-ds4-*")):
+        return
+    backup_path = cfg_path.with_name(
+        f"{cfg_path.name}.pre-ds4-{datetime.now():%Y%m%dT%H%M%S}")
+    backup_path.write_text(original_text, encoding="utf-8")
+
+
 def main() -> int:
     if len(sys.argv) != 3:
         print("usage: migrate-mlx-config.py <config.yaml> <served_model_name>",
@@ -60,6 +78,7 @@ def main() -> int:
         text = f.read()
     new_text, removed = remove_served_model(text, served)
     if removed:
+        _write_backup_if_absent(Path(path), text)
         with open(path, "w", encoding="utf-8") as f:
             f.write(new_text)
         print(f"removed MLX entry for served model {served!r}")
