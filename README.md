@@ -86,6 +86,15 @@ curl http://localhost:8000/v1/chat/completions -H "Content-Type: application/jso
 curl http://localhost:8000/v1/models
 ```
 
+On the 512GB tier, glm-5.2 is served by [ds4](https://github.com/antirez/ds4) with the same OpenAI-compatible API on port 8002 (localhost only):
+
+```bash
+curl http://localhost:8002/v1/chat/completions -H "Content-Type: application/json" -d '{
+  "model": "glm-5.2",
+  "messages": [{"role":"user","content":"hello"}]
+}'
+```
+
 ### Playground
 
 The menu bar app serves a web-based Playground where you can test any capability interactively — text generation, vision, image generation, transcription, TTS, translation. Open it from the Super Puppy menu or access it from other devices on your network. With Tailscale configured, the Playground is accessible from anywhere over HTTPS.
@@ -146,7 +155,7 @@ A puppy icon in the menu bar provides:
 ## Commands
 
 ```bash
-start-local-models            # start Ollama + MLX servers
+start-local-models            # start Ollama + MLX (+ ds4 on the 512GB tier)
 start-local-models --status   # show what's running
 start-local-models --stop     # stop servers
 start-local-models --local    # force local servers even if server is reachable

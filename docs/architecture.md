@@ -12,6 +12,7 @@ Super Puppy is a local AI model server for Apple Silicon, managed from the macOS
 │  └── manages:                                       │
 │      ├── Ollama          localhost:11434             │
 │      ├── MLX server      localhost:8000              │
+│      ├── ds4-server      localhost:8002 (512GB tier)  │
 │      └── MCP server      localhost:8100              │
 └─────────────────────────────────────────────────────┘
          │ tailscale serve (optional)
@@ -45,6 +46,8 @@ All services bind to `127.0.0.1`. Remote access uses Tailscale exclusively — n
 | 8101 | Profile server / Playground |
 | 11434 | Ollama |
 | 8000 | MLX |
+
+ds4-server (8002, glm-5.2 on the 512GB tier) is internal-only and never added to `tailscale serve`; remote clients reach glm-5.2 through the MCP server (8100) and profile server (8101).
 
 Both the MCP server and profile server enforce bearer token auth on **every** request. There is no localhost shortcut: `tailscale serve` proxies remote requests as if they originated from `127.0.0.1`, so trusting the loopback address would silently bypass auth for any tailnet peer. Native `<img>`/`<audio>`/`<video>` elements that can't set headers may pass `?token=` on GETs only.
 

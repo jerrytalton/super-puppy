@@ -29,12 +29,13 @@ The menu bar app (`app/menubar.py`) launches via `app/SuperPuppy.app` and spawns
 - **Profile server** (`app/profile-server.py`) — Flask app on a fixed port (8101 on desktop, random on laptop). Serves the Model Profiles UI (`app/profiles.html`) and the Playground (`app/tools.html`). Auto-starts on desktop when Remote Access is enabled (no idle timeout).
 - **Ollama** — `http://localhost:11434` (localhost-only; Tailscale serve proxies for remote access)
 - **MLX-OpenAI-Server** — `http://localhost:8000`, config at `~/.config/mlx-server/config.yaml`
+- **ds4-server** — `http://localhost:8002` (512GB tier only), serving glm-5.2 from a Q2K GGUF under `DS4_DIR` (default `~/.local/share/super-puppy/ds4`, override in network.conf). Launched by `start-local-models` with `cwd=$DS4_DIR` (it resolves `metal/flash_attn.metal` relative to cwd). Always-resident: loads once (~70s), never unloads. Port 8002 is **internal-only** — never added to `tailscale serve`; client-mode traffic reaches glm-5.2 through the desktop's MCP (8100) and profile server (8101).
 
 ### Modes
 
 | Mode | When | What happens |
 |------|------|------|
-| **Server** | `IS_SERVER=true` in network.conf | Runs Ollama, MLX, MCP locally. Tailscale exposes ports when Remote Access is on. |
+| **Server** | `IS_SERVER=true` in network.conf | Runs Ollama, MLX, ds4 (512GB tier), MCP locally. Tailscale exposes ports when Remote Access is on. |
 | **Client** | Server reachable via Tailscale | Routes to server's MCP. Falls back to local if unreachable. |
 | **Offline** | Laptop, desktop unreachable | Runs local Ollama/MLX as fallback. |
 
@@ -48,6 +49,8 @@ All services bind to localhost. The "Remote Access" toggle in the menu bar manag
 | 8101 | Profile server / Playground | `https://{fqdn}:8101/tools` |
 | 11434 | Ollama | `https://{fqdn}:11434` |
 | 8000 | MLX | `https://{fqdn}:8000` |
+
+ds4 (8002) is deliberately absent from this table — internal-only, never served.
 
 **All remote URLs must use `https://{tailscale_fqdn}:{port}`**, not `http://{ip}`. Tailscale serve rejects plain HTTP.
 

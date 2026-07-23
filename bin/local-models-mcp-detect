@@ -67,6 +67,10 @@ fi
 
 export OLLAMA_URL
 export MLX_URL
+# ds4 never gets a Tailscale FQDN rewrite: port 8002 is internal-only.
+# In client mode glm-5.2 is reached through the desktop's MCP (8100), so a
+# localhost DS4_URL on a laptop is correct — it simply discovers nothing.
+export DS4_URL="http://localhost:${DS4_PORT:-8002}"
 
 # Auth token: use cached file, only hit 1Password if no cache exists
 TOKEN_CACHE="$HOME/.config/local-models/mcp_auth_token"

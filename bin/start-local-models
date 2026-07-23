@@ -27,6 +27,8 @@ OLLAMA_PID_FILE="/tmp/ollama-serve.pid"
 # Load network config
 OLLAMA_PORT=11434
 MLX_PORT=8000
+DS4_PORT=8002
+DS4_DIR=""
 PROBE_TIMEOUT=2
 TAILSCALE_HOSTNAME=""
 
@@ -34,6 +36,7 @@ if [ -f "$NETWORK_CONF" ]; then
     # shellcheck source=/dev/null
     source "$NETWORK_CONF"
 fi
+DS4_DIR="${DS4_DIR:-$HOME/.local/share/super-puppy/ds4}"
 
 get_ram_gb() {
     sysctl -n hw.memsize | awk '{printf "%d", $1 / 1073741824}'
@@ -100,6 +103,12 @@ stop_services() {
         echo "  MLX-OpenAI-Server not running."
     fi
 
+    if pkill -f "ds4-server" 2>/dev/null; then
+        echo "  ds4-server stopped."
+    else
+        echo "  ds4-server not running."
+    fi
+
     echo "  Ollama left running (system service, not Super Puppy's to stop)."
     rm -f "$OLLAMA_PID_FILE"
 
@@ -140,6 +149,14 @@ show_status() {
             || true
     else
         echo "  MLX-OpenAI-Server: not running"
+    fi
+
+    if [ -x "$DS4_DIR/ds4-server" ]; then
+        if curl -sf "http://localhost:${DS4_PORT}/v1/models" > /dev/null 2>&1; then
+            echo "  ds4-server:        running (http://localhost:${DS4_PORT}, glm-5.2)"
+        else
+            echo "  ds4-server:        not running"
+        fi
     fi
     exit 0
 }
@@ -204,6 +221,26 @@ else
     fi
 fi
 
+# --- ds4 (glm-5.2 frontier engine, 512GB tier) ---
+# Presence-gated: install.sh only provisions $DS4_DIR/ds4-server on 512GB
+# machines. MUST run with cwd=$DS4_DIR — ds4-server resolves
+# metal/flash_attn.metal relative to the working directory (do NOT copy the
+# MLX launch's `cd $HOME`). Cold load is ~70s; readiness allows 300s.
+if [ -x "$DS4_DIR/ds4-server" ]; then
+    if curl -sf "http://localhost:${DS4_PORT}/v1/models" > /dev/null 2>&1; then
+        echo "ds4-server already running."
+    else
+        echo "Starting ds4-server (glm-5.2, ~70s cold load)..."
+        DS4_LOG="/tmp/local-models-ds4.log"
+        (cd "$DS4_DIR" && exec ./ds4-server --metal --port "$DS4_PORT" \
+            --ctx 32768 -m ds4flash.gguf) > "$DS4_LOG" 2>&1 &
+        disown
+        if ! wait_for_service "http://localhost:${DS4_PORT}/v1/models" "ds4-server" 300; then
+            echo "  ERROR: ds4-server failed to start. Log: $DS4_LOG" >&2
+        fi
+    fi
+fi
+
 # --- Summary ---
 echo ""
 if is_server; then
@@ -213,6 +250,9 @@ else
 fi
 echo "  Ollama:       http://localhost:${OLLAMA_PORT}"
 echo "  MLX-OpenAI:   http://localhost:${MLX_PORT}"
+if [ -x "$DS4_DIR/ds4-server" ]; then
+    echo "  ds4 (glm-5.2): http://localhost:${DS4_PORT}"
+fi
 echo ""
 echo "Commands:"
 echo "  start-local-models --status   Show running models"
