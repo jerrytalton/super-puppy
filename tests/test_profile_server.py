@@ -1544,7 +1544,7 @@ class TestShareUrl:
         assert resp.get_json() == {
             "url": "https://box.tail.ts.net:8101/tools?token=sekret"}
 
-    def test_share_url_falls_back_to_request_host_without_fqdn(self, client):
+    def test_share_url_falls_back_to_localhost_without_fqdn(self, client):
         with patch.object(ps, "_tailscale_fqdn", return_value=""), \
              patch.object(ps, "_PROFILE_AUTH_TOKEN", "sekret"), \
              patch.object(ps, "PORT", 8101):

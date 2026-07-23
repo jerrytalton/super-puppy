@@ -5,8 +5,11 @@ models in the shipped `512gb` preset. Run with:
 
     pytest -m slow tests/test_tools_smoke_everyday.py
 
-Skips the whole module if Ollama or MLX isn't reachable, and skips
-individual cases when the target model isn't pulled locally.
+Skips the whole module if Ollama or MLX isn't reachable, or if this
+machine is below the 512GB tier (ds4 not installed) — but FAILS loudly,
+rather than skipping, when ds4 is installed and not answering: on the box
+that serves glm-5.2, a ds4 outage must never hide as a module skip. Also
+skips individual cases when the target model isn't pulled locally.
 """
 
 from __future__ import annotations

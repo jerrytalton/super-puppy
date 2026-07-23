@@ -233,7 +233,6 @@ NETWORK_CONF = os.path.expanduser("~/.config/local-models/network.conf")
 MCP_TOOLS_FILE = str(CLAUDE_CONFIG_FILE)
 OLLAMA_LOCAL = "http://localhost:11434"
 MLX_LOCAL = "http://localhost:8000"
-DS4_LOCAL = "http://localhost:8002"
 DS4_STUCK_LOADING_S = 300   # ds4 cold load ~70s; NOT the MLX 60s watchdog
 MODE_CONF = os.path.expanduser("~/.config/local-models/mode.conf")
 POLL_INTERVAL = 8           # seconds between status refreshes
