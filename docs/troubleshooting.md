@@ -165,7 +165,7 @@ $DS4_DIR/
 **Manual run** (what `start-local-models` does):
 
 ```bash
-cd "$DS4_DIR" && ./ds4-server --metal --port 8002 --ctx 32768 -m ds4flash.gguf
+cd "$DS4_DIR" && ./ds4-server --metal --port 8002 --ctx 131072 -m ds4flash.gguf
 ```
 
 ### ds4-server exits instantly / "cannot open metal/flash_attn.metal"

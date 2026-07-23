@@ -911,10 +911,12 @@ class TestRoutes:
 
 class TestFetchDs4Models:
     def test_ds4_up_inserts_hardcoded_entry(self):
-        """ds4 serves one pinned model with no metadata; the entry must be
-        fully hardcoded (sizes included — the GGUF is invisible to every
-        existing sizing path) and marked always-resident, or the memory bar
-        undercounts 244GiB and warm logic tries to keep-alive it."""
+        """ds4 serves one pinned model with no params/vision metadata; those
+        two fields must be fully hardcoded (sizes included — the GGUF is
+        invisible to every existing sizing path) and marked always-resident,
+        or the memory bar undercounts 244GiB and warm logic tries to
+        keep-alive it. This mock's .json() has no usable context_length,
+        exercising the DS4_CONTEXT fallback."""
         resp = MagicMock()
         resp.ok = True
         with patch.object(ps.requests, "get", return_value=resp):
@@ -929,6 +931,17 @@ class TestFetchDs4Models:
         assert entry["has_vision"] is False
         assert entry["is_loaded"] is True
         assert entry["on_demand"] is False
+
+    def test_ds4_up_prefers_live_context_length(self):
+        """A --ctx launch-flag drift must surface through discovery, not
+        hide behind the DS4_CONTEXT constant."""
+        resp = MagicMock()
+        resp.ok = True
+        resp.json.return_value = {
+            "data": [{"id": "glm-5.2", "context_length": 65536}]}
+        with patch.object(ps.requests, "get", return_value=resp):
+            out = ps._fetch_ds4_models(existing={})
+        assert out["glm-5.2"]["context"] == 65536
 
     def test_ds4_down_returns_empty(self):
         with patch.object(ps.requests, "get",

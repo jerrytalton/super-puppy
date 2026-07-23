@@ -37,7 +37,6 @@ from lib.hf_scanner import (
 )
 from lib.models import (
     DS4_ACTIVE_PARAMS_B,
-    DS4_CONTEXT,
     DS4_MODEL_NAME,
     DS4_TOTAL_PARAMS_B,
     HF_TASK_BACKENDS,
@@ -47,6 +46,7 @@ from lib.models import (
     NETWORK_CONF,
     active_params_b,
     ds4_installed,
+    ds4_live_context,
     mflux_command,
     mflux_is_turbo,
     model_has_vision,
@@ -492,8 +492,11 @@ async def discover_models():
                     mp, hf_config=read_newest_hf_config(mp)),
             }
 
-        # ds4 (glm-5.2, 512GB tier). Its /v1/models returns no metadata, so
-        # the entry is hardcoded from lib.models — see the audit spec.
+        # ds4 (glm-5.2, 512GB tier). Its /v1/models returns no params/vision
+        # metadata, so those two fields are hardcoded from lib.models — see
+        # the audit spec. It DOES report context_length; ds4_live_context()
+        # prefers that over the DS4_CONTEXT constant so a --ctx launch-flag
+        # drift can't silently diverge from what discovery advertises.
         # Placed after MLX and overwriting any stale claim: an unmigrated
         # user yaml may still list glm-5.2 as an MLX served-name, but when
         # ds4 answers, ds4 is the backend that actually serves it.
@@ -506,7 +509,7 @@ async def discover_models():
                     "backend": "ds4",
                     "total_params_b": DS4_TOTAL_PARAMS_B,
                     "active_params_b": DS4_ACTIVE_PARAMS_B,
-                    "context": DS4_CONTEXT,
+                    "context": ds4_live_context(resp.json()),
                     "vision": False,
                 }
         except Exception as e:

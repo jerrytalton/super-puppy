@@ -46,7 +46,6 @@ from lib.models import (
     DEFAULT_PROFILES,
     DOWNLOAD_ON_DEMAND_TASKS,
     DS4_ACTIVE_PARAMS_B,
-    DS4_CONTEXT,
     DS4_MODEL_BYTES,
     DS4_MODEL_NAME,
     DS4_TOTAL_PARAMS_B,
@@ -65,6 +64,7 @@ from lib.models import (
     WARM_BUDGET_FRACTION,
     active_params_b,
     ds4_installed,
+    ds4_live_context,
     migrate_profiles,
     mflux_command,
     mflux_is_turbo,
@@ -1188,8 +1188,11 @@ def _fetch_mlx_models(existing):
 
 def _fetch_ds4_models(existing):
     """ds4-served glm-5.2 (512GB tier). ds4's /v1/models returns no
-    metadata, so every field is hardcoded from lib.models: the GGUF is not
-    an HF snapshot and none of the existing sizing paths can see it.
+    params/vision metadata, so those fields are hardcoded from lib.models:
+    the GGUF is not an HF snapshot and none of the existing sizing paths
+    can see it. It DOES report context_length; ds4_live_context() prefers
+    that live value over the DS4_CONTEXT constant so a --ctx launch-flag
+    drift can't silently diverge from what's advertised here.
     Always-resident (loads at startup, never unloads): is_loaded=True,
     on_demand=False, and vram==disk counts the full 244GiB as fixed
     residency in the memory bar. Unreachable ds4 ⇒ empty dict — glm-5.2
@@ -1200,6 +1203,7 @@ def _fetch_ds4_models(existing):
         resp = requests.get(f"{DS4_URL}/v1/models", timeout=2)
         if not resp.ok:
             return {}
+        context = ds4_live_context(resp.json())
     except Exception:
         return {}
     return {DS4_MODEL_NAME: {
@@ -1209,7 +1213,7 @@ def _fetch_ds4_models(existing):
         "vram_bytes": DS4_MODEL_BYTES,
         "total_params_b": DS4_TOTAL_PARAMS_B,
         "active_params_b": DS4_ACTIVE_PARAMS_B,
-        "context": DS4_CONTEXT,
+        "context": context,
         "has_vision": False,
         "family": "ds4",
         "quant": "q2k",

@@ -931,13 +931,16 @@ class TestGpuStatusShape:
 
 # ── ds4 discovery ───────────────────────────────────────────────────
 
-def _fake_discovery_client(ds4_up):
+def _fake_discovery_client(ds4_up, ds4_context_length=None):
     """AsyncClient stub: Ollama and MLX unreachable; ds4 configurable.
     Exercises the real discover_models control flow, not a mock of it."""
     class _Resp:
         status_code = 200
         def json(self):
-            return {}
+            if ds4_context_length is None:
+                return {}
+            return {"data": [{"id": "glm-5.2",
+                               "context_length": ds4_context_length}]}
 
     class _Client:
         def __init__(self, *args, **kwargs):
@@ -963,7 +966,7 @@ def _fake_discovery_client(ds4_up):
 
 
 class TestDs4Discovery:
-    def _discover(self, ds4_up, tmp_path):
+    def _discover(self, ds4_up, tmp_path, ds4_context_length=None):
         # MLX_SERVER_CONFIG must point away from the real user yaml: an
         # unmigrated ~/.config/mlx-server/config.yaml still lists glm-5.2
         # as an MLX served-name and would leak into the registry.
@@ -971,7 +974,7 @@ class TestDs4Discovery:
         from pathlib import Path
         import lib.hf_scanner as hf_scanner
         with patch.object(server.httpx, "AsyncClient",
-                          _fake_discovery_client(ds4_up)), \
+                          _fake_discovery_client(ds4_up, ds4_context_length)), \
              patch.object(server, "MLX_SERVER_CONFIG",
                           Path(tmp_path) / "absent.yaml"), \
              patch.object(hf_scanner, "scan_hf_cache",
@@ -979,9 +982,11 @@ class TestDs4Discovery:
             return asyncio.run(server.discover_models())
 
     def test_ds4_up_inserts_glm52_with_hardcoded_metadata(self, tmp_path):
-        """ds4's /v1/models returns NO metadata. Without these hardcoded
-        values, TASK_FILTERS min_active_b (reasoning: 10) and min_ctx
-        (long_context: 64000) silently drop glm-5.2 from every task list."""
+        """ds4's /v1/models returns no params/vision metadata (this stub
+        returns no body at all, exercising the DS4_CONTEXT fallback).
+        Without the hardcoded params/vision, TASK_FILTERS min_active_b
+        (reasoning: 10) and min_ctx (long_context: 64000) silently drop
+        glm-5.2 from every task list."""
         models = self._discover(True, tmp_path)
         assert models["glm-5.2"] == {
             "backend": "ds4",
@@ -990,6 +995,12 @@ class TestDs4Discovery:
             "context": 131072,
             "vision": False,
         }
+
+    def test_ds4_up_prefers_live_context_length(self, tmp_path):
+        """A --ctx launch-flag drift must surface through discovery, not
+        hide behind the DS4_CONTEXT constant."""
+        models = self._discover(True, tmp_path, ds4_context_length=65536)
+        assert models["glm-5.2"]["context"] == 65536
 
     def test_ds4_down_means_glm52_absent(self, tmp_path):
         """Same semantics as MLX-down today: unreachable backend, no model."""

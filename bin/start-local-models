@@ -242,7 +242,7 @@ if [ -x "$DS4_DIR/ds4-server" ]; then
         echo "Starting ds4-server (glm-5.2, ~70s cold load)..."
         DS4_LOG="/tmp/local-models-ds4.log"
         (cd "$DS4_DIR" && exec ./ds4-server --metal --port "$DS4_PORT" \
-            --ctx 32768 -m ds4flash.gguf) > "$DS4_LOG" 2>&1 &
+            --ctx 131072 -m ds4flash.gguf) > "$DS4_LOG" 2>&1 &
         DS4_SERVER_PID=$!
         disown
         if ! wait_for_service "http://localhost:${DS4_PORT}/v1/models" "ds4-server" 300 "$DS4_SERVER_PID"; then

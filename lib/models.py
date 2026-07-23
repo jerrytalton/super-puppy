@@ -117,17 +117,40 @@ def validate_network_conf(logger=None) -> list[str]:
 
 LLM_BACKENDS: frozenset[str] = frozenset({"ollama", "mlx", "ds4"})
 
-# ds4's /v1/models returns one model with NO params/context/vision
-# metadata, and its GGUF lives outside every existing sizing path (not an
-# HF snapshot, not an Ollama blob). Discovery must hardcode these values;
-# without them TASK_FILTERS min_active_b/min_ctx silently drop glm-5.2
-# from every task list. DS4_MODEL_BYTES is the exact on-disk size of
-# GLM-5.2-UD-Q2_K_RoutedQ2K.gguf.
+# ds4's /v1/models returns NO params/vision metadata, and its GGUF lives
+# outside every existing sizing path (not an HF snapshot, not an Ollama
+# blob) — those fields must stay hardcoded here or TASK_FILTERS
+# min_active_b/min_ctx silently drop glm-5.2 from every task list.
+# It DOES report context_length (verified live 2026-07-23) — see
+# ds4_live_context() below, which discovery prefers over this constant so
+# a --ctx launch-flag drift can't silently diverge from what's advertised.
+# DS4_MODEL_BYTES is the exact on-disk size of GLM-5.2-UD-Q2_K_RoutedQ2K.gguf.
 DS4_MODEL_NAME = "glm-5.2"
 DS4_MODEL_BYTES = 262_036_650_048
 DS4_TOTAL_PARAMS_B = 380
 DS4_ACTIVE_PARAMS_B = 32
 DS4_CONTEXT = 131072
+
+
+def ds4_live_context(models_response: dict) -> int:
+    """Extract the live context_length from ds4's /v1/models response.
+
+    Falls back to DS4_CONTEXT when the response is missing, malformed, or
+    doesn't carry a usable context_length for DS4_MODEL_NAME — this is
+    what stops a --ctx launch-flag change from silently drifting away
+    from what discovery (and the min_ctx task-eligibility gate) believes
+    glm-5.2 can serve.
+    """
+    try:
+        for entry in models_response.get("data", []):
+            if entry.get("id") == DS4_MODEL_NAME:
+                ctx = entry.get("context_length")
+                if isinstance(ctx, int) and ctx > 0:
+                    return ctx
+    except (AttributeError, TypeError):
+        pass
+    return DS4_CONTEXT
+
 
 DS4_DIR_DEFAULT = "~/.local/share/super-puppy/ds4"
 

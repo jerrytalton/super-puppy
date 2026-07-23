@@ -371,6 +371,39 @@ class TestDs4Constants:
         assert models.DS4_ACTIVE_PARAMS_B == 32
         assert models.DS4_CONTEXT == 131072
 
+    def test_ds4_live_context_prefers_live_value(self):
+        from lib import models
+        response = {"data": [{"id": "glm-5.2", "context_length": 131072}]}
+        assert models.ds4_live_context(response) == 131072
+
+    def test_ds4_live_context_falls_back_when_field_missing(self):
+        from lib import models
+        response = {"data": [{"id": "glm-5.2"}]}
+        assert models.ds4_live_context(response) == models.DS4_CONTEXT
+
+    def test_ds4_live_context_falls_back_when_id_does_not_match(self):
+        from lib import models
+        response = {"data": [{"id": "some-other-model", "context_length": 8192}]}
+        assert models.ds4_live_context(response) == models.DS4_CONTEXT
+
+    def test_ds4_live_context_falls_back_on_malformed_response(self):
+        from lib import models
+        assert models.ds4_live_context({}) == models.DS4_CONTEXT
+        assert models.ds4_live_context({"data": "not-a-list"}) == models.DS4_CONTEXT
+        assert models.ds4_live_context(
+            {"data": [{"id": "glm-5.2", "context_length": "not-an-int"}]}
+        ) == models.DS4_CONTEXT
+        assert models.ds4_live_context(
+            {"data": [{"id": "glm-5.2", "context_length": -1}]}
+        ) == models.DS4_CONTEXT
+
+    def test_ds4_live_context_reflects_a_ctx_launch_flag_change(self):
+        # This is the regression case: a --ctx launch-flag drift must
+        # surface through discovery, not disappear behind the constant.
+        from lib import models
+        response = {"data": [{"id": "glm-5.2", "context_length": 65536}]}
+        assert models.ds4_live_context(response) == 65536
+
     def test_ds4_dir_default_and_override(self, tmp_path):
         from lib import models
         conf = tmp_path / "network.conf"

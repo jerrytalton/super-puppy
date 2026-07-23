@@ -2376,7 +2376,7 @@ class LocalModelsApp(rumps.App):
                 self._ds4_log = open("/tmp/local-models-ds4-restart.log", "w")
                 subprocess.Popen(
                     ["./ds4-server", "--metal", "--port", str(self.ds4_port),
-                     "--ctx", "32768", "-m", "ds4flash.gguf"],
+                     "--ctx", "131072", "-m", "ds4flash.gguf"],
                     stdout=self._ds4_log, stderr=self._ds4_log,
                     cwd=str(ds4_dir()),
                     start_new_session=True)
