@@ -25,7 +25,7 @@ The central coordinator. Launches via a native macOS app bundle (`SuperPuppy.app
 
 ### MCP server (`mcp/local-models-server.py`)
 
-Persistent streamable-HTTP service on port 8100. Discovers models from Ollama and MLX at startup. Exposes 17 tools (generation, vision, image, audio, video, embeddings, etc.) as MCP resources. Requires bearer token auth — fails closed without a token. Session IDs are tracked per-connection.
+Persistent streamable-HTTP service on port 8100. Discovers models from Ollama, MLX, and ds4 at startup. Exposes 17 tools (generation, vision, image, audio, video, embeddings, etc.) as MCP resources. Requires bearer token auth — fails closed without a token. Session IDs are tracked per-connection.
 
 ### Profile server (`app/profile-server.py`)
 

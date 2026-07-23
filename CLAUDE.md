@@ -15,7 +15,7 @@ Local AI model infrastructure for Apple Silicon. Menu bar app + standard APIs + 
 
 ## Key Design Decisions
 
-- The MCP server discovers models live from Ollama and MLX at startup (parallel `/api/show` calls). Any new `ollama pull` is immediately available as a tool.
+- The MCP server discovers models live from Ollama, MLX, and ds4 at startup (parallel `/api/show` calls). Any new `ollama pull` is immediately available as a tool. ds4's `/v1/models` carries no metadata, so glm-5.2's params/context/size are hardcoded in `lib/models.py` (`DS4_*` constants).
 - The menu bar app queries model capabilities live from Ollama `/api/show` and MLX `config.json` files in the HuggingFace cache. No hardcoded param tables.
 - MLX models marked `on_demand: true` download on first use and unload after idle timeout.
 - All remote access uses **Tailscale only** — no mDNS, no LAN binding. `tailscale serve` proxies all ports with TLS.

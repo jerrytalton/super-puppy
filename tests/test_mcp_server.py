@@ -927,3 +927,71 @@ class TestGpuStatusShape:
             data = asyncio.run(server._gpu_status(None))
         for backend in ("ollama", "mlx"):
             assert isinstance(data[backend]["active"], int)
+
+
+# ── ds4 discovery ───────────────────────────────────────────────────
+
+def _fake_discovery_client(ds4_up):
+    """AsyncClient stub: Ollama and MLX unreachable; ds4 configurable.
+    Exercises the real discover_models control flow, not a mock of it."""
+    class _Resp:
+        status_code = 200
+        def json(self):
+            return {}
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            if url.startswith(server.DS4_URL):
+                if ds4_up:
+                    return _Resp()
+                raise ConnectionError("ds4 down")
+            raise ConnectionError("backend down")
+
+        async def post(self, url, **kwargs):
+            raise ConnectionError("backend down")
+
+    return _Client
+
+
+class TestDs4Discovery:
+    def _discover(self, ds4_up, tmp_path):
+        # MLX_SERVER_CONFIG must point away from the real user yaml: an
+        # unmigrated ~/.config/mlx-server/config.yaml still lists glm-5.2
+        # as an MLX served-name and would leak into the registry.
+        from unittest.mock import MagicMock
+        from pathlib import Path
+        import lib.hf_scanner as hf_scanner
+        with patch.object(server.httpx, "AsyncClient",
+                          _fake_discovery_client(ds4_up)), \
+             patch.object(server, "MLX_SERVER_CONFIG",
+                          Path(tmp_path) / "absent.yaml"), \
+             patch.object(hf_scanner, "scan_hf_cache",
+                          MagicMock(return_value=[])):
+            return asyncio.run(server.discover_models())
+
+    def test_ds4_up_inserts_glm52_with_hardcoded_metadata(self, tmp_path):
+        """ds4's /v1/models returns NO metadata. Without these hardcoded
+        values, TASK_FILTERS min_active_b (reasoning: 10) and min_ctx
+        (long_context: 64000) silently drop glm-5.2 from every task list."""
+        models = self._discover(True, tmp_path)
+        assert models["glm-5.2"] == {
+            "backend": "ds4",
+            "total_params_b": 380,
+            "active_params_b": 32,
+            "context": 131072,
+            "vision": False,
+        }
+
+    def test_ds4_down_means_glm52_absent(self, tmp_path):
+        """Same semantics as MLX-down today: unreachable backend, no model."""
+        models = self._discover(False, tmp_path)
+        assert "glm-5.2" not in models

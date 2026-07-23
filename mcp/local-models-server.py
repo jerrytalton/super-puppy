@@ -36,6 +36,10 @@ from lib.hf_scanner import (
     read_newest_hf_config,
 )
 from lib.models import (
+    DS4_ACTIVE_PARAMS_B,
+    DS4_CONTEXT,
+    DS4_MODEL_NAME,
+    DS4_TOTAL_PARAMS_B,
     HF_TASK_BACKENDS,
     LLM_BACKENDS,
     MCP_PREFS_FILE,
@@ -479,6 +483,26 @@ async def discover_models():
                         mp, hf_config=read_newest_hf_config(mp)),
                 }
 
+        # ds4 (glm-5.2, 512GB tier). Its /v1/models returns no metadata, so
+        # the entry is hardcoded from lib.models — see the audit spec.
+        # Placed after MLX and overwriting any stale claim: an unmigrated
+        # user yaml may still list glm-5.2 as an MLX served-name, but when
+        # ds4 answers, ds4 is the backend that actually serves it.
+        # If ds4 is unreachable, glm-5.2 is simply absent (same semantics
+        # as MLX-down today).
+        try:
+            resp = await client.get(f"{DS4_URL}/v1/models", timeout=5)
+            if resp.status_code == 200:
+                models[DS4_MODEL_NAME] = {
+                    "backend": "ds4",
+                    "total_params_b": DS4_TOTAL_PARAMS_B,
+                    "active_params_b": DS4_ACTIVE_PARAMS_B,
+                    "context": DS4_CONTEXT,
+                    "vision": False,
+                }
+        except Exception as e:
+            logging.info("ds4 discovery skipped: %s", e)
+
         # HuggingFace cache: TTS, transcription, image_edit, image_gen
         from lib.hf_scanner import scan_hf_cache
         for hf_model in scan_hf_cache(HF_TASK_BACKENDS.keys()):
@@ -711,9 +735,13 @@ async def local_models_status() -> str:
 
     ollama = {k: v for k, v in _models.items() if v["backend"] == "ollama"}
     mlx = {k: v for k, v in _models.items() if v["backend"] == "mlx"}
+    ds4 = {k: v for k, v in _models.items() if v["backend"] == "ds4"}
 
     lines = [f"Ollama ({OLLAMA_URL}): {len(ollama)} models",
-             f"MLX ({MLX_URL}): {len(mlx)} models", ""]
+             f"MLX ({MLX_URL}): {len(mlx)} models"]
+    if ds4:
+        lines.append(f"ds4 ({DS4_URL}): {len(ds4)} models")
+    lines.append("")
 
     for name, info in sorted(_models.items(), key=lambda x: -x[1]["total_params_b"]):
         parts = [f"  {name}"]
@@ -1911,7 +1939,9 @@ async def _startup():
     _models = await discover_models()
     ollama_count = sum(1 for v in _models.values() if v["backend"] == "ollama")
     mlx_count = sum(1 for v in _models.values() if v["backend"] == "mlx")
-    logging.info("local-models MCP: %d Ollama + %d MLX models", ollama_count, mlx_count)
+    ds4_count = sum(1 for v in _models.values() if v["backend"] == "ds4")
+    logging.info("local-models MCP: %d Ollama + %d MLX + %d ds4 models",
+                 ollama_count, mlx_count, ds4_count)
 
 
 async def _gpu_status(request):
@@ -1933,6 +1963,13 @@ async def _gpu_status(request):
                     for e in _gpu_active_details["mlx"]
                 ],
             },
+            "ds4": {
+                "active": _gpu_active["ds4"],
+                "tasks": [
+                    {**e, "elapsed_ms": int((now - e["started"]) * 1000)}
+                    for e in _gpu_active_details["ds4"]
+                ],
+            },
         }
     try:
         async with httpx.AsyncClient(timeout=2) as client:
@@ -1946,6 +1983,12 @@ async def _gpu_status(request):
             data["ollama"]["responsive"] = True
     except Exception:
         data["ollama"]["responsive"] = False
+    try:
+        async with httpx.AsyncClient(timeout=2) as client:
+            await client.get(f"{DS4_URL}/v1/models")
+            data["ds4"]["responsive"] = True
+    except Exception:
+        data["ds4"]["responsive"] = False
     return JSONResponse(data)
 
 
@@ -1955,7 +1998,7 @@ async def _activity_status(request):
     period = int(request.query_params.get("period", 86400))
     with _gpu_lock:
         active = []
-        for backend in ("ollama", "mlx"):
+        for backend in ("ollama", "mlx", "ds4"):
             for e in _gpu_active_details[backend]:
                 active.append({
                     "description": e["description"],
