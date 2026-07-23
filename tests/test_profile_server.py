@@ -1448,3 +1448,34 @@ class TestAuditRoutes:
     def test_api_audit_fix_rejects_bad_group(self, client):
         r = client.post("/api/audit/fix", json={"group": "../etc"})
         assert r.status_code == 400
+
+
+class TestShareUrl:
+    """/api/share-url hands out the canonical tokened Playground URL so
+    phones can bookmark a link that actually authenticates (the page strips
+    ?token= from the address bar, so address-bar bookmarks are tokenless)."""
+
+    def test_share_url_uses_tailscale_fqdn_and_token(self, client):
+        with patch.object(ps, "_tailscale_fqdn", return_value="box.tail.ts.net"), \
+             patch.object(ps, "_PROFILE_AUTH_TOKEN", "sekret"), \
+             patch.object(ps, "PORT", 8101):
+            resp = client.get("/api/share-url",
+                              headers={"Authorization": "Bearer sekret"})
+        assert resp.status_code == 200
+        assert resp.get_json() == {
+            "url": "https://box.tail.ts.net:8101/tools?token=sekret"}
+
+    def test_share_url_falls_back_to_request_host_without_fqdn(self, client):
+        with patch.object(ps, "_tailscale_fqdn", return_value=""), \
+             patch.object(ps, "_PROFILE_AUTH_TOKEN", "sekret"), \
+             patch.object(ps, "PORT", 8101):
+            resp = client.get("/api/share-url",
+                              headers={"Authorization": "Bearer sekret"})
+        assert resp.status_code == 200
+        assert resp.get_json()["url"].endswith("/tools?token=sekret")
+        assert resp.get_json()["url"].startswith("http://localhost")
+
+    def test_share_url_requires_auth(self, client):
+        with patch.object(ps, "_PROFILE_AUTH_TOKEN", "sekret"):
+            resp = client.get("/api/share-url")
+        assert resp.status_code == 403

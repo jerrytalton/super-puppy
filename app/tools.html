@@ -38,6 +38,12 @@ nav {
 }
 @media (max-width: 600px) { nav { display: flex; } }
 @media (display-mode: standalone) { nav { display: flex; } }
+/* Desktop hides the nav (pages are reached via the menubar), but the phone
+   link is most useful FROM the desktop — show just the share pill there. */
+@media (min-width: 601px) and (display-mode: browser) {
+  nav { display: flex; }
+  nav a:not(#share-link) { display: none; }
+}
 nav a {
   padding: 6px 16px; border-radius: 20px; text-decoration: none;
   color: var(--text2); font-size: 13px; font-weight: 500;
@@ -174,7 +180,7 @@ h2 { font-size: 13px; font-weight: 600; color: var(--text2); text-transform: upp
   <a href="/profiles">Models</a>
   <a href="/tools" class="active">Playground</a>
   <a href="/activity">Activity</a>
-  <a href="#" id="share-link" onclick="copyPageUrl();return false" style="margin-left:auto" title="Copy URL to clipboard">Share</a>
+  <a href="#" id="share-link" onclick="copyPageUrl();return false" style="margin-left:auto" title="Get a phone-ready link (auth included) — share sheet on mobile, clipboard on desktop">📱 Share</a>
 </nav>
 
 <h2>Tool</h2>
@@ -199,13 +205,29 @@ h2 { font-size: 13px; font-weight: 600; color: var(--text2); text-transform: upp
 <div class="output-box" id="output">Select a tool and click Run.</div>
 
 <script>
-function copyPageUrl() {
-  const url = location.href.replace(/\?.*$/, '');
-  navigator.clipboard.writeText(url).then(() => {
-    const link = document.getElementById('share-link');
+async function copyPageUrl() {
+  // The tokened URL comes from the server: the page strips ?token= from the
+  // address bar, so location.href is a guaranteed-403 bookmark. /api/share-url
+  // returns the canonical FQDN link with auth included.
+  const link = document.getElementById('share-link');
+  let url;
+  try {
+    url = (await _fetch('/api/share-url')).url;
+  } catch (e) {
+    url = location.href.replace(/\?.*$/, '');
+  }
+  if (navigator.share) {
+    try { await navigator.share({title: 'Super Puppy Playground', url}); return; }
+    catch (e) { if (e.name === 'AbortError') return; }
+  }
+  try {
+    await navigator.clipboard.writeText(url);
     link.textContent = 'Copied!';
-    setTimeout(() => { link.textContent = 'Share'; }, 2000);
-  });
+  } catch (e) {
+    window.prompt('Copy this link:', url);
+    return;
+  }
+  setTimeout(() => { link.textContent = 'Share'; }, 2000);
 }
 
 function downloadFile(url, filename) {

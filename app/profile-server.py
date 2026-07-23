@@ -1471,6 +1471,34 @@ def api_identity():
     })
 
 
+def _tailscale_fqdn():
+    """This machine's tailnet FQDN, or "" if tailscale is unavailable."""
+    try:
+        result = subprocess.run(["tailscale", "status", "--json"],
+                                capture_output=True, text=True, timeout=3)
+        data = json.loads(result.stdout)
+        return data.get("Self", {}).get("DNSName", "").rstrip(".")
+    except Exception:
+        return ""
+
+
+@app.route("/api/share-url")
+def api_share_url():
+    """Canonical tokened Playground URL for phone/tablet bookmarking.
+
+    The page strips ?token= from the address bar after load, so a bookmark
+    saved there is tokenless and 403s. The caller already authenticated to
+    reach this route, so returning the token is not an escalation; served
+    over the tailnet FQDN so the link works off-machine.
+    """
+    fqdn = _tailscale_fqdn()
+    if fqdn:
+        base = f"https://{fqdn}:{PORT}/tools"
+    else:
+        base = f"http://localhost:{PORT}/tools"
+    return jsonify({"url": f"{base}?token={_PROFILE_AUTH_TOKEN}"})
+
+
 def _write_profile_pidfile():
     try:
         PROFILE_SERVER_PIDFILE.parent.mkdir(parents=True, exist_ok=True)
