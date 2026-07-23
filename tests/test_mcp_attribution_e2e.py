@@ -20,7 +20,7 @@ _PROBE = Path(__file__).resolve().parent / "_attribution_probe.py"
 @pytest.mark.skipif(shutil.which("uv") is None, reason="requires uv")
 def test_attribution_survives_streamable_http_task_boundary():
     result = subprocess.run(
-        ["uv", "run", str(_PROBE)],
+        ["uv", "run", "--python", "3.12", str(_PROBE)],
         capture_output=True, text=True, timeout=300,
     )
     assert result.returncode == 0, (

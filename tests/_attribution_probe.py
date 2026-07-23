@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.12,<3.13"
 # dependencies = ["mcp[cli]==1.26.0", "httpx==0.28.1", "pyyaml==6.0.3"]
 # ///
 """Over-the-wire proof that X-SP-Client attribution survives FastMCP's
@@ -7,7 +7,7 @@ streamable-HTTP task boundary.
 
 Run standalone (not under pytest's mocked session, which stubs mcp/httpx):
 
-    uv run tests/_attribution_probe.py
+    uv run --python 3.12 tests/_attribution_probe.py
 
 Exits 0 on success, non-zero with a diagnostic on failure. Wrapped by
 tests/test_mcp_attribution_e2e.py, which runs it via `uv run` so it gets the
