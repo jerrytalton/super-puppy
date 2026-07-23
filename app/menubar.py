@@ -247,6 +247,51 @@ LAUNCH_ATTEMPTED_FILE = os.path.expanduser("~/.config/local-models/launch_attemp
 PRE_UPDATE_HEALTH_FILE = os.path.expanduser("~/.config/local-models/pre_update_health.json")
 MCP_LOG_FILE = "/tmp/local-models-mcp.log"
 WARM_KEEP_ALIVE = "30m"          # keep_alive duration sent in Ollama keep-warm pings
+WARM_HEADROOM_GB = 16.0          # margin a cold warm-load must leave on top of its own size
+
+_VM_STAT_AVAILABLE_FIELDS = ("Pages free:", "Pages speculative:",
+                             "Pages inactive:", "Pages purgeable:")
+
+
+def parse_vm_stat_available_gb(text):
+    """Reclaimable-memory GB from `vm_stat` output, or None if unparseable.
+
+    free+speculative alone is ~1GB on a healthy loaded box (macOS keeps free
+    pages near zero; reclaimable memory lives in inactive/purgeable), so
+    availability must sum all four. Page size comes from the header line.
+    """
+    page_size, pages, matched = 16384, 0, False
+    for line in text.splitlines():
+        if "page size of" in line:
+            page_size = int(line.split("page size of")[1].split()[0])
+        elif line.startswith(_VM_STAT_AVAILABLE_FIELDS):
+            pages += int(line.split(":")[1].strip().rstrip("."))
+            matched = True
+    return pages * page_size / 1024 ** 3 if matched else None
+
+
+def cold_load_skip_reason(active_counts, foreign, pressure_level,
+                          available_gb, size_gb, headroom_gb=WARM_HEADROOM_GB):
+    """Why an evicted warm model must NOT be re-loaded right now (None = go).
+
+    Loading is a commitment of the model's full footprint; every gate here
+    is evidence the machine is doing something else with that memory. A
+    blocked reload is retried on the next quiet 240s tick — refreshes of
+    already-resident models never pass through this gate.
+    """
+    busy = {k: v for k, v in sorted(active_counts.items()) if v}
+    if busy:
+        return "inference in flight (%s)" % ", ".join(f"{k}={v}" for k, v in busy.items())
+    if foreign:
+        return "foreign models resident (%s)" % ", ".join(sorted(foreign))
+    if pressure_level > 1:
+        return f"memory pressure level {pressure_level}"
+    if size_gb is None:
+        return "model size unknown — refusing an unbounded load"
+    if available_gb < size_gb + headroom_gb:
+        return (f"insufficient memory (need {size_gb:.0f}GB + {headroom_gb:.0f}GB headroom, "
+                f"{available_gb:.0f}GB available)")
+    return None
 
 MODEL_PREFS_FILE = os.path.expanduser("~/.config/local-models/model_preferences.json")
 AUTH_TOKEN_CACHE = os.path.expanduser("~/.config/local-models/mcp_auth_token")

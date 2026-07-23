@@ -642,6 +642,57 @@ class TestDefaultProfilesSeeding:
                 )
 
 
+class TestWarmGate:
+    """Contention-aware warm pings: refreshes are free, reloads are gated."""
+
+    VM_STAT = (
+        "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n"
+        "Pages free:                                97134.\n"
+        "Pages active:                           15234131.\n"
+        "Pages inactive:                         15856694.\n"
+        "Pages speculative:                         12618.\n"
+        "Pages purgeable:                           72004.\n"
+    )
+
+    def test_parse_vm_stat_available_sums_reclaimable(self):
+        got = menubar.parse_vm_stat_available_gb(self.VM_STAT)
+        assert got == pytest.approx(244.7, abs=0.1)
+
+    def test_parse_vm_stat_respects_header_page_size(self):
+        text = self.VM_STAT.replace("16384", "4096")
+        got = menubar.parse_vm_stat_available_gb(text)
+        assert got == pytest.approx(244.7 / 4, abs=0.1)
+
+    def test_parse_vm_stat_garbage_is_none(self):
+        assert menubar.parse_vm_stat_available_gb("no pages here") is None
+
+    def test_cold_load_blocked_by_inflight(self):
+        r = menubar.cold_load_skip_reason({"ollama": 2}, set(), 1, 400.0, 30.0)
+        assert r is not None and "ollama=2" in r
+
+    def test_cold_load_blocked_by_foreign_residents(self):
+        r = menubar.cold_load_skip_reason({}, {"someone-elses:70b"}, 1, 400.0, 30.0)
+        assert r is not None and "someone-elses:70b" in r
+
+    def test_cold_load_blocked_by_pressure(self):
+        r = menubar.cold_load_skip_reason({}, set(), 2, 400.0, 30.0)
+        assert r is not None and "pressure" in r
+
+    def test_cold_load_blocked_by_insufficient_available(self):
+        r = menubar.cold_load_skip_reason({}, set(), 1, 100.0, 390.0)
+        assert r is not None and "390" in r and "100" in r
+
+    def test_cold_load_blocked_by_unknown_size(self):
+        r = menubar.cold_load_skip_reason({}, set(), 1, 400.0, None)
+        assert r is not None and "unknown" in r
+
+    def test_cold_load_allowed_when_quiet_and_fits(self):
+        assert menubar.cold_load_skip_reason({}, set(), 1, 400.0, 380.0) is None
+
+    def test_cold_load_headroom_enforced(self):
+        assert menubar.cold_load_skip_reason({}, set(), 1, 390.0, 380.0) is not None
+
+
 class TestHeartbeatPayload:
     """build_heartbeat_payload is the pure shape used by the fleet heartbeat
     (Task 9) — the menu bar app POSTs this to /api/fleet/report every 15
