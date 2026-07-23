@@ -2120,8 +2120,16 @@ class LocalModelsApp(rumps.App):
         except Exception:
             url = f"http://127.0.0.1:{self.profile_port}/tools"
 
+        # The profile server requires the bearer token on every request; a
+        # tokenless bookmark 403s. ?token= is the designed GET-only flow for
+        # clients that can't set headers (phones bookmarking this URL).
+        display_url = url
+        if _AUTH_TOKEN:
+            url += f"?token={_AUTH_TOKEN}"
         subprocess.run(["pbcopy"], input=url.encode(), check=True)
-        rumps.notification("Super Puppy", "URL copied", url)
+        rumps.notification("Super Puppy", "URL copied",
+                           f"{display_url} (auth token included)"
+                           if _AUTH_TOKEN else display_url)
 
     def _stop_mcp_server(self):
         """Stop the MCP server (whether spawned by us or adopted from a

@@ -925,3 +925,36 @@ class TestWarmTickWiring:
         assert mock_thread.call_args.kwargs["target"] is menubar.ping_warm
         assert mock_thread.call_args.kwargs["args"] == (
             [("m:1b", "ollama")], "11434", "8000")
+
+
+class TestCopyPlaygroundUrl:
+    """The copied Playground URL must carry the auth token — the profile
+    server has required it since c923ac6, and a tokenless bookmark yields
+    {"error":"unauthorized"} on every phone that saved it."""
+
+    def _run_copy(self, token):
+        app = object.__new__(menubar.LocalModelsApp)
+        app.profile_port = 8101
+        pbcopy_calls = []
+
+        def fake_run(cmd, **kw):
+            if cmd[0] == "tailscale":
+                m = MagicMock()
+                m.stdout = json.dumps({"Self": {"DNSName": "box.tail.ts.net."}})
+                return m
+            pbcopy_calls.append((cmd, kw))
+            return MagicMock()
+
+        with patch.object(menubar.subprocess, "run", side_effect=fake_run), \
+             patch.object(menubar, "_AUTH_TOKEN", token), \
+             patch.object(menubar.rumps, "notification"):
+            app._copy_playground_url(None)
+        assert pbcopy_calls and pbcopy_calls[0][0] == ["pbcopy"]
+        return pbcopy_calls[0][1]["input"].decode()
+
+    def test_copied_url_includes_auth_token(self):
+        assert self._run_copy("sekret") == \
+            "https://box.tail.ts.net:8101/tools?token=sekret"
+
+    def test_copied_url_omits_empty_token(self):
+        assert self._run_copy("") == "https://box.tail.ts.net:8101/tools"
