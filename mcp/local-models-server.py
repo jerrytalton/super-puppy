@@ -46,6 +46,7 @@ from lib.models import (
     MLX_SERVER_CONFIG,
     NETWORK_CONF,
     active_params_b,
+    ds4_installed,
     mflux_command,
     mflux_is_turbo,
     model_has_vision,
@@ -362,7 +363,7 @@ _JOB_TTL = 3600  # expire uncollected jobs after 1 hour
 
 
 async def discover_models():
-    """Query Ollama and MLX for available models and capabilities."""
+    """Query Ollama, MLX, and ds4 for available models and capabilities."""
     models = {}
     # Outer client timeout has to comfortably exceed N_models * per-call —
     # at 10s, a cold Ollama with 30+ tagged models would time out the
@@ -473,15 +474,23 @@ async def discover_models():
 
         # Register on-demand MLX models from config that aren't loaded yet
         for sn, mp in _mlx_cfg_map.items():
-            if sn not in models:
-                models[sn] = {
-                    "backend": "mlx",
-                    "total_params_b": 0,
-                    "active_params_b": 0,
-                    "context": 0,
-                    "vision": model_has_vision(
-                        mp, hf_config=read_newest_hf_config(mp)),
-                }
+            if sn in models:
+                continue
+            if sn == DS4_MODEL_NAME and ds4_installed():
+                # Mirrors the profile server's gate: ds4 owns glm-5.2 on
+                # machines where it's provisioned. When ds4 is down the
+                # model must be absent, not resurface as a stale MLX
+                # entry inviting a 418GB cold load. Machines without a
+                # ds4 install keep the MLX fallback path.
+                continue
+            models[sn] = {
+                "backend": "mlx",
+                "total_params_b": 0,
+                "active_params_b": 0,
+                "context": 0,
+                "vision": model_has_vision(
+                    mp, hf_config=read_newest_hf_config(mp)),
+            }
 
         # ds4 (glm-5.2, 512GB tier). Its /v1/models returns no metadata, so
         # the entry is hardcoded from lib.models — see the audit spec.
@@ -726,8 +735,8 @@ async def chat(model: str, backend: str, messages: list[dict],
 async def local_models_status() -> str:
     """Show available local models and their capabilities.
 
-    Returns the current state of Ollama and MLX backends: which models
-    are available, their parameter counts, context lengths, vision
+    Returns the current state of Ollama, MLX, and ds4 backends: which
+    models are available, their parameter counts, context lengths, vision
     capability, and backend type.
     """
     global _models

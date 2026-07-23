@@ -925,7 +925,7 @@ class TestGpuStatusShape:
         import asyncio
         with patch.object(server, "JSONResponse", side_effect=lambda d: d):
             data = asyncio.run(server._gpu_status(None))
-        for backend in ("ollama", "mlx"):
+        for backend in ("ollama", "mlx", "ds4"):
             assert isinstance(data[backend]["active"], int)
 
 
@@ -995,3 +995,43 @@ class TestDs4Discovery:
         """Same semantics as MLX-down today: unreachable backend, no model."""
         models = self._discover(False, tmp_path)
         assert "glm-5.2" not in models
+
+
+class TestDs4YamlGate:
+    """I2: mirrors app/profile-server.py's
+    test_ds4_down_but_installed_keeps_glm52_absent. If a user's MLX yaml
+    still lists glm-5.2 (unmigrated, or manually re-added per the rollback
+    doc) and ds4 is provisioned but down, the MCP layer must not register
+    it as an MLX-backed model — that would invite a stale 418GB cold load
+    on a machine where ds4 is supposed to own the name."""
+
+    def _discover(self, tmp_path, ds4_installed_value):
+        from unittest.mock import MagicMock
+        from pathlib import Path
+        import lib.hf_scanner as hf_scanner
+
+        yaml_path = Path(tmp_path) / "config.yaml"
+        yaml_path.write_text(
+            "models:\n"
+            "  - model_path: mlx-community/GLM-5.2-4bit\n"
+            "    model_type: lm\n"
+            "    served_model_name: glm-5.2\n"
+            "    context_length: 131072\n"
+            "    on_demand: true\n")
+        with patch.object(server.httpx, "AsyncClient",
+                          _fake_discovery_client(False)), \
+             patch.object(server, "MLX_SERVER_CONFIG", yaml_path), \
+             patch.object(server, "ds4_installed",
+                          return_value=ds4_installed_value), \
+             patch.object(hf_scanner, "scan_hf_cache",
+                          MagicMock(return_value=[])):
+            return asyncio.run(server.discover_models())
+
+    def test_ds4_down_but_installed_keeps_glm52_absent(self, tmp_path):
+        models = self._discover(tmp_path, ds4_installed_value=True)
+        assert "glm-5.2" not in models
+
+    def test_ds4_not_installed_allows_mlx_glm52_fallback(self, tmp_path):
+        models = self._discover(tmp_path, ds4_installed_value=False)
+        assert "glm-5.2" in models
+        assert models["glm-5.2"]["backend"] == "mlx"
