@@ -692,6 +692,78 @@ class TestWarmGate:
     def test_cold_load_headroom_enforced(self):
         assert menubar.cold_load_skip_reason({}, set(), 1, 390.0, 380.0) is not None
 
+    # ── probes ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _fake_response(payload: bytes):
+        resp = MagicMock()
+        resp.read.return_value = payload
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    def test_gpu_active_counts_parses_mcp_shape(self):
+        payload = json.dumps({"ollama": {"active": 2, "tasks": []},
+                              "mlx": {"active": 0, "tasks": [], "responsive": True}}).encode()
+        with patch.object(menubar.urllib.request, "urlopen",
+                          return_value=self._fake_response(payload)) as mock_open:
+            assert menubar.gpu_active_counts() == {"ollama": 2, "mlx": 0}
+        req = mock_open.call_args[0][0]
+        assert req.get_full_url() == "http://127.0.0.1:8100/gpu"
+
+    def test_gpu_active_counts_fails_open(self):
+        with patch.object(menubar.urllib.request, "urlopen", side_effect=OSError("down")):
+            assert menubar.gpu_active_counts() == {}
+
+    def test_memory_pressure_level_fails_open_to_normal(self):
+        with patch.object(menubar.subprocess, "check_output", side_effect=OSError("no sysctl")):
+            assert menubar.memory_pressure_level() == 1
+
+    def test_vm_available_gb_fails_open(self):
+        with patch.object(menubar.subprocess, "check_output", side_effect=OSError("boom")):
+            assert menubar.vm_available_gb() == float("inf")
+        with patch.object(menubar.subprocess, "check_output", return_value="garbage"):
+            assert menubar.vm_available_gb() == float("inf")
+
+    def test_ollama_resident_models_parses_api_ps(self):
+        payload = json.dumps({"models": [
+            {"name": "qwen3.6:27b", "size": 35045790186},
+            {"name": "dolphin3:8b", "size": 5000000000}]}).encode()
+        with patch.object(menubar.urllib.request, "urlopen",
+                          return_value=self._fake_response(payload)):
+            got = menubar.ollama_resident_models("11434")
+        assert got["qwen3.6:27b"] == pytest.approx(32.6, abs=0.1)
+        assert set(got) == {"qwen3.6:27b", "dolphin3:8b"}
+
+    def test_ollama_resident_models_fails_open_to_empty(self):
+        with patch.object(menubar.urllib.request, "urlopen", side_effect=OSError("down")):
+            assert menubar.ollama_resident_models("11434") == {}
+
+    def test_mlx_loaded_ids_parses_v1_models(self):
+        payload = json.dumps({"data": [{"id": "whisper-large"}, {"id": "glm-5.2"}]}).encode()
+        with patch.object(menubar.urllib.request, "urlopen",
+                          return_value=self._fake_response(payload)):
+            assert menubar.mlx_loaded_ids("8000") == {"whisper-large", "glm-5.2"}
+
+    def test_ollama_model_size_gb_reads_api_tags(self):
+        payload = json.dumps({"models": [{"name": "m:1b", "size": 2147483648}]}).encode()
+        with patch.object(menubar.urllib.request, "urlopen",
+                          return_value=self._fake_response(payload)):
+            assert menubar.ollama_model_size_gb("m:1b", "11434") == pytest.approx(2.0)
+            assert menubar.ollama_model_size_gb("missing:1b", "11434") is None
+
+    def test_mlx_model_size_gb_sums_hf_snapshot(self, tmp_path, monkeypatch):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("models:\n  - model_path: org/My-Model\n"
+                       "    served_model_name: my-model\n")
+        blob_dir = tmp_path / "hub" / "models--org--My-Model" / "snapshots" / "abc"
+        blob_dir.mkdir(parents=True)
+        (blob_dir / "weights.safetensors").write_bytes(b"x" * 4096)
+        monkeypatch.setattr(menubar, "MLX_SERVER_CONFIG_PATH", str(cfg))
+        monkeypatch.setattr(menubar, "HF_HUB_CACHE_PATH", str(tmp_path / "hub"))
+        assert menubar.mlx_model_size_gb("my-model") == pytest.approx(4096 / 1024 ** 3)
+        assert menubar.mlx_model_size_gb("not-served") is None
+
 
 class TestHeartbeatPayload:
     """build_heartbeat_payload is the pure shape used by the fleet heartbeat

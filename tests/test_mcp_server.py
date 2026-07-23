@@ -813,3 +813,16 @@ class TestUvicornGracefulShutdown:
         assert "_build_uvicorn_config" in src, \
             "main() must call _build_uvicorn_config so the graceful-shutdown " \
             "timeout stays wired in"
+
+
+class TestGpuStatusShape:
+    """app/menubar.py::gpu_active_counts consumes {backend: {"active": int}} —
+    guard the real endpoint's shape so a server-side change can't silently
+    break the warm-ping busy gate."""
+
+    def test_gpu_status_shape_matches_menubar_probe(self):
+        import asyncio
+        with patch.object(server, "JSONResponse", side_effect=lambda d: d):
+            data = asyncio.run(server._gpu_status(None))
+        for backend in ("ollama", "mlx"):
+            assert isinstance(data[backend]["active"], int)

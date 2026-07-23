@@ -293,6 +293,105 @@ def cold_load_skip_reason(active_counts, foreign, pressure_level,
                 f"{available_gb:.0f}GB available)")
     return None
 
+
+MLX_SERVER_CONFIG_PATH = os.path.expanduser("~/.config/mlx-server/config.yaml")
+HF_HUB_CACHE_PATH = os.path.expanduser("~/.cache/huggingface/hub")
+
+
+def gpu_active_counts(timeout=5.0):
+    """Per-backend in-flight MCP request counts from /gpu (auth-exempt).
+
+    Fails open to {} — no MCP server means no MCP-dispatched inference.
+    Timeout must exceed the endpoint's own internal 2s MLX probe.
+    """
+    try:
+        with urllib.request.urlopen(
+                urllib.request.Request("http://127.0.0.1:8100/gpu"),
+                timeout=timeout) as r:
+            data = json.loads(r.read())
+        return {k: int(v.get("active", 0))
+                for k, v in data.items() if isinstance(v, dict)}
+    except Exception:
+        return {}
+
+
+def memory_pressure_level():
+    """Kernel memory pressure: 1 normal, 2 warn, 4 critical. 1 on failure."""
+    try:
+        out = subprocess.check_output(
+            ["sysctl", "-n", "kern.memorystatus_vm_pressure_level"], text=True)
+        return int(out.strip())
+    except Exception:
+        return 1
+
+
+def vm_available_gb():
+    """Reclaimable GB right now; inf if unmeasurable (fail open)."""
+    try:
+        out = subprocess.check_output(["vm_stat"], text=True)
+    except Exception:
+        return float("inf")
+    got = parse_vm_stat_available_gb(out)
+    return float("inf") if got is None else got
+
+
+def ollama_resident_models(port, timeout=5.0):
+    """{model name: size GB} currently loaded in Ollama; {} on failure."""
+    try:
+        with urllib.request.urlopen(
+                f"http://localhost:{port}/api/ps", timeout=timeout) as r:
+            data = json.loads(r.read())
+        return {m["name"]: m.get("size", 0) / 1024 ** 3
+                for m in data.get("models", [])}
+    except Exception:
+        return {}
+
+
+def mlx_loaded_ids(port, timeout=5.0):
+    """Model ids the MLX server is currently serving; empty set on failure."""
+    try:
+        with urllib.request.urlopen(
+                f"http://localhost:{port}/v1/models", timeout=timeout) as r:
+            data = json.loads(r.read())
+        return {m["id"] for m in data.get("data", [])}
+    except Exception:
+        return set()
+
+
+def ollama_model_size_gb(model, port, timeout=5.0):
+    """On-disk GB of an Ollama tag from /api/tags, or None if unknown."""
+    try:
+        with urllib.request.urlopen(
+                f"http://localhost:{port}/api/tags", timeout=timeout) as r:
+            data = json.loads(r.read())
+        for m in data.get("models", []):
+            if m.get("name") == model:
+                return m.get("size", 0) / 1024 ** 3
+    except Exception:
+        pass
+    return None
+
+
+def mlx_model_size_gb(bare_name):
+    """On-disk GB of an MLX served-name's HF snapshot, or None if unknown."""
+    try:
+        import yaml
+        with open(MLX_SERVER_CONFIG_PATH) as f:
+            cfg = yaml.safe_load(f)
+        path = next((m["model_path"] for m in cfg.get("models", [])
+                     if m.get("served_model_name") == bare_name), None)
+        if not path:
+            return None
+        snap_root = os.path.join(HF_HUB_CACHE_PATH,
+                                 "models--" + path.replace("/", "--"), "snapshots")
+        total = 0
+        for root, _dirs, files in os.walk(snap_root):
+            for name in files:
+                total += os.path.getsize(os.path.join(root, name))
+        return total / 1024 ** 3 if total else None
+    except Exception:
+        return None
+
 MODEL_PREFS_FILE = os.path.expanduser("~/.config/local-models/model_preferences.json")
 AUTH_TOKEN_CACHE = os.path.expanduser("~/.config/local-models/mcp_auth_token")
 
