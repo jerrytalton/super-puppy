@@ -37,6 +37,7 @@ from lib.hf_scanner import (
 )
 from lib.models import (
     HF_TASK_BACKENDS,
+    LLM_BACKENDS,
     MCP_PREFS_FILE,
     MLX_SERVER_CONFIG,
     NETWORK_CONF,
@@ -59,6 +60,9 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 MLX_URL = os.environ.get("MLX_URL", "http://localhost:8000")
+# ds4 is internal-only (never tailscale-served) so this is always localhost;
+# bin/local-models-mcp-detect exports it with the configured DS4_PORT.
+DS4_URL = os.environ.get("DS4_URL", "http://localhost:8002")
 MCP_HOST = os.environ.get("MCP_HOST", "127.0.0.1")
 MCP_PORT = int(os.environ.get("MCP_PORT", "8100"))
 
@@ -584,11 +588,11 @@ def pick_model(task: str, override: str | None = None) -> tuple[str, str]:
             if info.get("task") == task and (not is_eligible or is_eligible(name, info["backend"])):
                 return name, info["backend"]
         for name, info in _models.items():
-            if info["backend"] in ("ollama", "mlx") and (not is_eligible or is_eligible(name, info["backend"])):
+            if info["backend"] in LLM_BACKENDS and (not is_eligible or is_eligible(name, info["backend"])):
                 return name, info["backend"]
 
     # Build actionable error message.
-    available = [n for n, m in _models.items() if m["backend"] in ("ollama", "mlx")]
+    available = [n for n, m in _models.items() if m["backend"] in LLM_BACKENDS]
     parts = [f"No model available for task '{task}'."]
     if override:
         parts.append(f"Requested model '{override}' not found.")
@@ -653,12 +657,40 @@ async def chat_mlx(model: str, messages: list[dict],
         raise RuntimeError(f"MLX chat ({model}): request timed out after 300s")
 
 
+async def chat_ds4(model: str, messages: list[dict],
+                   max_tokens: int = 4096, think: bool = True) -> str:
+    # think is accepted for signature parity but deliberately NOT forwarded:
+    # ds4's chat_template_kwargs.enable_thinking is verified broken
+    # (2026-07-22) — HTTP 200, but the reasoning migrates into `content`
+    # with no think-block markers to strip. glm-5.2 on ds4 always thinks.
+    body = {"model": model, "messages": messages, "max_tokens": max_tokens,
+            "stream": False}
+    try:
+        async with httpx.AsyncClient(timeout=300) as client:
+            resp = await client.post(f"{DS4_URL}/v1/chat/completions", json=body)
+            resp.raise_for_status()
+            # ds4's JSON encoder can emit unescaped control characters in
+            # long reasoning_content (observed 2026-07-22); strict parsing
+            # (resp.json()) intermittently crashes dispatch.
+            data = json.loads(resp.text, strict=False)
+            msg = data["choices"][0]["message"]
+            return msg.get("content") or msg.get("reasoning_content") or ""
+    except httpx.HTTPStatusError as e:
+        raise RuntimeError(_http_error_detail(e, f"ds4 chat ({model})")) from e
+    except httpx.ConnectError:
+        raise RuntimeError(f"ds4 chat ({model}): cannot connect to {DS4_URL} — is ds4-server running?")
+    except httpx.TimeoutException:
+        raise RuntimeError(f"ds4 chat ({model}): request timed out after 300s")
+
+
 async def chat(model: str, backend: str, messages: list[dict],
                max_tokens: int = 4096, think: bool = True) -> str:
     with _gpu_request(backend, f"chat:{model}"):
         warning = _gpu_contention_warning(backend)
         if backend == "ollama":
             result = await chat_ollama(model, messages, max_tokens, think)
+        elif backend == "ds4":
+            result = await chat_ds4(model, messages, max_tokens, think)
         else:
             result = await chat_mlx(model, messages, max_tokens, think)
         return warning + result

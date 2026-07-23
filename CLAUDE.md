@@ -126,7 +126,7 @@ Single source of truth for constants and logic used by menubar, MCP server, and 
 
 ## Local Model Tools (MCP)
 
-The `mcp/local-models-server.py` MCP server runs as a persistent streamable-HTTP service on port 8100, managed by the menu bar app. It exposes Ollama, MLX, and local tool models (TTS via mlx-audio, image editing via mflux) as MCP tools. Claude connects via `type: "http"` to `http://127.0.0.1:8100/mcp` (local) or `https://{fqdn}:8100/mcp` (remote). Wrapper script is `bin/local-models-mcp-detect`.
+The `mcp/local-models-server.py` MCP server runs as a persistent streamable-HTTP service on port 8100, managed by the menu bar app. It exposes Ollama, MLX, ds4 (glm-5.2 on the 512GB tier), and local tool models (TTS via mlx-audio, image editing via mflux) as MCP tools. Claude connects via `type: "http"` to `http://127.0.0.1:8100/mcp` (local) or `https://{fqdn}:8100/mcp` (remote). Wrapper script is `bin/local-models-mcp-detect`.
 
 Dependencies are pinned to exact versions in PEP 723 inline metadata.
 

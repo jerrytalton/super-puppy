@@ -5,6 +5,7 @@ requiring live Ollama/MLX services. Heavy dependencies (mcp, httpx, torch,
 starlette) are mocked at import time.
 """
 
+import asyncio
 import json
 import sys
 import threading
@@ -231,6 +232,106 @@ class TestPickModel:
         msg = str(exc_info.value)
         assert "nonexistent" in msg
         assert "not found" in msg
+
+
+# ── ds4 chat dispatch ───────────────────────────────────────────────
+
+class _FakeDs4Response:
+    """Mimics httpx.Response for ds4: .text carries raw control chars, so
+    strict .json() raises exactly like the real failure mode."""
+
+    status_code = 200
+
+    def __init__(self, text):
+        self.text = text
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return json.loads(self.text)  # strict — raises on control chars
+
+
+def _fake_async_client(response_text, captured):
+    class _FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, json=None):
+            captured["url"] = url
+            captured["body"] = json
+            return _FakeDs4Response(response_text)
+
+    return _FakeAsyncClient
+
+
+class TestChatDs4:
+    def test_chat_routes_ds4_and_parses_unescaped_control_chars(self):
+        """The real 2026-07-22 failure: ds4's encoder emits raw control
+        chars inside long reasoning_content; strict JSON parsing (resp.json /
+        plain json.loads) raises and crashes dispatch. chat() must route
+        backend='ds4' to chat_ds4 (the old else-branch misrouted it to MLX
+        :8000) and parse with strict=False."""
+        raw = ('{"choices":[{"message":{"content":"OK then",'
+               '"reasoning_content":"thinking\x01hard"}}]}')
+        captured = {}
+        with patch.object(server.httpx, "AsyncClient",
+                          _fake_async_client(raw, captured)):
+            result = asyncio.run(server.chat(
+                "glm-5.2", "ds4",
+                [{"role": "user", "content": "hi"}]))
+        assert "OK then" in result
+        assert captured["url"].endswith(":8002/v1/chat/completions")
+
+    def test_chat_ds4_never_forwards_think_toggle(self):
+        """enable_thinking is VERIFIED BROKEN on ds4 (200 OK but reasoning
+        migrates into content, no think-block markers to strip). think=False
+        must NOT put chat_template_kwargs on the wire."""
+        raw = '{"choices":[{"message":{"content":"hi"}}]}'
+        captured = {}
+        with patch.object(server.httpx, "AsyncClient",
+                          _fake_async_client(raw, captured)):
+            asyncio.run(server.chat_ds4(
+                "glm-5.2", [{"role": "user", "content": "hi"}], think=False))
+        assert "chat_template_kwargs" not in captured["body"]
+        assert "think" not in captured["body"]
+
+    def test_chat_ds4_falls_back_to_reasoning_content(self):
+        """glm-5.2 on ds4 always thinks and can burn its whole token budget
+        thinking — content comes back empty. Surface reasoning_content
+        instead of returning an empty string."""
+        raw = ('{"choices":[{"message":{"content":"",'
+               '"reasoning_content":"the answer is 42"}}]}')
+        with patch.object(server.httpx, "AsyncClient",
+                          _fake_async_client(raw, {})):
+            result = asyncio.run(server.chat_ds4(
+                "glm-5.2", [{"role": "user", "content": "hi"}]))
+        assert result == "the answer is 42"
+
+    def test_gpu_tracking_accepts_ds4_key(self):
+        """_gpu_active is a defaultdict for exactly this reason (a plain
+        dict KeyError'd on mlx-audio and broke local_speak) — pin the
+        guarantee for the new backend."""
+        with server._gpu_request("ds4", "chat:glm-5.2"):
+            assert server._gpu_active["ds4"] == 1
+        assert server._gpu_active["ds4"] == 0
+
+    def test_pick_model_any_llm_fallback_includes_ds4(self):
+        """With no prefs and no task match, pick_model falls back to 'any
+        LLM'. The old ('ollama', 'mlx') tuple silently excluded a
+        ds4-backed registry — glm-5.2 would be invisible to fallback."""
+        server._models["glm-5.2"] = {
+            "backend": "ds4", "total_params_b": 380,
+            "active_params_b": 32, "context": 131072, "vision": False,
+        }
+        with patch.object(server, "load_mcp_prefs", return_value={}):
+            assert server.pick_model("general") == ("glm-5.2", "ds4")
 
 
 # ── load_mcp_prefs / thinking_enabled ──────────────────────────────

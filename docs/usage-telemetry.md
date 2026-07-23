@@ -6,7 +6,7 @@ Design record: `docs/superpowers/specs/2026-07-10-usage-telemetry-fleet-audit-de
 
 ## What's logged, and where
 
-Every MCP and Playground request is written to a local SQLite DB at `~/.config/local-models/activity.db` (override the path with `SP_ACTIVITY_DB`, mainly for tests). Each row records tool, model, backend, status, duration, and the machine that made the request.
+Every MCP and Playground request is written to a local SQLite DB at `~/.config/local-models/activity.db` (override the path with `SP_ACTIVITY_DB`, mainly for tests). Each row records tool, model, backend, status, duration, and the machine that made the request. The `backend` column is free text; values today are `ollama`, `mlx`, `ds4` (glm-5.2 on the 512GB tier), and the subprocess backends (`mflux`, `mlx-audio`, `mlx-video`) — no schema change is needed for new backends.
 
 **This data never leaves your own fleet.** It flows from a client machine to *your own* fleet server, over your tailnet, using the same bearer token you already configured. There is no external telemetry endpoint — a solo install with no fleet server simply never sends anything over the network for this feature.
 
