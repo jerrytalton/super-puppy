@@ -26,6 +26,7 @@ launchctl unload ~/Library/LaunchAgents/com.local-models.menubar.plist 2>/dev/nu
 pkill -f "menubar.py" 2>/dev/null || true
 pkill -f "profile-server.py" 2>/dev/null || true
 pkill -f "local-models-server.py" 2>/dev/null || true
+pkill -f "ds4-server" 2>/dev/null || true
 echo "  Services stopped."
 
 # ── Remove LaunchAgents ────────────────────────────────────────────
@@ -109,6 +110,7 @@ echo "  - This git repo ($(cd "$(dirname "$0")" && pwd))"
 echo "  - Downloaded Ollama models (~/.ollama/)"
 echo "  - HuggingFace model cache (~/.cache/huggingface/)"
 echo "  - Installed tools: ollama, mlx-openai-server, mflux, ffmpeg"
+echo "  - ds4 checkout + glm-5.2 GGUF (~244GiB) at \${DS4_DIR:-~/.local/share/super-puppy/ds4}"
 echo ""
 echo "To remove dependencies:"
 echo "  uv tool uninstall mlx-openai-server"
@@ -118,3 +120,4 @@ echo ""
 echo "To remove downloaded models:"
 echo "  rm -rf ~/.ollama"
 echo "  rm -rf ~/.cache/huggingface"
+echo "  rm -rf ~/.local/share/super-puppy/ds4   # ds4 checkout + 244GiB GGUF"

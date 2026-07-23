@@ -51,6 +51,7 @@ if $UNINSTALL; then
     echo "Stopping menu bar app..."
     launchctl unload ~/Library/LaunchAgents/com.local-models.menubar.plist 2>/dev/null || true
     launchctl unload ~/Library/LaunchAgents/setenv.OLLAMA_HOST.plist 2>/dev/null || true
+    pkill -f "ds4-server" 2>/dev/null || true
     sleep 1
 
     # Remove symlinks (only if they point into this repo)
@@ -102,6 +103,17 @@ if $UNINSTALL; then
     if command -v claude > /dev/null; then
         echo "Removing MCP registration..."
         claude mcp remove local-models 2>/dev/null || true
+    fi
+
+    # ds4 checkout + 244GiB GGUF
+    DS4_DIR=$(grep '^DS4_DIR=' "$HOME/.config/local-models/network.conf" 2>/dev/null \
+        | head -1 | cut -d= -f2- | tr -d '"' || true)
+    DS4_DIR="${DS4_DIR:-$HOME/.local/share/super-puppy/ds4}"
+    if [ -e "$DS4_DIR" ]; then
+        echo ""
+        echo "ds4 directory: $DS4_DIR (checkout + glm-5.2 GGUF, ~244GiB)"
+        echo "  Not removed automatically. Delete it manually if you want:"
+        echo "  rm -rf \"$DS4_DIR\""
     fi
 
     # Remove config files (with confirmation)
@@ -639,14 +651,67 @@ if [ "$RAM_CHECK" -ge 32 ] && [ ! -x "$HOME/.local/share/uv/tools/mlx-vlm/bin/py
         || echo "  Warning: mlx-vlm install failed (computer_use on MLX models will be unavailable)"
 fi
 
-# GLM-5.2 (512gb tier) needs two mlx-lm model files from unmerged upstream
-# PR ml-explore/mlx-lm#1463 — released mlx-lm can't load its shared-indexer
-# layout. The script is idempotent and self-disables once upstream ships
-# support. See docs/troubleshooting.md ("glm-5.2 fails to load").
-if [ "$RAM_CHECK" -ge 512 ] && command -v mlx-openai-server > /dev/null; then
-    echo "  Applying GLM-5.2 mlx-lm patch..."
-    "$SCRIPT_DIR/bin/apply-mlx-glm52-patch.sh" \
-        || echo "  Warning: GLM-5.2 patch failed (glm-5.2 won't load; other models unaffected)"
+# ds4 (512gb tier): serves glm-5.2 from a Q2K GGUF — 244GiB resident vs the
+# retired 390GB mlx-openai-server path, and no more pinned mlx-lm patch.
+# Pinned commit on the glm5.2 branch: the engine is weeks old, so we ship
+# exactly what was verified (tool-calling round-trip, 15.5 tok/s, strict
+# JSON quirk documented in docs/troubleshooting.md).
+DS4_COMMIT="bd89932"
+DS4_GGUF_REPO="antirez/GLM-5.2-GGUF"
+DS4_GGUF_FILE="GLM-5.2-UD-Q2_K_RoutedQ2K.gguf"
+if [ "$RAM_CHECK" -ge 512 ]; then
+    DS4_DIR=$(grep '^DS4_DIR=' "$HOME/.config/local-models/network.conf" 2>/dev/null \
+        | head -1 | cut -d= -f2- | tr -d '"' || true)
+    DS4_DIR="${DS4_DIR:-$HOME/.local/share/super-puppy/ds4}"
+
+    # Reuse a dev checkout: if ~/experiments/ds4 already has the binary and
+    # the 244GiB GGUF, symlink it — never re-download 244GiB.
+    if [ ! -e "$DS4_DIR" ] && [ -x "$HOME/experiments/ds4/ds4-server" ] \
+       && [ -f "$HOME/experiments/ds4/gguf/$DS4_GGUF_FILE" ]; then
+        mkdir -p "$(dirname "$DS4_DIR")"
+        ln -sfn "$HOME/experiments/ds4" "$DS4_DIR"
+        echo "  ds4: reusing existing checkout at ~/experiments/ds4"
+    fi
+
+    if [ ! -x "$DS4_DIR/ds4-server" ]; then
+        echo "  Building ds4 (glm-5.2 engine, pinned $DS4_COMMIT)..."
+        if [ ! -d "$DS4_DIR/.git" ]; then
+            mkdir -p "$DS4_DIR"
+            git clone --branch glm5.2 https://github.com/antirez/ds4 "$DS4_DIR" \
+                || echo "  Warning: ds4 clone failed (glm-5.2 will be unavailable)"
+        fi
+        if [ -d "$DS4_DIR/.git" ]; then
+            git -C "$DS4_DIR" fetch --quiet origin glm5.2 || true
+            git -C "$DS4_DIR" checkout --quiet "$DS4_COMMIT" \
+                || echo "  Warning: pinned ds4 commit $DS4_COMMIT not found"
+            (cd "$DS4_DIR" && make ds4-server) \
+                || echo "  Warning: ds4 build failed (glm-5.2 will be unavailable)"
+        fi
+    fi
+
+    # Weights: 244GiB GGUF, with a disk-space precheck (none of the existing
+    # pull paths can see this file — it's not an HF snapshot layout we scan).
+    if [ -x "$DS4_DIR/ds4-server" ] && [ ! -f "$DS4_DIR/gguf/$DS4_GGUF_FILE" ]; then
+        if ! command -v hf > /dev/null; then
+            brew install hf 2>/dev/null || true
+        fi
+        FREE_GB=$(df -g "$HOME" | awk 'NR==2 {print $4}')
+        if [ "${FREE_GB:-0}" -lt 260 ]; then
+            echo "  Warning: only ${FREE_GB}GB free — the glm-5.2 GGUF needs ~250GB."
+            echo "           Free space and re-run install.sh to download it."
+        elif command -v hf > /dev/null; then
+            echo "  Downloading glm-5.2 GGUF (~244GiB — this takes a while)..."
+            hf download "$DS4_GGUF_REPO" "$DS4_GGUF_FILE" --local-dir "$DS4_DIR/gguf" \
+                || echo "  Warning: glm-5.2 GGUF download failed — re-run install.sh to retry."
+        else
+            echo "  Warning: hf CLI unavailable — cannot download the glm-5.2 GGUF."
+        fi
+    fi
+
+    if [ -f "$DS4_DIR/gguf/$DS4_GGUF_FILE" ]; then
+        ln -sfn "gguf/$DS4_GGUF_FILE" "$DS4_DIR/ds4flash.gguf"
+    fi
+    set_conf "DS4_DIR" "\"$DS4_DIR\""
 fi
 
 # ffmpeg for audio transcription (WebM conversion, format support)
@@ -668,12 +733,19 @@ MISSING_RUNTIMES=()
 command -v uv > /dev/null || MISSING_RUNTIMES+=("uv")
 command -v ollama > /dev/null || MISSING_RUNTIMES+=("ollama")
 command -v mlx-openai-server > /dev/null || MISSING_RUNTIMES+=("mlx-openai-server")
+if [ "$RAM_CHECK" -ge 512 ]; then
+    DS4_DIR_CHECK=$(grep '^DS4_DIR=' "$HOME/.config/local-models/network.conf" 2>/dev/null \
+        | head -1 | cut -d= -f2- | tr -d '"' || true)
+    [ -x "${DS4_DIR_CHECK:-$HOME/.local/share/super-puppy/ds4}/ds4-server" ] \
+        || MISSING_RUNTIMES+=("ds4-server")
+fi
 
 remediation_for() {
     case "$1" in
         ollama)            echo "brew install ollama" ;;
         mlx-openai-server) echo "uv tool install --python 3.12 mlx-openai-server" ;;
         uv)                echo "curl -LsSf https://astral.sh/uv/install.sh | sh" ;;
+        ds4-server)        echo "re-run install.sh (clones antirez/ds4@bd89932 and runs make ds4-server)" ;;
         *)                 echo "(see https://github.com/jerrytalton/super-puppy)" ;;
     esac
 }
@@ -815,6 +887,7 @@ data = json.loads(pathlib.Path('$PROFILES_FILE').read_text())
 profile = data.get('profiles', {}).get('$PROFILE_NAME', {})
 served = {m for m in profile.get('tasks', {}).values()
           if m and ':' not in m and '/' not in m}
+served.discard('glm-5.2')  # ds4-served: provisioned by the ds4 install step, not the MLX config
 name_to_path, cur_path = {}, None
 for line in pathlib.Path('$MLX_CONFIG').read_text().splitlines():
     s = line.strip()

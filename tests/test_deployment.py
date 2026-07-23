@@ -1041,3 +1041,32 @@ class TestMigrateMlxConfig:
             ["python3", str(script), str(cfg), "glm-5.2"],
             capture_output=True, text=True, timeout=10)
         assert result.returncode == 0
+
+
+class TestGlm52PatchRetired:
+    """The pinned mlx-lm patch is retired by the ds4 ship. A dangling
+    invocation of the deleted script would hard-fail install.sh on 512GB
+    machines; a dangling doc reference sends users to a runbook that no
+    longer exists."""
+
+    def test_patch_script_deleted_and_unreferenced(self):
+        repo = Path(__file__).parent.parent
+        assert not (repo / "bin" / "apply-mlx-glm52-patch.sh").exists(), \
+            "bin/apply-mlx-glm52-patch.sh should be deleted (retired by ds4)"
+        offenders = []
+        for sub in ("install.sh", "uninstall.sh", "CLAUDE.md", "README.md"):
+            if "apply-mlx-glm52-patch" in (repo / sub).read_text():
+                offenders.append(sub)
+        for md in (repo / "docs").glob("*.md"):
+            if "apply-mlx-glm52-patch" in md.read_text():
+                offenders.append(str(md.relative_to(repo)))
+        assert not offenders, f"stale glm52-patch references: {offenders}"
+
+    def test_install_provisions_ds4_pinned(self):
+        """install.sh must clone the PINNED commit (engine is weeks old;
+        an unpinned clone ships whatever antirez pushed last night)."""
+        text = (Path(__file__).parent.parent / "install.sh").read_text()
+        assert "bd89932" in text
+        assert "antirez/ds4" in text
+        assert "GLM-5.2-UD-Q2_K_RoutedQ2K.gguf" in text
+        assert "ds4flash.gguf" in text

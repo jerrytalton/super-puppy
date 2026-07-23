@@ -20,7 +20,7 @@ Local AI model infrastructure for Apple Silicon. Menu bar app + standard APIs + 
 - MLX models marked `on_demand: true` download on first use and unload after idle timeout. glm-5.2 is NOT one of them anymore: it's served by ds4 (always resident) on the 512GB tier.
 - All remote access uses **Tailscale only** — no mDNS, no LAN binding. `tailscale serve` proxies all ports with TLS.
 - The `local-models-mcp-detect` wrapper probes the desktop via Tailscale before launching. Clients use the server if reachable, fall back to localhost.
-- **glm-5.2 (512gb tier) requires patched mlx-lm/mlx-openai-server.** Released mlx-lm can't load GLM-5.2's shared-indexer layout, and stock mlx-openai-server can't keep a 390GB on-demand model resident. `bin/apply-mlx-glm52-patch.sh` (run by install.sh on 512GB machines, idempotent, pinned to upstream PR ml-explore/mlx-lm#1463) fixes both; re-run it after any `uv tool upgrade mlx-openai-server`. Details: docs/troubleshooting.md.
+- **glm-5.2 (512gb tier) is served by ds4, not MLX.** antirez/ds4 (glm5.2 branch, pinned `bd89932`, built by install.sh into `DS4_DIR`) serves the Q2K-routed GGUF (~244GiB resident vs 390GB on MLX — the co-residency OOM class is gone, and the old pinned mlx-lm patch is retired). Quirks encoded in code and docs/troubleshooting.md: launch needs `cwd=$DS4_DIR` (metal shader paths), responses need `json.loads(..., strict=False)` (unescaped control chars in reasoning_content), and the `enable_thinking` toggle must never be forwarded (broken: reasoning migrates into content). ds4 serializes requests — parallel fan-outs to glm-5.2 queue.
 
 ## Runtime Architecture
 

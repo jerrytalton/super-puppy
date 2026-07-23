@@ -241,11 +241,10 @@ Profiles are keyed to the machine class they target — the installer picks one 
 
 A 256GB machine runs the `128gb` tier; a 512GB machine runs `512gb`.
 
-\* glm-5.2 needs two mlx model files from an unmerged upstream PR plus two
-mlx-openai-server fixes; `install.sh` applies them automatically on 512GB
-machines via `bin/apply-mlx-glm52-patch.sh` (idempotent — re-run it after
-any `uv tool upgrade mlx-openai-server`). See
-[docs/troubleshooting.md](docs/troubleshooting.md) for details.
+\* glm-5.2 is served by [ds4](https://github.com/antirez/ds4) (pinned
+build, provisioned by `install.sh` on 512GB machines) from a ~244GiB Q2K
+GGUF — always resident, OpenAI-compatible on localhost:8002. See
+[docs/troubleshooting.md](docs/troubleshooting.md) for build/run details.
 
 #### Warm vs on-demand
 
@@ -295,7 +294,7 @@ super-puppy/
 │   ├── local-models-mcp-auth    # MCP auth token management
 │   ├── tailscale-status         # Tailscale connectivity check
 │   ├── post-update.sh           # Post-update hook for auto-update
-│   ├── apply-mlx-glm52-patch.sh # Pinned mlx patches for glm-5.2 (512GB tier)
+│   ├── migrate-mlx-config.py    # One-shot user-config migration (glm-5.2 → ds4)
 │   └── release.sh               # Cut a gated, signed release (see docs/RELEASING.md)
 ├── config/
 │   ├── mlx-server/              # MLX server config (single, on-demand)

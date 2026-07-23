@@ -148,59 +148,71 @@ If the menu bar comes back up cleanly and stays up for a minute, you're good. Th
 
 ---
 
-## glm-5.2 fails to load: "Missing 285 parameters" (or unloads every 5 minutes)
+## glm-5.2 (ds4) — build, run, and quirks
 
-**2026-07-08 — mlx-lm / mlx-openai-server, 512gb tier.**
+**Since 2026-07, glm-5.2 on the 512GB tier is served by [antirez/ds4](https://github.com/antirez/ds4)** (glm5.2 branch, pinned commit `bd89932`), not mlx-openai-server. The old pinned mlx-lm patch script is retired and deleted; if a doc tells you to run it, you're reading an old release.
 
-Chat tasks on the 512gb profile return 503 with `Failed to load on-demand
-model 'glm-5.2' … Missing 285 parameters: model.layers.N.self_attn.indexer.*`,
-and the MLX startup log shows a load attempt failing every ~4 minutes (the
-keep-warm ping). Alternatively glm-5.2 loads fine but the log shows it
-reloading all 390GB every ~5 minutes.
+**Layout** (default `~/.local/share/super-puppy/ds4`, override with `DS4_DIR` in `~/.config/local-models/network.conf`):
 
-Cause, load failure: GLM-5.2's `glm_moe_dsa` architecture places DSA indexer
-weights on 21 of its 78 layers and shares them across the rest
-(`config.indexer_types`). Released mlx-lm (through 0.31.3) subclasses
-DeepSeek-V3.2 directly and builds an indexer on **every** layer, so strict
-loading wants 5 tensors × 57 shared layers = 285 parameters the checkpoint
-deliberately doesn't have. The fix is upstream PR ml-explore/mlx-lm#1463,
-unmerged as of 2026-07-08. Installing mlx-lm ≥ 0.31.2 wholesale is not an
-option: it requires mlx ≥ 0.31.2, which still has the thread-local-stream
-hang (mlx-lm #1256).
-
-Cause, reload thrash: two mlx-openai-server bugs (present through 1.8.1) —
-a hardcoded 300s handler-readiness timeout that a 390GB checkpoint can
-exceed, and a warm-request fast path that bypasses the on-demand refcount,
-so the idle timer unloads the model 300s after load no matter how much
-traffic (including keep-warm pings) it serves.
-
-**Fix:** run the pinned patch script (install.sh does this automatically on
-512GB machines), then restart services from the menu bar:
-
-```bash
-bin/apply-mlx-glm52-patch.sh
+```
+$DS4_DIR/
+├── ds4-server                 # built by `make ds4-server` at bd89932
+├── metal/                     # metal shaders — resolved RELATIVE TO CWD
+├── ds4flash.gguf              # symlink → gguf/GLM-5.2-UD-Q2_K_RoutedQ2K.gguf
+└── gguf/GLM-5.2-UD-Q2_K_RoutedQ2K.gguf   # 244GiB, hf download antirez/GLM-5.2-GGUF
 ```
 
-It ports the PR's two model files onto the installed mlx-lm 0.31.1 (pinned
-to the PR head sha; fails closed if the ref moves), raises the readiness
-timeout to 1800s, and fixes the refcount bypass. Idempotent — re-run it any
-time (`uv tool upgrade mlx-openai-server` wipes the patches). It exits
-without touching anything once upstream mlx-lm ships `indexer_types`
-support; at that point delete the script and the install.sh hook.
+**Manual run** (what `start-local-models` does):
 
-Verified working: strict load (0 missing / 0 unexpected), coherent recall at
-5.1K prompt tokens (past the `index_topk=2048` sparse-attention engagement
-point, where #1453 reported gibberish), and stable warm residency against
-the menu bar's 240s pings.
+```bash
+cd "$DS4_DIR" && ./ds4-server --metal --port 8002 --ctx 32768 -m ds4flash.gguf
+```
 
-Related limit: the registry keeps only ONE on-demand model loaded, so any
-other on-demand MLX request (most commonly whisper transcription) evicts
-glm-5.2 and the next chat pays the ~80s reload. Mitigation on 512GB
-machines: mark both whisper models (`whisper-v3-turbo`, `whisper-v3`)
-static in `~/.config/mlx-server/config.yaml` (drop their
-`on_demand`/`on_demand_idle_timeout` lines — they're 1.6GB and 3GB, fine to
-keep resident). post-update.sh merges rather than overwrites, so the edit
-survives updates.
+### ds4-server exits instantly / "cannot open metal/flash_attn.metal"
+
+You launched it from the wrong directory. ds4-server resolves its metal
+shader sources **relative to the current working directory** — always `cd
+"$DS4_DIR"` first (the service scripts and the menu bar restart do this).
+
+### Chat requests intermittently crash with a JSON decode error
+
+ds4's JSON encoder can emit **unescaped control characters** inside long
+`reasoning_content`. Python's strict default parser raises on them. Super
+Puppy's dispatchers parse ds4 responses with `json.loads(..., strict=False)`;
+any new consumer of `:8002` must do the same (or sanitize). Worth reporting
+upstream if you can reproduce a minimal case.
+
+### "I disabled thinking but glm-5.2 still thinks" / reasoning shows up in the answer
+
+`chat_template_kwargs.enable_thinking: false` is **broken on ds4**: the
+server returns 200 but the model's reasoning simply moves from
+`reasoning_content` into `content` (no think-block markers to strip).
+Super Puppy never forwards the toggle to ds4 — glm-5.2 always thinks there.
+Budget tokens accordingly (it can burn a small `max_tokens` entirely on
+thinking; dispatchers fall back to surfacing `reasoning_content`).
+
+### glm-5.2 is missing from model lists
+
+glm-5.2 appears in discovery only while ds4 answers on `:8002` (same
+semantics as MLX being down). Check `start-local-models --status`, the menu
+bar's ds4 row, and `/tmp/local-models-ds4.log`. Cold load takes ~70s —
+readiness probes allow up to 300s.
+
+### Requests to glm-5.2 queue up
+
+ds4 serializes requests (single live session). glm-5.2 is the 512GB tier's
+general/reasoning/long-context workhorse, so parallel `local_dispatch`
+fan-outs will queue — that's the accepted tradeoff for the ~146GB of memory
+headroom vs the MLX path.
+
+### Rolling back to the MLX path (one release grace)
+
+The MLX path still works if you need it: re-add the glm-5.2 entry to
+`~/.config/mlx-server/config.yaml` (`model_path: mlx-community/GLM-5.2-4bit`,
+`served_model_name: glm-5.2`, `on_demand: true`), download the 418GB 4-bit
+weights, and note you'd also need the retired mlx-lm patch from a pre-ds4
+release. Practical only as a stopgap; the entry will not be re-removed
+(the migration is one-shot per name).
 
 ## Menu bar log spams `resolve_desktop_tailscale exception: No such file or directory: 'tailscale'`
 
