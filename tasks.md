@@ -1,5 +1,12 @@
 # Super Puppy — Tasks
 
+## Checkpoint (2026-07-22)
+
+- **Uncommitted in `install.sh` (4 changes, tested, ready to commit):** `hf auth login --force` when whoami fails (stale token no-ops the login → 401); post-install message branches on sp-doctor exit code; HF download loop counts failures instead of `|| true` false-success; failed downloads retry once with `HF_HUB_DISABLE_XET=1` (xet backend fails on large files — see model-playbook 2026-07-22 entry).
+- **FLUX.1-Kontext-dev fully downloaded** (23.8GB root checkpoint was missing since an April partial; xet kept failing, HTTP fallback completed, verified vs remote etag).
+- **ds4/GLM-Q2K experiment staged, comparison NOT yet run:** quant verified at `~/experiments/ds4/gguf/` (244GiB, etag-checked), ds4 binaries built. `experiments/ds4-bigbox-compare.sh` on `origin/experiment/ds4-integration` has two bugs — co-residency OOM (244+390GB > 448GB wired ceiling) and ds4-server needing cwd=$DS4_DIR for its Metal shader. Fixed staged runner exists (`~/experiments/ds4-staged-compare.sh`, ~30-40 min run) — port fixes onto the branch before writing up. User killed the first run for time; re-run when the box is free.
+- **Morning hard-reset root cause** is in the model playbook (2026-07-22): Ollama scheduler blind to MLX residency → co-load OOM death spiral.
+
 ## Last Known Good State
 
 MCP-first architecture working with 16 tools:
