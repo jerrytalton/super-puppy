@@ -363,7 +363,7 @@ class TestChatDs4:
         LLM'. The old ('ollama', 'mlx') tuple silently excluded a
         ds4-backed registry — glm-5.2 would be invisible to fallback."""
         server._models["glm-5.2"] = {
-            "backend": "ds4", "total_params_b": 380,
+            "backend": "ds4", "total_params_b": 740,
             "active_params_b": 32, "context": 131072, "vision": False,
         }
         with patch.object(server, "load_mcp_prefs", return_value={}):
@@ -1026,7 +1026,7 @@ class TestDs4Discovery:
         models = self._discover(True, tmp_path)
         assert models["glm-5.2"] == {
             "backend": "ds4",
-            "total_params_b": 380,
+            "total_params_b": 740,
             "active_params_b": 32,
             "context": 131072,
             "vision": False,

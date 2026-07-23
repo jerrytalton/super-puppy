@@ -367,7 +367,7 @@ class TestDs4Constants:
         from lib import models
         assert models.DS4_MODEL_NAME == "glm-5.2"
         assert models.DS4_MODEL_BYTES == 262_036_650_048
-        assert models.DS4_TOTAL_PARAMS_B == 380
+        assert models.DS4_TOTAL_PARAMS_B == 740
         assert models.DS4_ACTIVE_PARAMS_B == 32
         assert models.DS4_CONTEXT == 131072
 

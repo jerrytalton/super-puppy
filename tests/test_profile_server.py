@@ -993,7 +993,7 @@ class TestFetchDs4Models:
         assert entry["backend"] == "ds4"
         assert entry["disk_bytes"] == 262_036_650_048
         assert entry["vram_bytes"] == 262_036_650_048
-        assert entry["total_params_b"] == 380
+        assert entry["total_params_b"] == 740
         assert entry["active_params_b"] == 32
         assert entry["context"] == 131072
         assert entry["has_vision"] is False

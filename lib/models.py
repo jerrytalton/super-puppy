@@ -127,7 +127,14 @@ LLM_BACKENDS: frozenset[str] = frozenset({"ollama", "mlx", "ds4"})
 # DS4_MODEL_BYTES is the exact on-disk size of GLM-5.2-UD-Q2_K_RoutedQ2K.gguf.
 DS4_MODEL_NAME = "glm-5.2"
 DS4_MODEL_BYTES = 262_036_650_048
-DS4_TOTAL_PARAMS_B = 380
+# Computed from mlx-community/GLM-5.2-4bit's config.json (glm_moe_dsa: 78
+# layers, first_k_dense_replace=3, 256 routed + 1 shared experts/layer,
+# moe_intermediate_size=2048, hidden_size=6144): summing embeddings+head,
+# MLA attention, the DSA indexer, dense-layer FFN, and every expert's FFN
+# (routed + shared — TOTAL counts every weight on disk, not just the
+# active ones) gives ~743.6B. Rounded down. Corrects a stale 380B guess
+# that undercounted by roughly 2x.
+DS4_TOTAL_PARAMS_B = 740
 DS4_ACTIVE_PARAMS_B = 32
 DS4_CONTEXT = 131072
 

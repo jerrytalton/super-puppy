@@ -654,8 +654,8 @@ fi
 # ds4 (512gb tier): serves glm-5.2 from a Q2K GGUF — 244GiB resident vs the
 # retired 390GB mlx-openai-server path, and no more pinned mlx-lm patch.
 # Pinned commit on the glm5.2 branch: the engine is weeks old, so we ship
-# exactly what was verified (tool-calling round-trip, 15.5 tok/s, strict
-# JSON quirk documented in docs/troubleshooting.md).
+# exactly what was verified (tool-calling round-trip, ~11.4-12.7 tok/s
+# measured live, strict JSON quirk documented in docs/troubleshooting.md).
 DS4_COMMIT="bd89932"
 DS4_GGUF_REPO="antirez/GLM-5.2-GGUF"
 DS4_GGUF_FILE="GLM-5.2-UD-Q2_K_RoutedQ2K.gguf"
