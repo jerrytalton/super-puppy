@@ -2306,7 +2306,7 @@ def _chat_stream(model, backend, messages, think=True, tool="chat"):
                     try:
                         chunk = json.loads(text, strict=False)
                         delta = chunk.get("choices", [{}])[0].get("delta", {})
-                        token = delta.get("content", "")
+                        token = delta.get("content") or delta.get("reasoning_content") or ""
                         if token:
                             yield f"data: {json.dumps({'token': token})}\n\n"
                     except (json.JSONDecodeError, IndexError, KeyError):

@@ -174,6 +174,25 @@ class TestChatDs4Dispatch:
         assert "Hel\\u0001lo" in joined or "Hello" in joined.replace("\\u0001", "")
         assert '"done": true' in joined
 
+    def test_chat_stream_ds4_falls_back_to_reasoning_content(self):
+        """The streaming branch must read reasoning_content when content is empty.
+        glm-5.2 on ds4 always thinks, so deltas often have text only in reasoning_content."""
+        lines = [
+            b'data: {"choices":[{"delta":{"reasoning_content":"Think"}}]}',
+            b'data: {"choices":[{"delta":{"reasoning_content":"ing"}}]}',
+            b"data: [DONE]",
+        ]
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.iter_lines.return_value = iter(lines)
+        with patch.object(ps.requests, "post", return_value=resp):
+            events = list(ps._chat_stream(
+                "glm-5.2", "ds4", [{"role": "user", "content": "hi"}]))
+        joined = "".join(events)
+        assert '"token": "Think"' in joined
+        assert '"token": "ing"' in joined
+        assert '"done": true' in joined
+
 
 class TestIsRemoteOllama:
     def test_localhost(self):
