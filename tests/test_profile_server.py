@@ -828,6 +828,63 @@ class TestRoutes:
         assert d["warm_bytes"] == 6 * GB
 
 
+# ── ds4 discovery ───────────────────────────────────────────────────
+
+class TestFetchDs4Models:
+    def test_ds4_up_inserts_hardcoded_entry(self):
+        """ds4 serves one pinned model with no metadata; the entry must be
+        fully hardcoded (sizes included — the GGUF is invisible to every
+        existing sizing path) and marked always-resident, or the memory bar
+        undercounts 244GiB and warm logic tries to keep-alive it."""
+        resp = MagicMock()
+        resp.ok = True
+        with patch.object(ps.requests, "get", return_value=resp):
+            out = ps._fetch_ds4_models(existing={})
+        entry = out["glm-5.2"]
+        assert entry["backend"] == "ds4"
+        assert entry["disk_bytes"] == 262_036_650_048
+        assert entry["vram_bytes"] == 262_036_650_048
+        assert entry["total_params_b"] == 380
+        assert entry["active_params_b"] == 32
+        assert entry["context"] == 131072
+        assert entry["has_vision"] is False
+        assert entry["is_loaded"] is True
+        assert entry["on_demand"] is False
+
+    def test_ds4_down_returns_empty(self):
+        with patch.object(ps.requests, "get",
+                          side_effect=ps.requests.ConnectionError("down")):
+            assert ps._fetch_ds4_models(existing={}) == {}
+
+    def test_existing_name_not_overwritten(self):
+        resp = MagicMock()
+        resp.ok = True
+        with patch.object(ps.requests, "get", return_value=resp):
+            out = ps._fetch_ds4_models(existing={"glm-5.2": {}})
+        assert out == {}
+
+    def test_ds4_model_is_eligible_for_llm_tasks(self):
+        """The one-line bug this guards: _LLM_BACKENDS without 'ds4' gives
+        glm-5.2 zero eligible tasks — invisible in every dropdown."""
+        resp = MagicMock()
+        resp.ok = True
+        with patch.object(ps.requests, "get", return_value=resp):
+            entry = ps._fetch_ds4_models(existing={})["glm-5.2"]
+        tasks = ps.get_eligible_tasks("glm-5.2", entry)
+        for task in ("code", "general", "reasoning", "long_context",
+                     "translation"):
+            assert task in tasks, f"glm-5.2 missing eligible task {task!r}"
+
+    def test_missing_models_check_skips_ds4_served_name(self):
+        """glm-5.2 is pre-provisioned by install.sh, not pullable. With the
+        MLX yaml entry gone, an unpatched _check_missing_models would prompt
+        the user to pull it, and the pull would 404 (`ollama pull glm-5.2`)."""
+        with patch.object(ps, "get_all_models",
+                          return_value={"qwen3.6:27b": {"backend": "ollama"}}):
+            missing, _ = ps._check_missing_models({"general": ["glm-5.2"]})
+        assert missing == []
+
+
 class TestReadServerRamGb:
     def test_reads_value(self, tmp_path):
         conf = tmp_path / "network.conf"

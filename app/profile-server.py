@@ -45,8 +45,14 @@ from lib.models import (
     ALWAYS_EXCLUDE,
     DEFAULT_PROFILES,
     DOWNLOAD_ON_DEMAND_TASKS,
+    DS4_ACTIVE_PARAMS_B,
+    DS4_CONTEXT,
+    DS4_MODEL_BYTES,
+    DS4_MODEL_NAME,
+    DS4_TOTAL_PARAMS_B,
     HF_TASK_BACKENDS as _HF_TASK_BACKENDS,
     KNOWN_ACTIVE_PARAMS,
+    LLM_BACKENDS,
     MCP_PREFS_FILE,
     MLX_SERVER_CONFIG,
     NETWORK_CONF,
@@ -58,6 +64,7 @@ from lib.models import (
     THINK_CAPABLE_TASKS,
     WARM_BUDGET_FRACTION,
     active_params_b,
+    ds4_installed,
     migrate_profiles,
     mflux_command,
     mflux_is_turbo,
@@ -80,6 +87,9 @@ logging.basicConfig(
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 MLX_URL = os.environ.get("MLX_URL", "http://localhost:8000")
+# ds4 is internal-only (port 8002 is never tailscale-served); the menubar
+# injects DS4_URL with the configured DS4_PORT.
+DS4_URL = os.environ.get("DS4_URL", "http://localhost:8002")
 # Default Ollama keep_alive for every chat/generate/embed request from this
 # server. Ollama's built-in default is 5 minutes, which causes cold reloads
 # between Playground turns and kills the "model feels warm" illusion. 30m is
@@ -1169,6 +1179,39 @@ def _fetch_mlx_models(existing):
     return models
 
 
+def _fetch_ds4_models(existing):
+    """ds4-served glm-5.2 (512GB tier). ds4's /v1/models returns no
+    metadata, so every field is hardcoded from lib.models: the GGUF is not
+    an HF snapshot and none of the existing sizing paths can see it.
+    Always-resident (loads at startup, never unloads): is_loaded=True,
+    on_demand=False, and vram==disk counts the full 244GiB as fixed
+    residency in the memory bar. Unreachable ds4 ⇒ empty dict — glm-5.2
+    absent, same semantics as MLX-down."""
+    if DS4_MODEL_NAME in existing:
+        return {}
+    try:
+        resp = requests.get(f"{DS4_URL}/v1/models", timeout=2)
+        if not resp.ok:
+            return {}
+    except Exception:
+        return {}
+    return {DS4_MODEL_NAME: {
+        "name": DS4_MODEL_NAME,
+        "backend": "ds4",
+        "disk_bytes": DS4_MODEL_BYTES,
+        "vram_bytes": DS4_MODEL_BYTES,
+        "total_params_b": DS4_TOTAL_PARAMS_B,
+        "active_params_b": DS4_ACTIVE_PARAMS_B,
+        "context": DS4_CONTEXT,
+        "has_vision": False,
+        "family": "ds4",
+        "quant": "q2k",
+        "is_loaded": True,
+        "expires_at": None,
+        "on_demand": False,
+    }}
+
+
 def _fetch_hf_cache_models(existing):
     """TTS / transcription / image / video models discovered via the HF cache
     scanner (not served by Ollama or MLX-OpenAI-Server)."""
@@ -1210,6 +1253,12 @@ def _fetch_all_models():
         # our local HF cache — those files live on this machine, not the
         # desktop, and surfacing them as "available" would be a lie.
     models = _fetch_ollama_models()
+    if not remote_mode:
+        # ds4 before MLX: an unmigrated user yaml may still list glm-5.2 as
+        # an MLX served-name; when ds4 answers, ds4 is the backend that
+        # actually serves it. Never scanned in remote mode — DS4_URL is
+        # localhost and the desktop's registry already includes it.
+        models.update(_fetch_ds4_models(existing=models))
     models.update(_fetch_mlx_models(existing=models))
     if not remote_mode:
         models.update(_fetch_hf_cache_models(existing=models))
@@ -1225,7 +1274,7 @@ def model_matches_filter(name, model_info, task_filter):
     )
 
 
-_LLM_BACKENDS = {"ollama", "mlx"}
+_LLM_BACKENDS = LLM_BACKENDS
 
 
 def get_eligible_tasks(name, model_info):
@@ -1549,6 +1598,10 @@ def _check_missing_models(prefs):
         on_demand = task in DOWNLOAD_ON_DEMAND_TASKS
         for c in candidates:
             if on_demand and "/" in c:
+                continue
+            # ds4-served models are pre-provisioned by install.sh, not
+            # pullable — prompting would dead-end in `ollama pull glm-5.2`.
+            if c == DS4_MODEL_NAME:
                 continue
             if not _model_exists(c) and c not in seen:
                 seen.add(c)
