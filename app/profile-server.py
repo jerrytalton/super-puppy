@@ -2306,8 +2306,13 @@ def _chat_stream(model, backend, messages, think=True, tool="chat"):
             if not think:
                 body["thinking"] = {"type": "disabled"}
             try:
+                # timeout=600: no SSE chunk flows during prefill, and a
+                # 131072-ctx prompt measured 323s of prefill — a 300s
+                # first-chunk read timeout would kill exactly the long
+                # requests the raised context exists for. ds4 also
+                # serializes requests, so queueing adds to first-byte time.
                 resp = requests.post(f"{DS4_URL}/v1/chat/completions",
-                                     json=body, stream=True, timeout=300)
+                                     json=body, stream=True, timeout=600)
                 resp.raise_for_status()
                 yield f"data: {json.dumps({'model': model})}\n\n"
                 for line in resp.iter_lines():

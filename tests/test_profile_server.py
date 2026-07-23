@@ -261,6 +261,19 @@ class TestChatDs4Dispatch:
         assert '"token": "ing"' in joined
         assert '"done": true' in joined
 
+    def test_chat_stream_ds4_timeout_is_600_not_300(self):
+        """No SSE chunk flows during prefill, and a 131072-ctx prompt measured
+        323s of prefill — a 300s first-chunk read timeout kills exactly the
+        long requests the raised context exists for (ds4 also serializes, so
+        queueing adds to first-byte time). Pin 600 so a regression fails."""
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.iter_lines.return_value = iter([b"data: [DONE]"])
+        with patch.object(ps.requests, "post", return_value=resp) as mock_post:
+            list(ps._chat_stream(
+                "glm-5.2", "ds4", [{"role": "user", "content": "hi"}]))
+        assert mock_post.call_args.kwargs["timeout"] == 600
+
 
 class TestIsRemoteOllama:
     def test_localhost(self):
