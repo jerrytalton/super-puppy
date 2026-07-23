@@ -665,12 +665,23 @@ if [ "$RAM_CHECK" -ge 512 ]; then
     DS4_DIR="${DS4_DIR:-$HOME/.local/share/super-puppy/ds4}"
 
     # Reuse a dev checkout: if ~/experiments/ds4 already has the binary and
-    # the 244GiB GGUF, symlink it — never re-download 244GiB.
+    # the 244GiB GGUF, symlink it — never re-download 244GiB. Only if it's
+    # actually at the pinned commit; a stale checkout must fall through to
+    # the normal pinned clone/checkout/build path below, not be trusted
+    # silently. We never touch the user's ~/experiments checkout itself.
     if [ ! -e "$DS4_DIR" ] && [ -x "$HOME/experiments/ds4/ds4-server" ] \
        && [ -f "$HOME/experiments/ds4/gguf/$DS4_GGUF_FILE" ]; then
-        mkdir -p "$(dirname "$DS4_DIR")"
-        ln -sfn "$HOME/experiments/ds4" "$DS4_DIR"
-        echo "  ds4: reusing existing checkout at ~/experiments/ds4"
+        DS4_EXPERIMENTS_HEAD=$(git -C "$HOME/experiments/ds4" rev-parse HEAD 2>/dev/null || true)
+        case "$DS4_EXPERIMENTS_HEAD" in
+            "$DS4_COMMIT"*)
+                mkdir -p "$(dirname "$DS4_DIR")"
+                ln -sfn "$HOME/experiments/ds4" "$DS4_DIR"
+                echo "  ds4: reusing existing checkout at ~/experiments/ds4"
+                ;;
+            *)
+                echo "  Warning: ~/experiments/ds4 is at ${DS4_EXPERIMENTS_HEAD:-an unreadable/non-git state}, not the pinned $DS4_COMMIT — not reusing it; cloning/building the pinned commit instead."
+                ;;
+        esac
     fi
 
     if [ ! -x "$DS4_DIR/ds4-server" ]; then
@@ -695,8 +706,12 @@ if [ "$RAM_CHECK" -ge 512 ]; then
         if ! command -v hf > /dev/null; then
             brew install hf 2>/dev/null || true
         fi
-        FREE_GB=$(df -g "$HOME" | awk 'NR==2 {print $4}')
-        if [ "${FREE_GB:-0}" -lt 260 ]; then
+        FREE_GB=$(df -g "$HOME" 2>/dev/null | awk 'NR==2 {print $4}' || true)
+        if ! [[ "$FREE_GB" =~ ^[0-9]+$ ]]; then
+            echo "  Warning: could not verify free disk space (df failed) — proceeding with the download attempt."
+            FREE_GB=""
+        fi
+        if [ -n "$FREE_GB" ] && [ "$FREE_GB" -lt 260 ]; then
             echo "  Warning: only ${FREE_GB}GB free — the glm-5.2 GGUF needs ~250GB."
             echo "           Free space and re-run install.sh to download it."
         elif command -v hf > /dev/null; then
@@ -882,12 +897,14 @@ for model in profile.get('tasks', {}).values():
         while IFS= read -r path; do
             HF_MODELS+=("$path")
         done < <(python3 -c "
-import json, pathlib
+import json, pathlib, sys
+sys.path.insert(0, sys.argv[1])
+from lib.models import DS4_MODEL_NAME
 data = json.loads(pathlib.Path('$PROFILES_FILE').read_text())
 profile = data.get('profiles', {}).get('$PROFILE_NAME', {})
 served = {m for m in profile.get('tasks', {}).values()
           if m and ':' not in m and '/' not in m}
-served.discard('glm-5.2')  # ds4-served: provisioned by the ds4 install step, not the MLX config
+served.discard(DS4_MODEL_NAME)  # ds4-served: provisioned by the ds4 install step, not the MLX config
 name_to_path, cur_path = {}, None
 for line in pathlib.Path('$MLX_CONFIG').read_text().splitlines():
     s = line.strip()
@@ -895,7 +912,6 @@ for line in pathlib.Path('$MLX_CONFIG').read_text().splitlines():
         cur_path = s.split('model_path:', 1)[1].strip()
     elif 'served_model_name:' in s and cur_path:
         name_to_path[s.split('served_model_name:', 1)[1].strip()] = cur_path
-import sys
 seen = set()
 for nm in served:
     path = name_to_path.get(nm)
@@ -904,7 +920,7 @@ for nm in served:
     elif path not in seen:
         seen.add(path)
         print(path)
-")
+" "$REPO_DIR")
     else
         echo "  WARNING: profiles.json not found — no models resolved, skipping pull"
     fi
