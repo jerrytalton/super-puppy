@@ -78,12 +78,19 @@ pick_mlx_config() {
 }
 
 wait_for_service() {
-    local url="$1" name="$2" max_wait="${3:-30}"
+    # Optional 4th arg: PID of the backgrounded server process. When given,
+    # each iteration checks it's still alive first — lets us fail fast on a
+    # startup crash instead of busy-waiting the full max_wait on curl alone.
+    local url="$1" name="$2" max_wait="${3:-30}" pid="${4:-}"
     local elapsed=0
     while [ "$elapsed" -lt "$max_wait" ]; do
         if curl -sf "$url" > /dev/null 2>&1; then
             echo "  $name is up after ${elapsed}s."
             return 0
+        fi
+        if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+            echo "  $name died during startup after ${elapsed}s."
+            return 1
         fi
         sleep 1
         elapsed=$((elapsed + 1))
@@ -104,6 +111,8 @@ stop_services() {
     fi
 
     if pkill -f "ds4-server" 2>/dev/null; then
+        sleep 1
+        pkill -9 -f "ds4-server" 2>/dev/null || true
         echo "  ds4-server stopped."
     else
         echo "  ds4-server not running."
@@ -234,9 +243,15 @@ if [ -x "$DS4_DIR/ds4-server" ]; then
         DS4_LOG="/tmp/local-models-ds4.log"
         (cd "$DS4_DIR" && exec ./ds4-server --metal --port "$DS4_PORT" \
             --ctx 32768 -m ds4flash.gguf) > "$DS4_LOG" 2>&1 &
+        DS4_SERVER_PID=$!
         disown
-        if ! wait_for_service "http://localhost:${DS4_PORT}/v1/models" "ds4-server" 300; then
-            echo "  ERROR: ds4-server failed to start. Log: $DS4_LOG" >&2
+        if ! wait_for_service "http://localhost:${DS4_PORT}/v1/models" "ds4-server" 300 "$DS4_SERVER_PID"; then
+            if kill -0 "$DS4_SERVER_PID" 2>/dev/null; then
+                echo "  ERROR: ds4-server failed to start. Log: $DS4_LOG" >&2
+            else
+                echo "  ds4-server died during startup — see $DS4_LOG" >&2
+                tail -8 "$DS4_LOG" >&2
+            fi
         fi
     fi
 fi
