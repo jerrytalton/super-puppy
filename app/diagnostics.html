@@ -127,6 +127,7 @@ async function load() {
         <div class="section-title">Services</div>
         <div class="row"><span class="label">Ollama</span><span class="value">${dot(svc.ollama)}</span></div>
         <div class="row"><span class="label">MLX Server</span><span class="value">${dot(svc.mlx)}</span></div>
+        ${svc.ds4 == null ? '' : `<div class="row"><span class="label">ds4 (glm-5.2)</span><span class="value">${dot(svc.ds4)}</span></div>`}
         <div class="row"><span class="label">MCP Server</span><span class="value">${dot(svc.mcp)}</span></div>
       </div>
 

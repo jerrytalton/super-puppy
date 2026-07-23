@@ -3305,6 +3305,14 @@ def api_diagnostics():
         mcp_up = resp.ok
     except Exception:
         pass
+    ds4_up = None
+    if ds4_installed():
+        ds4_up = False
+        try:
+            resp = requests.get(f"{DS4_URL}/v1/models", timeout=2)
+            ds4_up = resp.ok
+        except Exception:
+            pass
 
     # Network config
     from lib.models import NETWORK_CONF
@@ -3332,6 +3340,7 @@ def api_diagnostics():
         "services": {
             "ollama": ollama_up,
             "mlx": mlx_up,
+            "ds4": ds4_up,
             "mcp": mcp_up,
         },
         "models": {

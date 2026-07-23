@@ -1558,3 +1558,26 @@ class TestShareUrl:
         with patch.object(ps, "_PROFILE_AUTH_TOKEN", "sekret"):
             resp = client.get("/api/share-url")
         assert resp.status_code == 403
+
+
+class TestDiagnosticsDs4:
+    def test_diagnostics_reports_ds4_when_installed(self, client):
+        resp_ok = MagicMock()
+        resp_ok.ok = True
+        with patch.object(ps, "ds4_installed", return_value=True), \
+             patch.object(ps.requests, "get", return_value=resp_ok), \
+             patch.object(ps, "ollama_get", return_value=None), \
+             patch.object(ps, "get_all_models", return_value={}):
+            d = client.get("/api/diagnostics").get_json()
+        assert d["services"]["ds4"] is True
+
+    def test_diagnostics_ds4_null_when_not_installed(self, client):
+        """Laptops never run ds4 — a permanently-red 'Down' row would be
+        noise. null tells the UI to omit the row entirely."""
+        with patch.object(ps, "ds4_installed", return_value=False), \
+             patch.object(ps.requests, "get",
+                          side_effect=ps.requests.ConnectionError("x")), \
+             patch.object(ps, "ollama_get", return_value=None), \
+             patch.object(ps, "get_all_models", return_value={}):
+            d = client.get("/api/diagnostics").get_json()
+        assert d["services"]["ds4"] is None
