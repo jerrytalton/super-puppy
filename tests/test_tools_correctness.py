@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import pytest
 
+from lib.models import DS4_MODEL_NAME
 from tests._smoke_helpers import (
     assert_media_output, assert_tool_output_contains, call_api_test, client,
     ps, require_ds4, require_local_services, smoke_tmp, write_png,
@@ -121,7 +122,7 @@ def test_ds4_glm52_chat_correctness(client):
     512GB tier; FAILS if ds4 is installed but down (require_ds4)."""
     require_ds4()
     assert_tool_output_contains(
-        client, tool="general", model="glm-5.2",
+        client, tool="general", model=DS4_MODEL_NAME,
         expect_any=["kumquat"],
         prompt="Reply with exactly one word: kumquat")
 
