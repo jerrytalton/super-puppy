@@ -885,6 +885,42 @@ class TestFetchDs4Models:
         assert missing == []
 
 
+class TestDs4InstalledGatesMlxGlm52Fallback:
+    """When ds4 is provisioned on this machine, ds4 owns glm-5.2 outright:
+    if ds4 is unreachable the model must be absent, never resurface as a
+    stale MLX entry (wrong sizing, invites a 418GB cold load) from an
+    unmigrated ~/.config/mlx-server/config.yaml."""
+
+    def test_ds4_down_but_installed_keeps_glm52_absent(self):
+        with patch.object(ps, "OLLAMA_URL", "http://localhost:11434"), \
+             patch.object(ps, "_fetch_ollama_models", return_value={}), \
+             patch.object(ps, "_fetch_ds4_models", return_value={}), \
+             patch.object(ps, "ds4_installed", return_value=True), \
+             patch.object(ps, "_load_mlx_config",
+                          return_value={"glm-5.2": {"model_path": "mlx-community/GLM-5.2-4bit"}}), \
+             patch.object(ps, "_mlx_loaded_ids", return_value=set()), \
+             patch.object(ps, "_hf_model_downloaded", return_value=True), \
+             patch.object(ps, "_hf_cache_bytes", return_value=180 * 10**9), \
+             patch.object(ps, "_mlx_model_has_vision", return_value=False):
+            models = ps._fetch_all_models()
+        assert "glm-5.2" not in models
+
+    def test_ds4_not_installed_allows_mlx_glm52_fallback(self):
+        with patch.object(ps, "OLLAMA_URL", "http://localhost:11434"), \
+             patch.object(ps, "_fetch_ollama_models", return_value={}), \
+             patch.object(ps, "_fetch_ds4_models", return_value={}), \
+             patch.object(ps, "ds4_installed", return_value=False), \
+             patch.object(ps, "_load_mlx_config",
+                          return_value={"glm-5.2": {"model_path": "mlx-community/GLM-5.2-4bit"}}), \
+             patch.object(ps, "_mlx_loaded_ids", return_value=set()), \
+             patch.object(ps, "_hf_model_downloaded", return_value=True), \
+             patch.object(ps, "_hf_cache_bytes", return_value=180 * 10**9), \
+             patch.object(ps, "_mlx_model_has_vision", return_value=False):
+            models = ps._fetch_all_models()
+        assert "glm-5.2" in models
+        assert models["glm-5.2"]["backend"] == "mlx"
+
+
 class TestReadServerRamGb:
     def test_reads_value(self, tmp_path):
         conf = tmp_path / "network.conf"

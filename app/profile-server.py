@@ -1148,6 +1148,13 @@ def _fetch_mlx_models(existing):
     for mid, cfg in _load_mlx_config().items():
         if mid in existing:
             continue
+        if mid == DS4_MODEL_NAME and ds4_installed():
+            # ds4 owns glm-5.2 on machines where it's provisioned: when
+            # ds4 is down the model must be absent, not resurface as a
+            # stale MLX entry inviting a 418GB cold load. Machines
+            # without a ds4 install (laptops, deliberate MLX fallback)
+            # keep the MLX path.
+            continue
         model_path = cfg.get("model_path", "")
         if not _hf_model_downloaded(model_path):
             continue

@@ -920,7 +920,7 @@ Expected: FAIL — `AttributeError: ... has no attribute '_fetch_ds4_models'`; t
     ds4_installed,
 ```
 
-(`ds4_installed` is used by Task 11's diagnostics probe; importing it now is harmless.)
+(`ds4_installed` gates `_fetch_mlx_models`'s glm-5.2 skip below, so it's a real dependency of this task, not just importing ahead for Task 11's diagnostics probe.)
 
 3b. Replace lines 81-82:
 
