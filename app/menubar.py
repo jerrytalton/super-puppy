@@ -226,13 +226,15 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_DIR = os.path.dirname(SCRIPT_DIR)
 if REPO_DIR not in sys.path:
     sys.path.insert(0, REPO_DIR)
-from lib.models import CLAUDE_CONFIG_FILE  # early import for MCP_TOOLS_FILE
+from lib.models import CLAUDE_CONFIG_FILE, ds4_dir, ds4_installed  # early import for MCP_TOOLS_FILE
 ICON_PATH = os.path.join(SCRIPT_DIR, "icon-menubar.png")
 ICONS_DIR = os.path.join(SCRIPT_DIR, "icons")
 NETWORK_CONF = os.path.expanduser("~/.config/local-models/network.conf")
 MCP_TOOLS_FILE = str(CLAUDE_CONFIG_FILE)
 OLLAMA_LOCAL = "http://localhost:11434"
 MLX_LOCAL = "http://localhost:8000"
+DS4_LOCAL = "http://localhost:8002"
+DS4_STUCK_LOADING_S = 300   # ds4 cold load ~70s; NOT the MLX 60s watchdog
 MODE_CONF = os.path.expanduser("~/.config/local-models/mode.conf")
 POLL_INTERVAL = 8           # seconds between status refreshes
 UPDATE_CHECK_INTERVAL = 120  # seconds between git update checks (2 min)
@@ -1528,6 +1530,9 @@ class LocalModelsApp(rumps.App):
         self.ram_gb = get_ram_gb()
         self.ollama_port = self.conf["OLLAMA_PORT"]
         self.mlx_port = self.conf["MLX_PORT"]
+        self.ds4_port = self.conf.get("DS4_PORT", "8002")
+        self.ds4_url = f"http://localhost:{self.ds4_port}"
+        self.ds4_present = ds4_installed()
         self.probe_timeout = int(self.conf["PROBE_TIMEOUT"])
         self._profile_fixed_port = int(self.conf.get("PROFILE_PORT", "8101"))
         self.ts_hostname = self.conf.get("TAILSCALE_HOSTNAME", "")
@@ -1552,6 +1557,8 @@ class LocalModelsApp(rumps.App):
         self.mlx_ok = False
         self.ollama_loading = False    # process exists but not responding
         self.mlx_loading = False
+        self.ds4_ok = False
+        self.ds4_loading = False
         self.ollama_models = []
         self.mlx_models = []
         self.servers_started = False
@@ -1593,6 +1600,10 @@ class LocalModelsApp(rumps.App):
         self.menu_mlx_restart = rumps.MenuItem(
             "Restart MLX", callback=self._restart_mlx)
         self.menu_mlx.add(self.menu_mlx_restart)
+        self.menu_ds4 = rumps.MenuItem("ds4 …")
+        self.menu_ds4_restart = rumps.MenuItem(
+            "Restart ds4", callback=self._restart_ds4)
+        self.menu_ds4.add(self.menu_ds4_restart)
         self.menu_mcp = rumps.MenuItem("MCP …")
         self.menu_mcp_restart = rumps.MenuItem(
             "Restart MCP", callback=self._restart_mcp)
@@ -1629,6 +1640,10 @@ class LocalModelsApp(rumps.App):
             None,
             self.menu_ollama,
             self.menu_mlx,
+        ]
+        if self.ds4_present:
+            menu_items.append(self.menu_ds4)
+        menu_items += [
             self.menu_mcp,
             None,
             self.menu_profiles,
@@ -2087,6 +2102,10 @@ class LocalModelsApp(rumps.App):
             f"Desktop FQDN: {getattr(self, 'desktop_fqdn', '')}",
             f"Ollama: {'up' if self.ollama_ok else 'down'}",
             f"MLX: {'up' if self.mlx_ok else 'down'}",
+        ]
+        if self.ds4_present:
+            lines.append(f"ds4: {'up' if self.ds4_ok else 'down'}")
+        lines += [
             f"MCP process: {'alive' if mcp_alive else 'dead'}",
             f"MCP models: {len(self.mcp_models)}",
             f"Ollama models: {len(self.ollama_models)}",
@@ -2338,6 +2357,39 @@ class LocalModelsApp(rumps.App):
             self.refresh(None)
         threading.Thread(target=_do, daemon=True).start()
 
+    def _restart_ds4(self, _):
+        """Restart just ds4-server (glm-5.2). cwd-pinned to DS4_DIR — the
+        binary resolves metal/flash_attn.metal relative to cwd. Cold load
+        is ~70s, so the readiness poll runs up to 300s, not the 15s the
+        other services use."""
+        self.ds4_ok = False
+        self.ds4_loading = True
+        self._update_menu()
+        def _do():
+            try:
+                subprocess.run(["pkill", "-f", "ds4-server"],
+                               capture_output=True, timeout=5)
+                time.sleep(2)
+                subprocess.run(["pkill", "-9", "-f", "ds4-server"],
+                               capture_output=True, timeout=3)
+                if hasattr(self, '_ds4_log') and self._ds4_log and not self._ds4_log.closed:
+                    self._ds4_log.close()
+                self._ds4_log = open("/tmp/local-models-ds4-restart.log", "w")
+                subprocess.Popen(
+                    ["./ds4-server", "--metal", "--port", str(self.ds4_port),
+                     "--ctx", "32768", "-m", "ds4flash.gguf"],
+                    stdout=self._ds4_log, stderr=self._ds4_log,
+                    cwd=str(ds4_dir()),
+                    start_new_session=True)
+                for _ in range(300):
+                    time.sleep(1)
+                    if probe_service(self.ds4_url, 2):
+                        break
+            except Exception as e:
+                rumps.notification("Local Models", "ds4 restart failed", str(e))
+            self.refresh(None)
+        threading.Thread(target=_do, daemon=True).start()
+
     def _open_mcp_config(self, _):
         """Open the Claude config file so the user can check MCP setup."""
         subprocess.Popen(["open", MCP_TOOLS_FILE])
@@ -2455,10 +2507,30 @@ class LocalModelsApp(rumps.App):
             if hasattr(self, '_mlx_loading_since'):
                 del self._mlx_loading_since
 
+        if self.ds4_present:
+            self.ds4_ok = probe_service(self.ds4_url, 2)
+            self.ds4_loading = (not self.ds4_ok
+                                and process_is_running("ds4-server"))
+            # ds4's cold load is ~70s — the MLX 60s threshold would kill
+            # every legitimate load. 300s matches the readiness deadline.
+            if self.ds4_loading:
+                if not hasattr(self, '_ds4_loading_since'):
+                    self._ds4_loading_since = time.time()
+                elif time.time() - self._ds4_loading_since > DS4_STUCK_LOADING_S:
+                    subprocess.run(["pkill", "-9", "-f", "ds4-server"],
+                                   capture_output=True, timeout=3)
+                    self.ds4_loading = False
+                    del self._ds4_loading_since
+            else:
+                if hasattr(self, '_ds4_loading_since'):
+                    del self._ds4_loading_since
+
         # Auto-restart downed services on desktop (at most once per 2 minutes)
         if (self.servers_started
                 and ((not self.ollama_ok and not self.ollama_loading)
-                     or (not self.mlx_ok and not self.mlx_loading))):
+                     or (not self.mlx_ok and not self.mlx_loading)
+                     or (self.ds4_present and not self.ds4_ok
+                         and not self.ds4_loading))):
             now = time.time()
             if now - getattr(self, '_last_restart_attempt', 0) > 120:
                 self._last_restart_attempt = now
@@ -2658,6 +2730,7 @@ class LocalModelsApp(rumps.App):
             # Remote: hide local service details — they're the desktop's concern
             self.menu_ollama.hide()
             self.menu_mlx.hide()
+            self.menu_ds4.hide()
             self.menu_mcp_restart.set_callback(None)
         else:
             self.menu_ollama.show()
@@ -2685,6 +2758,16 @@ class LocalModelsApp(rumps.App):
             else:
                 self._styled_menu(self.menu_mlx, RED, "MLX", down_detail)
             self.menu_mlx_restart.set_callback(self._restart_mlx)
+
+            if self.ds4_present:
+                self.menu_ds4.show()
+                if self.ds4_ok:
+                    self._styled_menu(self.menu_ds4, GRN, "ds4", "1 model")
+                elif getattr(self, 'ds4_loading', False):
+                    self._styled_menu(self.menu_ds4, YEL, "ds4", "loading…")
+                else:
+                    self._styled_menu(self.menu_ds4, RED, "ds4", down_detail)
+                self.menu_ds4_restart.set_callback(self._restart_ds4)
 
         mcp_proc = getattr(self, '_mcp_proc', None)
         mcp_proc_alive = mcp_proc is not None and mcp_proc.poll() is None
@@ -2774,6 +2857,9 @@ class LocalModelsApp(rumps.App):
             self.ollama_remote if self.mode == "client" else OLLAMA_LOCAL)
         env["MLX_URL"] = (
             self.mlx_remote if self.mode == "client" else MLX_LOCAL)
+        # localhost always: 8002 is never tailscale-served; in client mode
+        # the profile server proxies glm-5.2 requests to the desktop anyway.
+        env["DS4_URL"] = self.ds4_url
         # Keep profile server alive when serving remote clients
         if self.desktop and getattr(self, 'remote_access_enabled', False):
             env["PROFILE_IDLE_TIMEOUT"] = "0"

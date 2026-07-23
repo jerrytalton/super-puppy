@@ -100,6 +100,7 @@ The menu bar app POSTs each machine's 7-day usage summary (`local_usage_summary`
 | Session-start hook script | `bin/sp-session-ping` (symlinked to `~/.local/bin/`) |
 | Config audit script | `bin/sp-doctor` (symlinked to `~/.local/bin/`) |
 | Menu bar log | `/tmp/local-models-menubar.log` |
+| ds4 logs | `/tmp/local-models-ds4.log` (launch), `/tmp/local-models-ds4-restart.log` (menu restart) |
 | Instance lock | `~/.config/local-models/menubar.lock` |
 
 ### Task types
@@ -155,7 +156,7 @@ Smoke tests intentionally **do not mock** `requests`/`subprocess` — they're th
 ## Menu Bar Features
 
 - **Remote / Local toggle** — switch between desktop and local models. "Local (override)" shown when user forced local but desktop is reachable.
-- **Service status** — green/yellow/red dots for Ollama, MLX, MCP. Shows "restarting…" during auto-restart, "not shared" when MCP is unreachable in client mode.
+- **Service status** — green/yellow/red dots for Ollama, MLX, ds4 (512GB tier only), MCP. Shows "restarting…" during auto-restart, "not shared" when MCP is unreachable in client mode.
 - **Copy Diagnostics** — dumps mode, versions, service status, recent log lines to clipboard for remote debugging.
 - **Version display** — from git tags (e.g. `v1.0.0`), shown in menu.
 - **Notification debounce** — connectivity changes throttled to 60-second minimum interval.

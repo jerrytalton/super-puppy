@@ -144,7 +144,7 @@ All remote access uses Tailscale — services bind to localhost and are proxied 
 
 A puppy icon in the menu bar provides:
 
-- **Status** — Ollama/MLX running or down, MCP configured or not
+- **Status** — Ollama/MLX/ds4 running or down, MCP configured or not
 - **Model Profiles** — RAM-tier presets (32GB / 64GB / 128GB / 512GB) with a warm-set memory view
 - **Task preferences** — pick which model backs each MCP tool
 - **Playground** — web UI to test any tool interactively

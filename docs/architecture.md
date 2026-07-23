@@ -22,7 +22,7 @@ Super Puppy is a local AI model server for Apple Silicon, managed from the macOS
 
 ### Menu bar app (`app/menubar.py`)
 
-The central coordinator. Launches via a native macOS app bundle (`SuperPuppy.app`) so it appears in Cmd-Tab. Manages the lifecycle of Ollama, MLX, MCP, and profile server processes. Handles auto-update, mode detection (server/client/offline), service health monitoring, and Tailscale remote access toggling.
+The central coordinator. Launches via a native macOS app bundle (`SuperPuppy.app`) so it appears in Cmd-Tab. Manages the lifecycle of Ollama, MLX, ds4 (512GB tier), MCP, and profile server processes. Handles auto-update, mode detection (server/client/offline), service health monitoring, and Tailscale remote access toggling.
 
 ### MCP server (`mcp/local-models-server.py`)
 

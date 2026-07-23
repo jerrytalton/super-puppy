@@ -412,6 +412,15 @@ class TestDs4Constants:
         assert "DS4_DIR=" in content
 
 
+class TestDs4Menubar:
+    def test_ds4_watchdog_threshold_is_generous(self):
+        """ds4's cold load is ~70s. The MLX watchdog (60s) copied here
+        would SIGKILL every legitimate load, forever. 300s matches the
+        readiness deadline in start-local-models and _restart_ds4."""
+        assert menubar.DS4_STUCK_LOADING_S == 300
+        assert menubar.DS4_STUCK_LOADING_S > 70
+
+
 class TestModelHasVision:
     def test_model_info_vision_keys_signal_vision(self):
         """GGUF vision models carry the vision tower; Ollama exposes it
