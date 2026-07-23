@@ -565,13 +565,26 @@ if [ -f "$CLAUDE_JSON" ]; then
         # session-start hook are opt-in: run `sp-doctor --fix`, which shows
         # each change and asks before writing. (MCP registration above went
         # to ~/.claude.json, a Claude-managed config, preserving your other
-        # servers.)
+        # servers.) sp-doctor exits nonzero when any check fails — branch on
+        # that so the closing message matches what the audit just showed.
         echo ""
-        ~/.local/bin/sp-doctor 2>/dev/null || true
-        echo ""
-        echo "  MCP registered. SP did not touch your CLAUDE.md or settings.json."
-        echo "  To add agent guidance + the session-start hook (each change is"
-        echo "  shown and confirmed first), run:  sp-doctor --fix"
+        if ~/.local/bin/sp-doctor 2>/dev/null; then
+            echo ""
+            echo "  MCP registered; no failing checks. Agents are wired to Super Puppy."
+        else
+            echo ""
+            echo "  MCP registered. The ❌ items above are optional wiring — agent"
+            echo "  guidance, the session-start hook, and any extra Claude accounts"
+            echo "  (shown as @account) — which SP never writes without your OK."
+            echo ""
+            echo "  To finish wiring them up now, run:"
+            echo ""
+            echo "      sp-doctor --fix"
+            echo ""
+            echo "  It walks the ❌ items one by one, shows each change, and asks"
+            echo "  before writing. It only appends or merges — it never overwrites"
+            echo "  content you maintain yourself."
+        fi
     else
         echo "  claude CLI not found — install Claude Code first, then re-run install.sh"
     fi
