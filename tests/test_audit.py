@@ -208,9 +208,16 @@ def test_mcp_fix_absent_file_no_world_readable_intermediate(tmp_path):
 def test_mcp_fix_no_secret_even_inside_git_worktree(tmp_path):
     # Env-var reference means the token is never written, so a config tracked
     # in a git work tree can't leak it — the old inline-guard is unneeded.
+    import os
     import subprocess
     home = _fake_home(tmp_path)
-    subprocess.run(["git", "init", "-q"], cwd=home, check=True)
+    # Scrub GIT_DIR/GIT_WORK_TREE: under the pre-commit hook git exports an
+    # absolute GIT_DIR, and `git init` honors it over cwd — re-initializing
+    # the REAL repo and flipping its shared config to bare=true (observed
+    # live 4x; reproduced deterministically 2026-07-23).
+    clean_env = {k: v for k, v in os.environ.items()
+                 if not k.startswith("GIT_")}
+    subprocess.run(["git", "init", "-q"], cwd=home, check=True, env=clean_env)
     cj = home / ".claude.json"
     audit.fix("claude-mcp", home=home, token="secret")
     assert "secret" not in cj.read_text()
