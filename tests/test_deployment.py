@@ -905,3 +905,23 @@ class TestPostUpdateConfigRefs:
             assert (mlx_dir / name).exists(), (
                 f"post-update.sh loops over {name} but config/mlx-server/{name} does not exist in the repo"
             )
+
+
+class TestWarmTickWiring:
+    """_on_warm_tick must thread the module-level ping_warm with the app's
+    ports — an arg mismatch would only surface as a swallowed exception in
+    a daemon thread at runtime."""
+
+    def test_on_warm_tick_threads_ping_warm_with_ports(self):
+        app = object.__new__(menubar.LocalModelsApp)
+        app.mode = "server"
+        app.servers_started = True
+        app.ollama_port, app.mlx_port = "11434", "8000"
+        with patch.object(menubar, "load_profiles", return_value={}), \
+             patch.object(menubar, "warm_ping_targets",
+                          return_value=[("m:1b", "ollama")]), \
+             patch.object(menubar.threading, "Thread") as mock_thread:
+            app._on_warm_tick(None)
+        assert mock_thread.call_args.kwargs["target"] is menubar.ping_warm
+        assert mock_thread.call_args.kwargs["args"] == (
+            [("m:1b", "ollama")], "11434", "8000")

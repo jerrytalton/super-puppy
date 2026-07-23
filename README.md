@@ -242,6 +242,13 @@ any `uv tool upgrade mlx-openai-server`). See
 
 Each profile declares a **warm set** (the text workhorse + embedding) that's kept resident for instant task-switching; everything else streams on demand and unloads when idle. On Apple Silicon the GPU is time-sliced — keeping many models resident buys no concurrency and risks memory-pressure thrash — so the warm set is deliberately small (≤ ~65% of RAM, leaving room for the active model's KV cache and the OS). The Models page's memory bar shows the warm set against that budget, with the largest on-demand model as a hatched "transient peak."
 
+Warm models are re-pinged every 4 minutes, residency-first: refreshes only
+touch models that are already loaded. If a warm model was evicted, SP re-loads
+it only when the machine is quiet — nothing in flight, no foreign models
+resident, normal memory pressure, and enough available memory for the model
+plus headroom. Warm residency exists to hide cold starts on an idle machine;
+under contention it lapses instead of competing.
+
 | File | What |
 |------|------|
 | `network.conf` | Server role, hostname, ports, auth, Tailscale |

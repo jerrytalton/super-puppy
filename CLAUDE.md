@@ -155,6 +155,7 @@ Smoke tests intentionally **do not mock** `requests`/`subprocess` — they're th
 - **Copy Diagnostics** — dumps mode, versions, service status, recent log lines to clipboard for remote debugging.
 - **Version display** — from git tags (e.g. `v1.0.0`), shown in menu.
 - **Notification debounce** — connectivity changes throttled to 60-second minimum interval.
+- **Contention-aware keep-warm** — warm pings refresh models that are already resident, but re-loading an evicted warm model is gated: skipped (and logged) while any MCP request is in flight, any non-warm model is resident on Ollama/MLX, kernel memory pressure is above normal, or available memory can't fit the model plus 16GB headroom. Residency lapses under contention and restores on the next quiet 4-minute tick.
 
 ## When Modifying This Repo
 

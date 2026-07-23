@@ -764,6 +764,63 @@ class TestWarmGate:
         assert menubar.mlx_model_size_gb("my-model") == pytest.approx(4096 / 1024 ** 3)
         assert menubar.mlx_model_size_gb("not-served") is None
 
+    # ── the ping round ──────────────────────────────────────────────
+
+    def _machine(self, resident_ollama=None, mlx_ids=None, counts=None,
+                 pressure=1, available=400.0):
+        return [patch.object(menubar, "ollama_resident_models",
+                             return_value=resident_ollama or {}),
+                patch.object(menubar, "mlx_loaded_ids", return_value=mlx_ids or set()),
+                patch.object(menubar, "gpu_active_counts", return_value=counts or {}),
+                patch.object(menubar, "memory_pressure_level", return_value=pressure),
+                patch.object(menubar, "vm_available_gb", return_value=available)]
+
+    def test_ping_warm_refreshes_resident_models_unconditionally(self):
+        p = self._machine(resident_ollama={"m:1b": 1.0}, mlx_ids={"bare"},
+                          counts={"ollama": 3}, pressure=4, available=1.0)
+        with p[0], p[1], p[2], p[3], p[4], \
+             patch.object(menubar.urllib.request, "urlopen",
+                          return_value=self._fake_response(b"{}")) as mock_open:
+            stats = menubar.ping_warm([("m:1b", "ollama"), ("bare", "mlx")],
+                                      "11434", "8000")
+        assert stats == {"refreshed": 2, "loaded": 0, "skipped": 0}
+        assert mock_open.call_count == 2
+        urls = [c.args[0].get_full_url() for c in mock_open.call_args_list]
+        assert urls == ["http://localhost:11434/api/generate",
+                        "http://localhost:8000/v1/chat/completions"]
+
+    def test_ping_warm_blocks_reload_when_foreign_resident(self, caplog):
+        p = self._machine(resident_ollama={"third-party:70b": 40.0})
+        with p[0], p[1], p[2], p[3], p[4], \
+             patch.object(menubar, "mlx_model_size_gb", return_value=30.0), \
+             patch.object(menubar.urllib.request, "urlopen") as mock_open, \
+             caplog.at_level("INFO"):
+            stats = menubar.ping_warm([("bare", "mlx")], "11434", "8000")
+        assert stats == {"refreshed": 0, "loaded": 0, "skipped": 1}
+        mock_open.assert_not_called()
+        assert "third-party:70b" in caplog.text
+
+    def test_ping_warm_reloads_evicted_model_on_quiet_machine(self):
+        p = self._machine()
+        with p[0], p[1], p[2], p[3], p[4], \
+             patch.object(menubar, "ollama_model_size_gb", return_value=20.0), \
+             patch.object(menubar.urllib.request, "urlopen",
+                          return_value=self._fake_response(b"{}")) as mock_open:
+            stats = menubar.ping_warm([("m:1b", "ollama")], "11434", "8000")
+        assert stats == {"refreshed": 0, "loaded": 1, "skipped": 0}
+        assert mock_open.call_count == 1
+
+    def test_ping_warm_blocks_reload_of_unknown_size_model(self, caplog):
+        p = self._machine()
+        with p[0], p[1], p[2], p[3], p[4], \
+             patch.object(menubar, "mlx_model_size_gb", return_value=None), \
+             patch.object(menubar.urllib.request, "urlopen") as mock_open, \
+             caplog.at_level("INFO"):
+            stats = menubar.ping_warm([("bare", "mlx")], "11434", "8000")
+        assert stats["skipped"] == 1
+        mock_open.assert_not_called()
+
+
 
 class TestHeartbeatPayload:
     """build_heartbeat_payload is the pure shape used by the fleet heartbeat

@@ -883,6 +883,60 @@ def warm_ping_targets(data):
     return targets
 
 
+def _send_warm_ping(model, backend, ollama_port, mlx_port):
+    if backend == "ollama":
+        body = json.dumps({"model": model, "prompt": "",
+                           "keep_alive": WARM_KEEP_ALIVE}).encode()
+        url = f"http://localhost:{ollama_port}/api/generate"
+    else:
+        body = json.dumps({"model": model, "max_tokens": 1,
+                           "messages": [{"role": "user", "content": "hi"}]}).encode()
+        url = f"http://localhost:{mlx_port}/v1/chat/completions"
+    req = urllib.request.Request(url, data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=600):
+        pass
+
+
+def ping_warm(targets, ollama_port, mlx_port):
+    """One warm round, residency-first. Returns counts for observability.
+
+    Refreshing a resident model is always safe — it can't trigger a load.
+    Re-loading an evicted model commits its full footprint, so each reload
+    re-probes the gates immediately before sending (a round can run minutes,
+    and the first reload changes the machine the second one sees).
+    """
+    stats = {"refreshed": 0, "loaded": 0, "skipped": 0}
+    resident_ollama = ollama_resident_models(ollama_port)
+    resident_mlx = mlx_loaded_ids(mlx_port)
+    warm_names = {m for m, _ in targets}
+    for model, backend in targets:
+        resident = model in (resident_ollama if backend == "ollama" else resident_mlx)
+        try:
+            if resident:
+                _send_warm_ping(model, backend, ollama_port, mlx_port)
+                stats["refreshed"] += 1
+                continue
+            foreign = (set(resident_ollama) | resident_mlx) - warm_names
+            size_gb = (ollama_model_size_gb(model, ollama_port)
+                       if backend == "ollama" else mlx_model_size_gb(model))
+            reason = cold_load_skip_reason(
+                gpu_active_counts(), foreign, memory_pressure_level(),
+                vm_available_gb(), size_gb)
+            if reason:
+                logging.info("keep-warm: not reloading %s: %s", model, reason)
+                stats["skipped"] += 1
+                continue
+            logging.info("keep-warm: reloading evicted %s (%s)", model, backend)
+            _send_warm_ping(model, backend, ollama_port, mlx_port)
+            stats["loaded"] += 1
+            resident_ollama = ollama_resident_models(ollama_port)
+            resident_mlx = mlx_loaded_ids(mlx_port)
+        except Exception as e:
+            logging.debug("keep-warm ping failed for %s: %s", model, e)
+    return stats
+
+
 def save_profiles(data):
     os.makedirs(os.path.dirname(PROFILES_FILE), exist_ok=True)
     # Atomic write — the profile server (another process) and Flask threads can
@@ -1615,32 +1669,9 @@ class LocalModelsApp(rumps.App):
         targets = warm_ping_targets(load_profiles())
         if not targets:
             return
-        threading.Thread(target=self._ping_warm, args=(targets,), daemon=True).start()
-
-    def _ping_warm(self, targets):
-        for model, backend in targets:
-            try:
-                if backend == "ollama":
-                    body = json.dumps({"model": model, "prompt": "",
-                                       "keep_alive": WARM_KEEP_ALIVE}).encode()
-                    req = urllib.request.Request(
-                        f"http://localhost:{self.ollama_port}/api/generate",
-                        data=body, method="POST")
-                    req.add_header("Content-Type", "application/json")
-                    with urllib.request.urlopen(req, timeout=120):
-                        pass
-                else:
-                    body = json.dumps({"model": model, "max_tokens": 1,
-                                       "messages": [{"role": "user",
-                                                      "content": "hi"}]}).encode()
-                    req = urllib.request.Request(
-                        f"http://localhost:{self.mlx_port}/v1/chat/completions",
-                        data=body, method="POST")
-                    req.add_header("Content-Type", "application/json")
-                    with urllib.request.urlopen(req, timeout=120):
-                        pass
-            except Exception as e:
-                logging.debug("keep-warm ping failed for %s: %s", model, e)
+        threading.Thread(target=ping_warm,
+                         args=(targets, self.ollama_port, self.mlx_port),
+                         daemon=True).start()
 
     def _fleet_report_target(self):
         """Resolve (url, token) for this machine's fleet heartbeat POST.
