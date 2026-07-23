@@ -146,7 +146,8 @@ Run all tests: `uv run --with pytest --with flask --with pyyaml --with requests 
 - `tests/test_profile_server.py` — 56 tests for Flask routes, profiles CRUD, model selection, config, auth
 - `tests/test_playground_coverage.py` — 4 tests ensuring MCP tools have playground UI and API routes
 - `tests/test_tools_smoke_laptop.py` — 11 live smoke tests (32gb tier), marked `@pytest.mark.smoke`. Drives each task through the real profile-server → Ollama/MLX/mflux stack, with the model map derived from `DEFAULT_PROFILES` so it can't drift. Included in the default `pytest tests/` run; skips cleanly if services are down or a model isn't pulled. Excluded from the pre-commit hook because cold loads make it occasionally flaky.
-- `tests/test_tools_smoke_everyday.py` — same but for the 512gb tier's bigger models. Marked `@pytest.mark.smoke` and `@pytest.mark.slow`; excluded by default. Run with `pytest -m slow` or `pytest -m ''`.
+- `tests/test_tools_smoke_everyday.py` — same but for the 512gb tier's bigger models. Marked `@pytest.mark.smoke` and `@pytest.mark.slow`; excluded by default. Run with `pytest -m slow` or `pytest -m ''`. Requires ds4 on the 512GB tier (fails loud if ds4-server is installed but down).
+- `tests/test_tools_correctness.py` — release-gated output-correctness cases (`correctness` marker, run by `bin/release.sh`), including one pinned ds4 glm-5.2 chat case so releases gate on the live ds4 path.
 - `tests/test_e2e.py` — 43 end-to-end tests against live services
 - `tests/test_error_handling.py` — 24 tests for error handling and model validation
 - `tests/test_remote_access.sh` — bash script testing Tailscale HTTPS endpoints

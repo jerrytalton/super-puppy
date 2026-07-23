@@ -16,11 +16,15 @@ import pytest
 from lib.models import DEFAULT_PROFILES
 from tests._smoke_helpers import (
     CHAT_CASES, FIXTURE_CASES,
-    client, require_local_services, run_chat_case, run_fixture_case, smoke_tmp,
+    client, require_ds4, require_local_services, run_chat_case,
+    run_fixture_case, smoke_tmp,
 )
 
 # Skip the module at collection time if local services aren't up.
 require_local_services()
+# The 512gb tier's chat tasks route to ds4-served glm-5.2. Skip below the
+# 512GB tier; FAIL (not skip) when ds4 is installed but down.
+require_ds4()
 
 
 # Derived from the shipped preset so the map can't drift when the tier
