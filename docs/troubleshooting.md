@@ -207,12 +207,28 @@ headroom vs the MLX path.
 
 ### Rolling back to the MLX path (one release grace)
 
-The MLX path still works if you need it: re-add the glm-5.2 entry to
-`~/.config/mlx-server/config.yaml` (`model_path: mlx-community/GLM-5.2-4bit`,
-`served_model_name: glm-5.2`, `on_demand: true`), download the 418GB 4-bit
-weights, and note you'd also need the retired mlx-lm patch from a pre-ds4
-release. Practical only as a stopgap; the entry will not be re-removed
-(the migration is one-shot per name).
+The MLX path still works if you need it, but order matters:
+
+1. **First, disarm ds4**: remove or rename `$DS4_DIR/ds4-server` (default
+   `~/.local/share/super-puppy/ds4/ds4-server`). Both the profile server
+   and the MCP server gate the yaml-registered glm-5.2 entry on
+   `ds4_installed()` — which just checks that this binary exists — so as
+   long as it's present, a re-added MLX entry stays invisible even with
+   ds4 down. Deleting/renaming it also disarms `post-update.sh`'s
+   glm-5.2 → ds4 migration (it now requires the same binary), so the
+   entry you add next survives future updates instead of being stripped
+   again.
+2. Re-add the glm-5.2 entry to `~/.config/mlx-server/config.yaml`
+   (`model_path: mlx-community/GLM-5.2-4bit`, `served_model_name: glm-5.2`,
+   `on_demand: true`), download the 418GB 4-bit weights, and note you'd
+   also need the retired mlx-lm patch from a pre-ds4 release.
+
+Practical only as a stopgap. Unlike earlier one-shot migrations elsewhere
+in this repo, the glm-5.2 migration is **not** one-shot — it re-checks and
+re-removes the entry on every `post-update.sh` run. With ds4 disarmed per
+step 1 that's harmless (the binary-presence gate means it no-ops), but if
+you ever restore `ds4-server` without also removing the MLX entry
+yourself, the next update will strip it again.
 
 ## Menu bar log spams `resolve_desktop_tailscale exception: No such file or directory: 'tailscale'`
 

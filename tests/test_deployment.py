@@ -916,6 +916,105 @@ class TestPostUpdateConfigRefs:
             )
 
 
+class TestPostUpdateGlm52MigrationGate:
+    """C1: the glm-5.2 → ds4 MLX-yaml migration must additionally require
+    the ds4 binary to be present. Auto-update never runs install.sh, so a
+    512GB machine that hasn't been provisioned with ds4 would otherwise have
+    its working glm-5.2 MLX entry silently stripped with nothing to replace
+    it. Runs the real migration block extracted verbatim out of
+    post-update.sh (regex-sliced, like TestPostUpdateConfigRefs above)
+    against a fake sysctl/HOME/REPO_DIR, so a regression in the actual
+    script text fails this test — not a hand-copied reimplementation of it.
+    """
+
+    def _extract_migration_block(self):
+        import re
+
+        script = (Path(__file__).parent.parent / "bin" / "post-update.sh").read_text()
+        m = re.search(
+            r"(# One-shot migration.*?\nif \[ \"\$\(sysctl.*?\nfi\n)",
+            script, re.DOTALL)
+        assert m, "migration block not found in post-update.sh — did the anchor comment move?"
+        return m.group(1)
+
+    def _run(self, tmp_path, ds4_present, ram_gb=512):
+        mlx_dir = tmp_path / "mlx-server"
+        mlx_dir.mkdir()
+        (mlx_dir / "config.yaml").write_text(
+            "models:\n  - served_model_name: glm-5.2\n")
+
+        ds4_dir = tmp_path / "ds4"
+        if ds4_present:
+            ds4_dir.mkdir()
+            server_bin = ds4_dir / "ds4-server"
+            server_bin.write_bytes(b"#!/bin/sh\n")
+            server_bin.chmod(0o755)
+
+        home_dir = tmp_path / "home"
+        conf_dir = home_dir / ".config" / "local-models"
+        conf_dir.mkdir(parents=True)
+        (conf_dir / "network.conf").write_text(f'DS4_DIR="{ds4_dir}"\n')
+
+        fake_bin = tmp_path / "fakebin"
+        fake_bin.mkdir()
+        sysctl = fake_bin / "sysctl"
+        sysctl.write_text(
+            "#!/bin/bash\n"
+            f"echo {ram_gb * 1073741824}\n")
+        sysctl.chmod(0o755)
+
+        repo_dir = tmp_path / "repo" / "bin"
+        repo_dir.mkdir(parents=True)
+        migrate_marker = tmp_path / "migrate_ran"
+        stub_migrate = repo_dir / "migrate-mlx-config.py"
+        stub_migrate.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            f"open({str(migrate_marker)!r}, 'w').write('ran')\n"
+            "sys.exit(0)\n")
+
+        block = self._extract_migration_block()
+        script_path = tmp_path / "run.sh"
+        script_path.write_text(
+            "#!/bin/bash\n"
+            "set -euo pipefail\n"
+            "log() { echo \"[test] $*\"; }\n"
+            f'MLX_DIR="{mlx_dir}"\n'
+            f'REPO_DIR="{tmp_path / "repo"}"\n'
+            f'HOME="{home_dir}"\n'
+            f"{block}\n")
+        script_path.chmod(0o755)
+
+        env = dict(os.environ)
+        env["PATH"] = f"{fake_bin}:{env['PATH']}"
+        result = subprocess.run(
+            ["bash", str(script_path)],
+            capture_output=True, text=True, timeout=10, env=env)
+        return result, migrate_marker
+
+    def test_migration_skipped_when_ds4_not_provisioned(self, tmp_path):
+        """512GB tier, no ds4-server binary: migration must not run."""
+        result, marker = self._run(tmp_path, ds4_present=False)
+        assert result.returncode == 0, result.stderr
+        assert not marker.exists(), (
+            "migration ran even though ds4 isn't installed — "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}")
+
+    def test_migration_runs_when_ds4_provisioned(self, tmp_path):
+        """512GB tier, ds4-server present: migration proceeds as before."""
+        result, marker = self._run(tmp_path, ds4_present=True)
+        assert result.returncode == 0, result.stderr
+        assert marker.exists(), (
+            "migration should run once ds4-server is present — "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}")
+
+    def test_migration_skipped_below_512gb_tier_even_with_ds4(self, tmp_path):
+        """Belt-and-suspenders: the pre-existing RAM gate must still hold."""
+        result, marker = self._run(tmp_path, ds4_present=True, ram_gb=128)
+        assert result.returncode == 0, result.stderr
+        assert not marker.exists()
+
+
 class TestWarmTickWiring:
     """_on_warm_tick must thread the module-level ping_warm with the app's
     ports — an arg mismatch would only surface as a swallowed exception in
