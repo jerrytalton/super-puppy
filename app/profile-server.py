@@ -2156,6 +2156,8 @@ def _chat_url(backend):
     """Return the chat endpoint URL for a backend."""
     if backend == "mlx":
         return f"{MLX_URL}/v1/chat/completions"
+    if backend == "ds4":
+        return f"{DS4_URL}/v1/chat/completions"
     return f"{OLLAMA_URL}/api/chat"
 
 
@@ -2235,7 +2237,20 @@ def _chat(model, backend, messages, timeout=600, tool="chat", image_b64=None, th
         messages = _attach_image(messages, image_b64, backend)
     with _track_playground(tool, model, backend):
         try:
-            if backend == "mlx":
+            if backend == "ds4":
+                # No think toggle: ds4's enable_thinking is verified broken
+                # (reasoning migrates into `content`) — never forward
+                # chat_template_kwargs. glm-5.2 on ds4 always thinks.
+                body = {"model": model, "messages": messages, "stream": False}
+                resp = requests.post(f"{DS4_URL}/v1/chat/completions",
+                                     json=body, timeout=timeout)
+                resp.raise_for_status()
+                # strict=False: ds4 emits unescaped control chars in long
+                # reasoning_content; resp.json() intermittently raises.
+                msg = json.loads(resp.text,
+                                 strict=False)["choices"][0]["message"]
+                return msg.get("content") or msg.get("reasoning_content") or ""
+            elif backend == "mlx":
                 body = {"model": model, "messages": messages, "stream": False}
                 if not think:
                     body["chat_template_kwargs"] = {"enable_thinking": False}
@@ -2270,7 +2285,37 @@ def _chat_stream(model, backend, messages, think=True, tool="chat"):
         _playground_active[_stream_tid] = {"tool": tool, "model": model, "backend": backend,
                                            "started": time.time()}
     try:
-        if backend == "mlx":
+        if backend == "ds4":
+            # OpenAI-style SSE like MLX, but: never forward the think
+            # toggle (broken on ds4), and parse chunks with strict=False
+            # (unescaped control chars in streamed reasoning/content).
+            body = {"model": model, "messages": messages, "stream": True}
+            try:
+                resp = requests.post(f"{DS4_URL}/v1/chat/completions",
+                                     json=body, stream=True, timeout=300)
+                resp.raise_for_status()
+                yield f"data: {json.dumps({'model': model})}\n\n"
+                for line in resp.iter_lines():
+                    if not line:
+                        continue
+                    text = line.decode("utf-8", errors="replace")
+                    if text.startswith("data: "):
+                        text = text[6:]
+                    if text.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(text, strict=False)
+                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        token = delta.get("content", "")
+                        if token:
+                            yield f"data: {json.dumps({'token': token})}\n\n"
+                    except (json.JSONDecodeError, IndexError, KeyError):
+                        pass
+            except requests.RequestException as e:
+                raise RuntimeError(
+                    f"Stream ({model} via {backend}): "
+                    f"{_requests_error_detail(e)}") from e
+        elif backend == "mlx":
             body = {"model": model, "messages": messages, "stream": True}
             if not think:
                 body["chat_template_kwargs"] = {"enable_thinking": False}

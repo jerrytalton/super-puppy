@@ -114,6 +114,66 @@ class TestChatUrl:
     def test_ollama_backend(self):
         assert ps._chat_url("ollama") == "http://localhost:11434/api/chat"
 
+    def test_ds4_backend(self):
+        assert ps._chat_url("ds4") == "http://localhost:8002/v1/chat/completions"
+
+
+class TestChatDs4Dispatch:
+    def _resp(self, text):
+        r = MagicMock()
+        r.text = text
+        r.raise_for_status = MagicMock()
+        return r
+
+    def test_chat_ds4_posts_to_ds4_without_think_toggle(self):
+        """think=False must NOT forward chat_template_kwargs to ds4
+        (verified broken: reasoning migrates into content), and the reply
+        must survive raw control chars in reasoning_content (ds4 encoder
+        bug — strict resp.json() raises)."""
+        raw = ('{"choices":[{"message":{"content":"pong",'
+               '"reasoning_content":"pondering\x01deeply"}}]}')
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["url"] = url
+            captured["body"] = json
+            return self._resp(raw)
+
+        with patch.object(ps.requests, "post", side_effect=fake_post):
+            out = ps._chat("glm-5.2", "ds4",
+                           [{"role": "user", "content": "ping"}], think=False)
+        assert out == "pong"
+        assert captured["url"] == "http://localhost:8002/v1/chat/completions"
+        assert "chat_template_kwargs" not in captured["body"]
+        assert "think" not in captured["body"]
+
+    def test_chat_ds4_falls_back_to_reasoning_content(self):
+        raw = ('{"choices":[{"message":{"content":"",'
+               '"reasoning_content":"all reasoning, no answer"}}]}')
+        with patch.object(ps.requests, "post",
+                          return_value=self._resp(raw)):
+            out = ps._chat("glm-5.2", "ds4",
+                           [{"role": "user", "content": "hi"}])
+        assert out == "all reasoning, no answer"
+
+    def test_chat_stream_ds4_yields_tokens_with_tolerant_parse(self):
+        """The streaming branch parses each SSE chunk; a chunk with a raw
+        control char must yield its token, not be dropped by a strict
+        parser (long thinking answers stream reasoning first)."""
+        lines = [
+            b'data: {"choices":[{"delta":{"content":"Hel\x01lo"}}]}',
+            b"data: [DONE]",
+        ]
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.iter_lines.return_value = iter(lines)
+        with patch.object(ps.requests, "post", return_value=resp):
+            events = list(ps._chat_stream(
+                "glm-5.2", "ds4", [{"role": "user", "content": "hi"}]))
+        joined = "".join(events)
+        assert "Hel\\u0001lo" in joined or "Hello" in joined.replace("\\u0001", "")
+        assert '"done": true' in joined
+
 
 class TestIsRemoteOllama:
     def test_localhost(self):
