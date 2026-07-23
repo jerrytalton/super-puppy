@@ -255,7 +255,7 @@ class _FakeDs4Response:
 def _fake_async_client(response_text, captured):
     class _FakeAsyncClient:
         def __init__(self, *args, **kwargs):
-            pass
+            captured["client_kwargs"] = kwargs
 
         async def __aenter__(self):
             return self
@@ -288,6 +288,19 @@ class TestChatDs4:
                 [{"role": "user", "content": "hi"}]))
         assert "OK then" in result
         assert captured["url"].endswith(":8002/v1/chat/completions")
+
+    def test_chat_ds4_timeout_is_600_not_300(self):
+        """At ~11.5 tok/s a 4096-token generation takes ~356s, and ds4
+        serializes requests — 300s cuts off real in-flight requests. Pin the
+        timeout the way test_chat_routes_ds4_and_parses_unescaped_control_chars
+        pins the URL, so a regression back to 300 fails loudly."""
+        raw = '{"choices":[{"message":{"content":"hi"}}]}'
+        captured = {}
+        with patch.object(server.httpx, "AsyncClient",
+                          _fake_async_client(raw, captured)):
+            asyncio.run(server.chat_ds4(
+                "glm-5.2", [{"role": "user", "content": "hi"}]))
+        assert captured["client_kwargs"]["timeout"] == 600
 
     def test_chat_ds4_never_forwards_think_toggle(self):
         """enable_thinking is VERIFIED BROKEN on ds4 (200 OK but reasoning

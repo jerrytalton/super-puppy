@@ -702,7 +702,11 @@ async def chat_ds4(model: str, messages: list[dict],
     body = {"model": model, "messages": messages, "max_tokens": max_tokens,
             "stream": False}
     try:
-        async with httpx.AsyncClient(timeout=300) as client:
+        # timeout=600: at ~11.5 tok/s a 4096-token generation takes ~356s,
+        # and ds4 serializes requests (single live session) — 300s cut off
+        # real requests still being worked on. Mirrors the profile server's
+        # _chat timeout for the same reason.
+        async with httpx.AsyncClient(timeout=600) as client:
             resp = await client.post(f"{DS4_URL}/v1/chat/completions", json=body)
             resp.raise_for_status()
             # ds4's JSON encoder can emit unescaped control characters in
@@ -716,7 +720,7 @@ async def chat_ds4(model: str, messages: list[dict],
     except httpx.ConnectError:
         raise RuntimeError(f"ds4 chat ({model}): cannot connect to {DS4_URL} — is ds4-server running?")
     except httpx.TimeoutException:
-        raise RuntimeError(f"ds4 chat ({model}): request timed out after 300s")
+        raise RuntimeError(f"ds4 chat ({model}): request timed out after 600s")
 
 
 async def chat(model: str, backend: str, messages: list[dict],
