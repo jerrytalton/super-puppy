@@ -15,12 +15,12 @@ Local AI model infrastructure for Apple Silicon. Menu bar app + standard APIs + 
 
 ## Key Design Decisions
 
-- The MCP server discovers models live from Ollama, MLX, and ds4 at startup (parallel `/api/show` calls). Any new `ollama pull` is immediately available as a tool. ds4's `/v1/models` carries no metadata, so glm-5.2's params/context/size are hardcoded in `lib/models.py` (`DS4_*` constants).
+- The MCP server discovers models live from Ollama, MLX, and ds4 at startup (parallel `/api/show` calls). Any new `ollama pull` is immediately available as a tool. ds4's `/v1/models` reports `context_length` and `supported_parameters` (discovery prefers the live context value); params/size come from `lib/models.py` (`DS4_*` constants).
 - The menu bar app queries model capabilities live from Ollama `/api/show` and MLX `config.json` files in the HuggingFace cache. No hardcoded param tables.
 - MLX models marked `on_demand: true` download on first use and unload after idle timeout. glm-5.2 is NOT one of them anymore: it's served by ds4 (always resident) on the 512GB tier.
 - All remote access uses **Tailscale only** — no mDNS, no LAN binding. `tailscale serve` proxies all ports with TLS.
 - The `local-models-mcp-detect` wrapper probes the desktop via Tailscale before launching. Clients use the server if reachable, fall back to localhost.
-- **glm-5.2 (512gb tier) is served by ds4, not MLX.** antirez/ds4 (glm5.2 branch, pinned `bd89932`, built by install.sh into `DS4_DIR`) serves the Q2K-routed GGUF (~244GiB resident vs 390GB on MLX — the co-residency OOM class is gone, and the old pinned mlx-lm patch is retired). Quirks encoded in code and docs/troubleshooting.md: launch needs `cwd=$DS4_DIR` (metal shader paths), responses need `json.loads(..., strict=False)` (unescaped control chars in reasoning_content), and the `enable_thinking` toggle must never be forwarded (broken: reasoning migrates into content). ds4 serializes requests — parallel fan-outs to glm-5.2 queue.
+- **glm-5.2 (512gb tier) is served by ds4, not MLX.** antirez/ds4 (glm5.2 branch, pinned `bd89932`, built by install.sh into `DS4_DIR`) serves the Q2K-routed GGUF (~244GiB resident vs 390GB on MLX — the co-residency OOM class is gone, and the old pinned mlx-lm patch is retired). Quirks encoded in code and docs/troubleshooting.md: launch needs `cwd=$DS4_DIR` (metal shader paths), responses need `json.loads(..., strict=False)` (unescaped control chars in reasoning_content), and thinking is controlled via ds4's NATIVE `thinking: {"type": "disabled"}` body field — never the MLX-convention `chat_template_kwargs.enable_thinking`, which ds4 ignores. ds4 serializes requests — parallel fan-outs to glm-5.2 queue.
 
 ## Runtime Architecture
 
@@ -124,7 +124,7 @@ Single source of truth for constants and logic used by menubar, MCP server, and 
 - `STANDARD_TASKS`, `SPECIAL_TASKS`, `TASK_FILTERS` — task definitions and model filtering
 - `DEFAULT_PROFILES`, `PROFILES_VERSION` — preset profile definitions (task→model maps). Seeded by the menu bar app on startup (`seed_profiles_if_missing()`), migrated/served by the profile server, and read by `install.sh` to know which models to pull. Bump `PROFILES_VERSION` to force-refresh presets on all machines.
 - `active_params_b()` — 4-strategy MoE active parameter computation (AXB parse → known table → FFN subtraction → ratio fallback)
-- `LLM_BACKENDS` — the three chat backends (`ollama`, `mlx`, `ds4`); `DS4_MODEL_NAME`/`DS4_MODEL_BYTES`/`DS4_TOTAL_PARAMS_B`/`DS4_ACTIVE_PARAMS_B`/`DS4_CONTEXT` — hardcoded glm-5.2 metadata for ds4 discovery (ds4's `/v1/models` returns none); `ds4_dir()`/`ds4_installed()` — DS4_DIR resolution and presence gate
+- `LLM_BACKENDS` — the three chat backends (`ollama`, `mlx`, `ds4`); `DS4_MODEL_NAME`/`DS4_MODEL_BYTES`/`DS4_TOTAL_PARAMS_B`/`DS4_ACTIVE_PARAMS_B`/`DS4_CONTEXT` — glm-5.2 metadata for ds4 discovery (fallbacks; the live `/v1/models` `context_length` is preferred when reachable); `ds4_dir()`/`ds4_installed()` — DS4_DIR resolution and presence gate
 - `model_matches_filter()` — check if a model qualifies for a task
 - Config path constants (`PROFILES_FILE`, `MCP_PREFS_FILE`, `CLAUDE_CONFIG_FILE`, etc.)
 
