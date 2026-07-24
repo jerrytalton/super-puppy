@@ -45,8 +45,13 @@ from lib.models import (
     ALWAYS_EXCLUDE,
     DEFAULT_PROFILES,
     DOWNLOAD_ON_DEMAND_TASKS,
+    DS4_ACTIVE_PARAMS_B,
+    DS4_MODEL_BYTES,
+    DS4_MODEL_NAME,
+    DS4_TOTAL_PARAMS_B,
     HF_TASK_BACKENDS as _HF_TASK_BACKENDS,
     KNOWN_ACTIVE_PARAMS,
+    LLM_BACKENDS,
     MCP_PREFS_FILE,
     MLX_SERVER_CONFIG,
     NETWORK_CONF,
@@ -58,6 +63,8 @@ from lib.models import (
     THINK_CAPABLE_TASKS,
     WARM_BUDGET_FRACTION,
     active_params_b,
+    ds4_installed,
+    ds4_live_context,
     migrate_profiles,
     mflux_command,
     mflux_is_turbo,
@@ -80,6 +87,9 @@ logging.basicConfig(
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 MLX_URL = os.environ.get("MLX_URL", "http://localhost:8000")
+# ds4 is internal-only (port 8002 is never tailscale-served); the menubar
+# injects DS4_URL with the configured DS4_PORT.
+DS4_URL = os.environ.get("DS4_URL", "http://localhost:8002")
 # Default Ollama keep_alive for every chat/generate/embed request from this
 # server. Ollama's built-in default is 5 minutes, which causes cold reloads
 # between Playground turns and kills the "model feels warm" illusion. 30m is
@@ -1138,6 +1148,13 @@ def _fetch_mlx_models(existing):
     for mid, cfg in _load_mlx_config().items():
         if mid in existing:
             continue
+        if mid == DS4_MODEL_NAME and ds4_installed():
+            # ds4 owns glm-5.2 on machines where it's provisioned: when
+            # ds4 is down the model must be absent, not resurface as a
+            # stale MLX entry inviting a 418GB cold load. Machines
+            # without a ds4 install (laptops, deliberate MLX fallback)
+            # keep the MLX path.
+            continue
         model_path = cfg.get("model_path", "")
         if not _hf_model_downloaded(model_path):
             continue
@@ -1167,6 +1184,43 @@ def _fetch_mlx_models(existing):
             "on_demand": cfg.get("on_demand", False),
         }
     return models
+
+
+def _fetch_ds4_models(existing):
+    """ds4-served glm-5.2 (512GB tier). ds4's /v1/models returns no
+    params/vision metadata, so those fields are hardcoded from lib.models:
+    the GGUF is not an HF snapshot and none of the existing sizing paths
+    can see it. It DOES report context_length; ds4_live_context() prefers
+    that live value over the DS4_CONTEXT constant so a --ctx launch-flag
+    drift can't silently diverge from what's advertised here.
+    Always-resident (loads at startup, never unloads): is_loaded=True,
+    on_demand=False, and vram==disk counts the full 244GiB as fixed
+    residency in the memory bar. Unreachable ds4 ⇒ empty dict — glm-5.2
+    absent, same semantics as MLX-down."""
+    if DS4_MODEL_NAME in existing:
+        return {}
+    try:
+        resp = requests.get(f"{DS4_URL}/v1/models", timeout=2)
+        if not resp.ok:
+            return {}
+        context = ds4_live_context(resp.json())
+    except Exception:
+        return {}
+    return {DS4_MODEL_NAME: {
+        "name": DS4_MODEL_NAME,
+        "backend": "ds4",
+        "disk_bytes": DS4_MODEL_BYTES,
+        "vram_bytes": DS4_MODEL_BYTES,
+        "total_params_b": DS4_TOTAL_PARAMS_B,
+        "active_params_b": DS4_ACTIVE_PARAMS_B,
+        "context": context,
+        "has_vision": False,
+        "family": "ds4",
+        "quant": "q2k",
+        "is_loaded": True,
+        "expires_at": None,
+        "on_demand": False,
+    }}
 
 
 def _fetch_hf_cache_models(existing):
@@ -1210,6 +1264,12 @@ def _fetch_all_models():
         # our local HF cache — those files live on this machine, not the
         # desktop, and surfacing them as "available" would be a lie.
     models = _fetch_ollama_models()
+    if not remote_mode:
+        # ds4 before MLX: an unmigrated user yaml may still list glm-5.2 as
+        # an MLX served-name; when ds4 answers, ds4 is the backend that
+        # actually serves it. Never scanned in remote mode — DS4_URL is
+        # localhost and the desktop's registry already includes it.
+        models.update(_fetch_ds4_models(existing=models))
     models.update(_fetch_mlx_models(existing=models))
     if not remote_mode:
         models.update(_fetch_hf_cache_models(existing=models))
@@ -1225,7 +1285,7 @@ def model_matches_filter(name, model_info, task_filter):
     )
 
 
-_LLM_BACKENDS = {"ollama", "mlx"}
+_LLM_BACKENDS = LLM_BACKENDS
 
 
 def get_eligible_tasks(name, model_info):
@@ -1415,6 +1475,34 @@ def api_identity():
     })
 
 
+def _tailscale_fqdn():
+    """This machine's tailnet FQDN, or "" if tailscale is unavailable."""
+    try:
+        result = subprocess.run(["tailscale", "status", "--json"],
+                                capture_output=True, text=True, timeout=3)
+        data = json.loads(result.stdout)
+        return data.get("Self", {}).get("DNSName", "").rstrip(".")
+    except Exception:
+        return ""
+
+
+@app.route("/api/share-url")
+def api_share_url():
+    """Canonical tokened Playground URL for phone/tablet bookmarking.
+
+    The page strips ?token= from the address bar after load, so a bookmark
+    saved there is tokenless and 403s. The caller already authenticated to
+    reach this route, so returning the token is not an escalation; served
+    over the tailnet FQDN so the link works off-machine.
+    """
+    fqdn = _tailscale_fqdn()
+    if fqdn:
+        base = f"https://{fqdn}:{PORT}/tools"
+    else:
+        base = f"http://localhost:{PORT}/tools"
+    return jsonify({"url": f"{base}?token={_PROFILE_AUTH_TOKEN}"})
+
+
 def _write_profile_pidfile():
     try:
         PROFILE_SERVER_PIDFILE.parent.mkdir(parents=True, exist_ok=True)
@@ -1549,6 +1637,10 @@ def _check_missing_models(prefs):
         on_demand = task in DOWNLOAD_ON_DEMAND_TASKS
         for c in candidates:
             if on_demand and "/" in c:
+                continue
+            # ds4-served models are pre-provisioned by install.sh, not
+            # pullable — prompting would dead-end in `ollama pull glm-5.2`.
+            if c == DS4_MODEL_NAME:
                 continue
             if not _model_exists(c) and c not in seen:
                 seen.add(c)
@@ -2068,6 +2160,8 @@ def _chat_url(backend):
     """Return the chat endpoint URL for a backend."""
     if backend == "mlx":
         return f"{MLX_URL}/v1/chat/completions"
+    if backend == "ds4":
+        return f"{DS4_URL}/v1/chat/completions"
     return f"{OLLAMA_URL}/api/chat"
 
 
@@ -2138,7 +2232,9 @@ def _chat(model, backend, messages, timeout=600, tool="chat", image_b64=None, th
 
     think=False disables chain-of-thought for models that support it — Qwen3
     (including 3.6) via MLX uses `chat_template_kwargs.enable_thinking`;
-    Ollama uses its native `think: false` flag.
+    Ollama uses its native `think: false` flag; ds4 uses its own native
+    `"thinking": {"type": "disabled"}` field (its MLX-convention shim is
+    verified broken — never send it chat_template_kwargs).
 
     timeout=600 because a cold on-demand load of a frontier-tier MLX model
     (~400GB, 80-140s) stacks with a thinking-model generation; 300s cut off
@@ -2147,7 +2243,25 @@ def _chat(model, backend, messages, timeout=600, tool="chat", image_b64=None, th
         messages = _attach_image(messages, image_b64, backend)
     with _track_playground(tool, model, backend):
         try:
-            if backend == "mlx":
+            if backend == "ds4":
+                # ds4's own MLX-convention shim (chat_template_kwargs.
+                # enable_thinking) is verified broken (reasoning migrates
+                # into `content`) — never forward that key. ds4 has a
+                # NATIVE thinking control instead (verified live
+                # 2026-07-23): thinking is default-on; think=False disables
+                # it via `"thinking": {"type": "disabled"}`.
+                body = {"model": model, "messages": messages, "stream": False}
+                if not think:
+                    body["thinking"] = {"type": "disabled"}
+                resp = requests.post(f"{DS4_URL}/v1/chat/completions",
+                                     json=body, timeout=timeout)
+                resp.raise_for_status()
+                # strict=False: ds4 emits unescaped control chars in long
+                # reasoning_content; resp.json() intermittently raises.
+                msg = json.loads(resp.text,
+                                 strict=False)["choices"][0]["message"]
+                return msg.get("content") or msg.get("reasoning_content") or ""
+            elif backend == "mlx":
                 body = {"model": model, "messages": messages, "stream": False}
                 if not think:
                     body["chat_template_kwargs"] = {"enable_thinking": False}
@@ -2182,7 +2296,46 @@ def _chat_stream(model, backend, messages, think=True, tool="chat"):
         _playground_active[_stream_tid] = {"tool": tool, "model": model, "backend": backend,
                                            "started": time.time()}
     try:
-        if backend == "mlx":
+        if backend == "ds4":
+            # OpenAI-style SSE like MLX, but: never forward the MLX-
+            # convention chat_template_kwargs.enable_thinking shim (broken
+            # on ds4 — use ds4's native `thinking` field instead), and
+            # parse chunks with strict=False (unescaped control chars in
+            # streamed reasoning/content).
+            body = {"model": model, "messages": messages, "stream": True}
+            if not think:
+                body["thinking"] = {"type": "disabled"}
+            try:
+                # timeout=600: no SSE chunk flows during prefill, and a
+                # 131072-ctx prompt measured 323s of prefill — a 300s
+                # first-chunk read timeout would kill exactly the long
+                # requests the raised context exists for. ds4 also
+                # serializes requests, so queueing adds to first-byte time.
+                resp = requests.post(f"{DS4_URL}/v1/chat/completions",
+                                     json=body, stream=True, timeout=600)
+                resp.raise_for_status()
+                yield f"data: {json.dumps({'model': model})}\n\n"
+                for line in resp.iter_lines():
+                    if not line:
+                        continue
+                    text = line.decode("utf-8", errors="replace")
+                    if text.startswith("data: "):
+                        text = text[6:]
+                    if text.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(text, strict=False)
+                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        token = delta.get("content") or delta.get("reasoning_content") or ""
+                        if token:
+                            yield f"data: {json.dumps({'token': token})}\n\n"
+                    except (json.JSONDecodeError, IndexError, KeyError):
+                        pass
+            except requests.RequestException as e:
+                raise RuntimeError(
+                    f"Stream ({model} via {backend}): "
+                    f"{_requests_error_detail(e)}") from e
+        elif backend == "mlx":
             body = {"model": model, "messages": messages, "stream": True}
             if not think:
                 body["chat_template_kwargs"] = {"enable_thinking": False}
@@ -3172,6 +3325,14 @@ def api_diagnostics():
         mcp_up = resp.ok
     except Exception:
         pass
+    ds4_up = None
+    if ds4_installed():
+        ds4_up = False
+        try:
+            resp = requests.get(f"{DS4_URL}/v1/models", timeout=2)
+            ds4_up = resp.ok
+        except Exception:
+            pass
 
     # Network config
     from lib.models import NETWORK_CONF
@@ -3199,6 +3360,7 @@ def api_diagnostics():
         "services": {
             "ollama": ollama_up,
             "mlx": mlx_up,
+            "ds4": ds4_up,
             "mcp": mcp_up,
         },
         "models": {

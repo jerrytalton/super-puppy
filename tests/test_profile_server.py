@@ -114,6 +114,166 @@ class TestChatUrl:
     def test_ollama_backend(self):
         assert ps._chat_url("ollama") == "http://localhost:11434/api/chat"
 
+    def test_ds4_backend(self):
+        assert ps._chat_url("ds4") == "http://localhost:8002/v1/chat/completions"
+
+
+class TestChatDs4Dispatch:
+    def _resp(self, text):
+        r = MagicMock()
+        r.text = text
+        r.raise_for_status = MagicMock()
+        return r
+
+    def test_chat_ds4_posts_to_ds4_without_mlx_shim(self):
+        """think=False must NOT forward chat_template_kwargs to ds4
+        (verified broken: reasoning migrates into content), and the reply
+        must survive raw control chars in reasoning_content (ds4 encoder
+        bug — strict resp.json() raises)."""
+        raw = ('{"choices":[{"message":{"content":"pong",'
+               '"reasoning_content":"pondering\x01deeply"}}]}')
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["url"] = url
+            captured["body"] = json
+            return self._resp(raw)
+
+        with patch.object(ps.requests, "post", side_effect=fake_post):
+            out = ps._chat("glm-5.2", "ds4",
+                           [{"role": "user", "content": "ping"}], think=False)
+        assert out == "pong"
+        assert captured["url"] == "http://localhost:8002/v1/chat/completions"
+        assert "chat_template_kwargs" not in captured["body"]
+
+    def test_chat_ds4_think_false_sends_native_thinking_disabled(self):
+        """ds4's native thinking control (verified live 2026-07-23):
+        thinking is default-on, and think=False disables it via
+        `"thinking": {"type": "disabled"}`."""
+        raw = '{"choices":[{"message":{"content":"pong"}}]}'
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["body"] = json
+            return self._resp(raw)
+
+        with patch.object(ps.requests, "post", side_effect=fake_post):
+            ps._chat("glm-5.2", "ds4",
+                     [{"role": "user", "content": "ping"}], think=False)
+        assert captured["body"]["thinking"] == {"type": "disabled"}
+
+    def test_chat_ds4_think_true_omits_thinking_key(self):
+        """think=True (or the default) must omit the `thinking` key so
+        ds4's default (thinking on) applies."""
+        raw = '{"choices":[{"message":{"content":"pong"}}]}'
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["body"] = json
+            return self._resp(raw)
+
+        with patch.object(ps.requests, "post", side_effect=fake_post):
+            ps._chat("glm-5.2", "ds4",
+                     [{"role": "user", "content": "ping"}], think=True)
+        assert "thinking" not in captured["body"]
+
+    def test_chat_ds4_falls_back_to_reasoning_content(self):
+        raw = ('{"choices":[{"message":{"content":"",'
+               '"reasoning_content":"all reasoning, no answer"}}]}')
+        with patch.object(ps.requests, "post",
+                          return_value=self._resp(raw)):
+            out = ps._chat("glm-5.2", "ds4",
+                           [{"role": "user", "content": "hi"}])
+        assert out == "all reasoning, no answer"
+
+    def test_chat_stream_ds4_think_false_sends_native_thinking_disabled(self):
+        """Streaming ds4 dispatch must wire the same native thinking
+        control as non-streaming: think=False → `"thinking": {"type":
+        "disabled"}`, never the broken MLX chat_template_kwargs shim."""
+        lines = [b"data: [DONE]"]
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.iter_lines.return_value = iter(lines)
+        captured = {}
+
+        def fake_post(url, json=None, stream=None, timeout=None):
+            captured["body"] = json
+            return resp
+
+        with patch.object(ps.requests, "post", side_effect=fake_post):
+            list(ps._chat_stream(
+                "glm-5.2", "ds4", [{"role": "user", "content": "hi"}],
+                think=False))
+        assert captured["body"]["thinking"] == {"type": "disabled"}
+        assert "chat_template_kwargs" not in captured["body"]
+
+    def test_chat_stream_ds4_think_true_omits_thinking_key(self):
+        lines = [b"data: [DONE]"]
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.iter_lines.return_value = iter(lines)
+        captured = {}
+
+        def fake_post(url, json=None, stream=None, timeout=None):
+            captured["body"] = json
+            return resp
+
+        with patch.object(ps.requests, "post", side_effect=fake_post):
+            list(ps._chat_stream(
+                "glm-5.2", "ds4", [{"role": "user", "content": "hi"}],
+                think=True))
+        assert "thinking" not in captured["body"]
+
+    def test_chat_stream_ds4_yields_tokens_with_tolerant_parse(self):
+        """The streaming branch parses each SSE chunk; a chunk with a raw
+        control char must yield its token, not be dropped by a strict
+        parser (long thinking answers stream reasoning first)."""
+        lines = [
+            b'data: {"choices":[{"delta":{"content":"Hel\x01lo"}}]}',
+            b"data: [DONE]",
+        ]
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.iter_lines.return_value = iter(lines)
+        with patch.object(ps.requests, "post", return_value=resp):
+            events = list(ps._chat_stream(
+                "glm-5.2", "ds4", [{"role": "user", "content": "hi"}]))
+        joined = "".join(events)
+        assert "Hel\\u0001lo" in joined or "Hello" in joined.replace("\\u0001", "")
+        assert '"done": true' in joined
+
+    def test_chat_stream_ds4_falls_back_to_reasoning_content(self):
+        """The streaming branch must read reasoning_content when content is empty.
+        glm-5.2 on ds4 always thinks, so deltas often have text only in reasoning_content."""
+        lines = [
+            b'data: {"choices":[{"delta":{"reasoning_content":"Think"}}]}',
+            b'data: {"choices":[{"delta":{"reasoning_content":"ing"}}]}',
+            b"data: [DONE]",
+        ]
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.iter_lines.return_value = iter(lines)
+        with patch.object(ps.requests, "post", return_value=resp):
+            events = list(ps._chat_stream(
+                "glm-5.2", "ds4", [{"role": "user", "content": "hi"}]))
+        joined = "".join(events)
+        assert '"token": "Think"' in joined
+        assert '"token": "ing"' in joined
+        assert '"done": true' in joined
+
+    def test_chat_stream_ds4_timeout_is_600_not_300(self):
+        """No SSE chunk flows during prefill, and a 131072-ctx prompt measured
+        323s of prefill — a 300s first-chunk read timeout kills exactly the
+        long requests the raised context exists for (ds4 also serializes, so
+        queueing adds to first-byte time). Pin 600 so a regression fails."""
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.iter_lines.return_value = iter([b"data: [DONE]"])
+        with patch.object(ps.requests, "post", return_value=resp) as mock_post:
+            list(ps._chat_stream(
+                "glm-5.2", "ds4", [{"role": "user", "content": "hi"}]))
+        assert mock_post.call_args.kwargs["timeout"] == 600
+
 
 class TestIsRemoteOllama:
     def test_localhost(self):
@@ -512,33 +672,33 @@ class TestRoutes:
         # model must be estimated from HF and flagged, not counted as 0.
         ps.save_profiles({"version": ps.PROFILES_VERSION, "active": "big",
             "profiles": {"big": {"max_ram_gb": 512, "warm": ["general"],
-                "tasks": {"general": "glm-5.2"}}}})
+                "tasks": {"general": "qwen3.5-fast"}}}})
         with patch.object(ps, "get_all_models", return_value={}), \
              patch.object(ps, "_load_mlx_config",
-                          return_value={"glm-5.2": {"model_path": "mlx-community/GLM-5.2-4bit"}}), \
+                          return_value={"qwen3.5-fast": {"model_path": "mlx-community/Qwen3.5-35B-A3B-4bit"}}), \
              patch.object(ps, "_get_hf_model_size", return_value=180.0):
             ps._model_size_cache.clear()
             d = client.get("/api/profiles/big/memory").get_json()
         warm = {w["name"]: w for w in d["warm"]}
-        assert warm["glm-5.2"]["bytes"] == int(180 * 1e9)
-        assert warm["glm-5.2"]["estimated"] is True
-        assert warm["glm-5.2"]["downloaded"] is False
+        assert warm["qwen3.5-fast"]["bytes"] == int(180 * 1e9)
+        assert warm["qwen3.5-fast"]["estimated"] is True
+        assert warm["qwen3.5-fast"]["downloaded"] is False
         assert d["warm_bytes"] == int(180 * 1e9)
 
     def test_mlx_downloaded_model_sized_from_disk_not_name(self):
-        # GLM-5.2-4bit has no parseable param count in its name and isn't in the
+        # A model path without a parseable param count that isn't in the
         # known-params table, so the name-based estimate is 0. A downloaded model
         # must be sized from its real on-disk bytes instead (else the memory bar
         # shows "0 bit" for it).
         with patch.object(ps, "_load_mlx_config",
-                          return_value={"glm-5.2": {"model_path": "mlx-community/GLM-5.2-4bit"}}), \
+                          return_value={"big-model": {"model_path": "mlx-community/BigModel-4bit"}}), \
              patch.object(ps, "_mlx_loaded_ids", return_value=set()), \
              patch.object(ps, "_hf_model_downloaded", return_value=True), \
              patch.object(ps, "_hf_cache_bytes", return_value=180 * 10**9), \
              patch.object(ps, "_mlx_model_has_vision", return_value=False):
             out = ps._fetch_mlx_models(existing=set())
-        assert out["glm-5.2"]["disk_bytes"] == 180 * 10**9
-        assert out["glm-5.2"]["vram_bytes"] == 180 * 10**9
+        assert out["big-model"]["disk_bytes"] == 180 * 10**9
+        assert out["big-model"]["vram_bytes"] == 180 * 10**9
 
     def test_pull_resolves_bare_mlx_served_name_to_hf_repo(self, client):
         # A bare MLX served-name (no "/", no ":") must be pulled as its HF
@@ -558,15 +718,15 @@ class TestRoutes:
 
         with patch.object(ps, "_refuse_if_client", return_value=None), \
              patch.object(ps, "_load_mlx_config",
-                          return_value={"glm-5.2": {"model_path": "mlx-community/GLM-5.2-4bit"}}), \
+                          return_value={"qwen3.5-fast": {"model_path": "mlx-community/Qwen3.5-35B-A3B-4bit"}}), \
              patch.object(ps, "_pulls_lock", fake_lock), \
              patch.object(ps, "_pulls_read", return_value={"pulls": {}, "dismissed": []}), \
              patch.object(ps, "_pulls_write"), \
              patch.object(ps, "_get_hf_model_size", return_value=None), \
              patch.object(ps, "_start_pull_worker", side_effect=fake_worker):
-            resp = client.post("/api/models/pull", json={"models": ["glm-5.2"]})
+            resp = client.post("/api/models/pull", json={"models": ["qwen3.5-fast"]})
         assert resp.status_code == 202
-        assert captured["name"] == "mlx-community/GLM-5.2-4bit"
+        assert captured["name"] == "mlx-community/Qwen3.5-35B-A3B-4bit"
         assert captured["kind"] == "hf"
 
     def test_load_profiles_does_not_clobber_unparseable_file(self, client, profiles_dir):
@@ -826,6 +986,112 @@ class TestRoutes:
         # 's' backs warm general AND non-warm code → counted warm only, not on-demand
         assert {m["name"] for m in d["on_demand"]} == {"img"}
         assert d["warm_bytes"] == 6 * GB
+
+
+# ── ds4 discovery ───────────────────────────────────────────────────
+
+class TestFetchDs4Models:
+    def test_ds4_up_inserts_hardcoded_entry(self):
+        """ds4 serves one pinned model with no params/vision metadata; those
+        two fields must be fully hardcoded (sizes included — the GGUF is
+        invisible to every existing sizing path) and marked always-resident,
+        or the memory bar undercounts 244GiB and warm logic tries to
+        keep-alive it. This mock's .json() has no usable context_length,
+        exercising the DS4_CONTEXT fallback."""
+        resp = MagicMock()
+        resp.ok = True
+        with patch.object(ps.requests, "get", return_value=resp):
+            out = ps._fetch_ds4_models(existing={})
+        entry = out["glm-5.2"]
+        assert entry["backend"] == "ds4"
+        assert entry["disk_bytes"] == 262_036_650_048
+        assert entry["vram_bytes"] == 262_036_650_048
+        assert entry["total_params_b"] == 740
+        assert entry["active_params_b"] == 32
+        assert entry["context"] == 131072
+        assert entry["has_vision"] is False
+        assert entry["is_loaded"] is True
+        assert entry["on_demand"] is False
+
+    def test_ds4_up_prefers_live_context_length(self):
+        """A --ctx launch-flag drift must surface through discovery, not
+        hide behind the DS4_CONTEXT constant."""
+        resp = MagicMock()
+        resp.ok = True
+        resp.json.return_value = {
+            "data": [{"id": "glm-5.2", "context_length": 65536}]}
+        with patch.object(ps.requests, "get", return_value=resp):
+            out = ps._fetch_ds4_models(existing={})
+        assert out["glm-5.2"]["context"] == 65536
+
+    def test_ds4_down_returns_empty(self):
+        with patch.object(ps.requests, "get",
+                          side_effect=ps.requests.ConnectionError("down")):
+            assert ps._fetch_ds4_models(existing={}) == {}
+
+    def test_existing_name_not_overwritten(self):
+        resp = MagicMock()
+        resp.ok = True
+        with patch.object(ps.requests, "get", return_value=resp):
+            out = ps._fetch_ds4_models(existing={"glm-5.2": {}})
+        assert out == {}
+
+    def test_ds4_model_is_eligible_for_llm_tasks(self):
+        """The one-line bug this guards: _LLM_BACKENDS without 'ds4' gives
+        glm-5.2 zero eligible tasks — invisible in every dropdown."""
+        resp = MagicMock()
+        resp.ok = True
+        with patch.object(ps.requests, "get", return_value=resp):
+            entry = ps._fetch_ds4_models(existing={})["glm-5.2"]
+        tasks = ps.get_eligible_tasks("glm-5.2", entry)
+        for task in ("code", "general", "reasoning", "long_context",
+                     "translation"):
+            assert task in tasks, f"glm-5.2 missing eligible task {task!r}"
+
+    def test_missing_models_check_skips_ds4_served_name(self):
+        """glm-5.2 is pre-provisioned by install.sh, not pullable. With the
+        MLX yaml entry gone, an unpatched _check_missing_models would prompt
+        the user to pull it, and the pull would 404 (`ollama pull glm-5.2`)."""
+        with patch.object(ps, "get_all_models",
+                          return_value={"qwen3.6:27b": {"backend": "ollama"}}):
+            missing, _ = ps._check_missing_models({"general": ["glm-5.2"]})
+        assert missing == []
+
+
+class TestDs4InstalledGatesMlxGlm52Fallback:
+    """When ds4 is provisioned on this machine, ds4 owns glm-5.2 outright:
+    if ds4 is unreachable the model must be absent, never resurface as a
+    stale MLX entry (wrong sizing, invites a 418GB cold load) from an
+    unmigrated ~/.config/mlx-server/config.yaml."""
+
+    def test_ds4_down_but_installed_keeps_glm52_absent(self):
+        with patch.object(ps, "OLLAMA_URL", "http://localhost:11434"), \
+             patch.object(ps, "_fetch_ollama_models", return_value={}), \
+             patch.object(ps, "_fetch_ds4_models", return_value={}), \
+             patch.object(ps, "ds4_installed", return_value=True), \
+             patch.object(ps, "_load_mlx_config",
+                          return_value={"glm-5.2": {"model_path": "mlx-community/GLM-5.2-4bit"}}), \
+             patch.object(ps, "_mlx_loaded_ids", return_value=set()), \
+             patch.object(ps, "_hf_model_downloaded", return_value=True), \
+             patch.object(ps, "_hf_cache_bytes", return_value=180 * 10**9), \
+             patch.object(ps, "_mlx_model_has_vision", return_value=False):
+            models = ps._fetch_all_models()
+        assert "glm-5.2" not in models
+
+    def test_ds4_not_installed_allows_mlx_glm52_fallback(self):
+        with patch.object(ps, "OLLAMA_URL", "http://localhost:11434"), \
+             patch.object(ps, "_fetch_ollama_models", return_value={}), \
+             patch.object(ps, "_fetch_ds4_models", return_value={}), \
+             patch.object(ps, "ds4_installed", return_value=False), \
+             patch.object(ps, "_load_mlx_config",
+                          return_value={"glm-5.2": {"model_path": "mlx-community/GLM-5.2-4bit"}}), \
+             patch.object(ps, "_mlx_loaded_ids", return_value=set()), \
+             patch.object(ps, "_hf_model_downloaded", return_value=True), \
+             patch.object(ps, "_hf_cache_bytes", return_value=180 * 10**9), \
+             patch.object(ps, "_mlx_model_has_vision", return_value=False):
+            models = ps._fetch_all_models()
+        assert "glm-5.2" in models
+        assert models["glm-5.2"]["backend"] == "mlx"
 
 
 class TestReadServerRamGb:
@@ -1355,3 +1621,57 @@ class TestAuditRoutes:
     def test_api_audit_fix_rejects_bad_group(self, client):
         r = client.post("/api/audit/fix", json={"group": "../etc"})
         assert r.status_code == 400
+
+
+class TestShareUrl:
+    """/api/share-url hands out the canonical tokened Playground URL so
+    phones can bookmark a link that actually authenticates (the page strips
+    ?token= from the address bar, so address-bar bookmarks are tokenless)."""
+
+    def test_share_url_uses_tailscale_fqdn_and_token(self, client):
+        with patch.object(ps, "_tailscale_fqdn", return_value="box.tail.ts.net"), \
+             patch.object(ps, "_PROFILE_AUTH_TOKEN", "sekret"), \
+             patch.object(ps, "PORT", 8101):
+            resp = client.get("/api/share-url",
+                              headers={"Authorization": "Bearer sekret"})
+        assert resp.status_code == 200
+        assert resp.get_json() == {
+            "url": "https://box.tail.ts.net:8101/tools?token=sekret"}
+
+    def test_share_url_falls_back_to_localhost_without_fqdn(self, client):
+        with patch.object(ps, "_tailscale_fqdn", return_value=""), \
+             patch.object(ps, "_PROFILE_AUTH_TOKEN", "sekret"), \
+             patch.object(ps, "PORT", 8101):
+            resp = client.get("/api/share-url",
+                              headers={"Authorization": "Bearer sekret"})
+        assert resp.status_code == 200
+        assert resp.get_json()["url"].endswith("/tools?token=sekret")
+        assert resp.get_json()["url"].startswith("http://localhost")
+
+    def test_share_url_requires_auth(self, client):
+        with patch.object(ps, "_PROFILE_AUTH_TOKEN", "sekret"):
+            resp = client.get("/api/share-url")
+        assert resp.status_code == 403
+
+
+class TestDiagnosticsDs4:
+    def test_diagnostics_reports_ds4_when_installed(self, client):
+        resp_ok = MagicMock()
+        resp_ok.ok = True
+        with patch.object(ps, "ds4_installed", return_value=True), \
+             patch.object(ps.requests, "get", return_value=resp_ok), \
+             patch.object(ps, "ollama_get", return_value=None), \
+             patch.object(ps, "get_all_models", return_value={}):
+            d = client.get("/api/diagnostics").get_json()
+        assert d["services"]["ds4"] is True
+
+    def test_diagnostics_ds4_null_when_not_installed(self, client):
+        """Laptops never run ds4 — a permanently-red 'Down' row would be
+        noise. null tells the UI to omit the row entirely."""
+        with patch.object(ps, "ds4_installed", return_value=False), \
+             patch.object(ps.requests, "get",
+                          side_effect=ps.requests.ConnectionError("x")), \
+             patch.object(ps, "ollama_get", return_value=None), \
+             patch.object(ps, "get_all_models", return_value={}):
+            d = client.get("/api/diagnostics").get_json()
+        assert d["services"]["ds4"] is None

@@ -30,6 +30,8 @@ _NETWORK_DEFAULTS = {
     "TAILSCALE_HOSTNAME": "super-puppy",
     "OLLAMA_PORT": "11434",
     "MLX_PORT": "8000",
+    "DS4_PORT": "8002",
+    "DS4_DIR": "",
     "SERVER_RAM_GB": "0",
     "PROBE_TIMEOUT": "2",
     "PROFILE_PORT": "8101",
@@ -38,7 +40,8 @@ _NETWORK_DEFAULTS = {
     "AUTO_UPDATE": "true",
 }
 
-_NUMERIC_KEYS = {"OLLAMA_PORT", "MLX_PORT", "SERVER_RAM_GB", "PROBE_TIMEOUT", "PROFILE_PORT"}
+_NUMERIC_KEYS = {"OLLAMA_PORT", "MLX_PORT", "DS4_PORT", "SERVER_RAM_GB",
+                 "PROBE_TIMEOUT", "PROFILE_PORT"}
 
 
 def validate_network_conf(logger=None) -> list[str]:
@@ -104,6 +107,85 @@ def validate_network_conf(logger=None) -> list[str]:
             warn(f"{MCP_PREFS_FILE} is not valid JSON: {e}")
 
     return warnings
+
+
+# ── Chat backends & ds4 ──────────────────────────────────────────────
+# Three chat-LLM backends. "ds4" is antirez/ds4 serving glm-5.2 on the
+# 512GB tier (OpenAI-compatible, localhost:8002, internal-only — never
+# tailscale-served; client-mode traffic is brokered by the desktop's MCP
+# and profile server).
+
+LLM_BACKENDS: frozenset[str] = frozenset({"ollama", "mlx", "ds4"})
+
+# ds4's /v1/models returns NO params/vision metadata, and its GGUF lives
+# outside every existing sizing path (not an HF snapshot, not an Ollama
+# blob) — those fields must stay hardcoded here or TASK_FILTERS
+# min_active_b/min_ctx silently drop glm-5.2 from every task list.
+# It DOES report context_length (verified live 2026-07-23) — see
+# ds4_live_context() below, which discovery prefers over this constant so
+# a --ctx launch-flag drift can't silently diverge from what's advertised.
+# DS4_MODEL_BYTES is the exact on-disk size of GLM-5.2-UD-Q2_K_RoutedQ2K.gguf.
+DS4_MODEL_NAME = "glm-5.2"
+DS4_MODEL_BYTES = 262_036_650_048
+# Computed from mlx-community/GLM-5.2-4bit's config.json (glm_moe_dsa: 78
+# layers, first_k_dense_replace=3, 256 routed + 1 shared experts/layer,
+# moe_intermediate_size=2048, hidden_size=6144): summing embeddings+head,
+# MLA attention, the DSA indexer, dense-layer FFN, and every expert's FFN
+# (routed + shared — TOTAL counts every weight on disk, not just the
+# active ones) gives ~743.6B. Rounded down. Corrects a stale 380B guess
+# that undercounted by roughly 2x.
+DS4_TOTAL_PARAMS_B = 740
+DS4_ACTIVE_PARAMS_B = 32
+DS4_CONTEXT = 131072
+
+
+def ds4_live_context(models_response: dict) -> int:
+    """Extract the live context_length from ds4's /v1/models response.
+
+    Falls back to DS4_CONTEXT when the response is missing, malformed, or
+    doesn't carry a usable context_length for DS4_MODEL_NAME — this is
+    what stops a --ctx launch-flag change from silently drifting away
+    from what discovery (and the min_ctx task-eligibility gate) believes
+    glm-5.2 can serve.
+    """
+    try:
+        for entry in models_response.get("data", []):
+            if entry.get("id") == DS4_MODEL_NAME:
+                ctx = entry.get("context_length")
+                if isinstance(ctx, int) and ctx > 0:
+                    return ctx
+    except (AttributeError, TypeError):
+        pass
+    return DS4_CONTEXT
+
+
+DS4_DIR_DEFAULT = "~/.local/share/super-puppy/ds4"
+
+
+def ds4_dir() -> Path:
+    """The ds4 checkout/build/gguf directory.
+
+    network.conf's DS4_DIR overrides; default is DS4_DIR_DEFAULT. install.sh
+    provisions this directory on 512GB machines (and symlinks an existing
+    ~/experiments/ds4 checkout when present).
+    """
+    if NETWORK_CONF.exists():
+        for line in NETWORK_CONF.read_text().splitlines():
+            stripped = line.strip()
+            if stripped.startswith("DS4_DIR="):
+                val = stripped.partition("=")[2].strip().strip('"').strip("'")
+                if val:
+                    return Path(val).expanduser()
+    return Path(DS4_DIR_DEFAULT).expanduser()
+
+
+def ds4_installed() -> bool:
+    """True only where install.sh actually provisioned ds4 (512GB tier).
+
+    Gates every ds4 surface that would otherwise show a permanently-red
+    service on machines that never run it.
+    """
+    return (ds4_dir() / "ds4-server").exists()
 
 
 # ── MoE active parameter table ───────────────────────────────────────
@@ -426,7 +508,7 @@ TASK_FILTERS: dict[str, dict[str, Any]] = {
 # max_ram_gb cap gates model-pull validation in install.sh and the profile
 # server. The active default is 64gb (fits M5 / mid GPU class).
 
-PROFILES_VERSION = 31  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 32  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,

@@ -355,6 +355,105 @@ class TestValidateNetworkConf:
         assert any("not valid JSON" in w for w in warnings)
 
 
+class TestDs4Constants:
+    def test_llm_backends_includes_all_three_chat_backends(self):
+        from lib.models import LLM_BACKENDS
+        assert LLM_BACKENDS == {"ollama", "mlx", "ds4"}
+
+    def test_ds4_metadata_constants(self):
+        # These hardcoded values feed BOTH discovery paths (MCP + profile
+        # server); a typo here silently drops glm-5.2 from task lists
+        # (TASK_FILTERS min_active_b/min_ctx gates) or corrupts memory math.
+        from lib import models
+        assert models.DS4_MODEL_NAME == "glm-5.2"
+        assert models.DS4_MODEL_BYTES == 262_036_650_048
+        assert models.DS4_TOTAL_PARAMS_B == 740
+        assert models.DS4_ACTIVE_PARAMS_B == 32
+        assert models.DS4_CONTEXT == 131072
+
+    def test_ds4_live_context_prefers_live_value(self):
+        from lib import models
+        response = {"data": [{"id": "glm-5.2", "context_length": 131072}]}
+        assert models.ds4_live_context(response) == 131072
+
+    def test_ds4_live_context_falls_back_when_field_missing(self):
+        from lib import models
+        response = {"data": [{"id": "glm-5.2"}]}
+        assert models.ds4_live_context(response) == models.DS4_CONTEXT
+
+    def test_ds4_live_context_falls_back_when_id_does_not_match(self):
+        from lib import models
+        response = {"data": [{"id": "some-other-model", "context_length": 8192}]}
+        assert models.ds4_live_context(response) == models.DS4_CONTEXT
+
+    def test_ds4_live_context_falls_back_on_malformed_response(self):
+        from lib import models
+        assert models.ds4_live_context({}) == models.DS4_CONTEXT
+        assert models.ds4_live_context({"data": "not-a-list"}) == models.DS4_CONTEXT
+        assert models.ds4_live_context(
+            {"data": [{"id": "glm-5.2", "context_length": "not-an-int"}]}
+        ) == models.DS4_CONTEXT
+        assert models.ds4_live_context(
+            {"data": [{"id": "glm-5.2", "context_length": -1}]}
+        ) == models.DS4_CONTEXT
+
+    def test_ds4_live_context_reflects_a_ctx_launch_flag_change(self):
+        # This is the regression case: a --ctx launch-flag drift must
+        # surface through discovery, not disappear behind the constant.
+        from lib import models
+        response = {"data": [{"id": "glm-5.2", "context_length": 65536}]}
+        assert models.ds4_live_context(response) == 65536
+
+    def test_ds4_dir_default_and_override(self, tmp_path):
+        from lib import models
+        conf = tmp_path / "network.conf"
+        conf.write_text('DS4_PORT=8002\nDS4_DIR="/opt/ds4"\n')
+        with patch.object(models, "NETWORK_CONF", conf):
+            assert models.ds4_dir() == Path("/opt/ds4")
+        conf.write_text("DS4_PORT=8002\n")
+        with patch.object(models, "NETWORK_CONF", conf):
+            assert models.ds4_dir() == Path(
+                "~/.local/share/super-puppy/ds4").expanduser()
+
+    def test_ds4_installed_requires_server_binary(self, tmp_path):
+        from lib import models
+        conf = tmp_path / "network.conf"
+        conf.write_text(f'DS4_DIR="{tmp_path}/ds4"\n')
+        with patch.object(models, "NETWORK_CONF", conf):
+            assert models.ds4_installed() is False
+            (tmp_path / "ds4").mkdir()
+            (tmp_path / "ds4" / "ds4-server").write_bytes(b"#!/bin/sh\n")
+            assert models.ds4_installed() is True
+
+    def test_ds4_port_repaired_when_non_numeric(self, tmp_path):
+        from lib import models
+        conf = tmp_path / "network.conf"
+        conf.write_text("DS4_PORT=8002abc\n")
+        with patch.object(models, "NETWORK_CONF", conf), \
+             patch.object(models, "CONFIG_DIR", tmp_path):
+            warnings = models.validate_network_conf()
+        assert any("non-numeric" in w for w in warnings)
+        assert "DS4_PORT=8002" in conf.read_text()
+
+    def test_network_conf_template_has_ds4_keys(self):
+        # _NETWORK_DEFAULTS "must match config/local-models/network.conf"
+        # (lib/models.py comment) — this catches template drift.
+        template = (Path(__file__).resolve().parent.parent
+                    / "config" / "local-models" / "network.conf")
+        content = template.read_text()
+        assert "DS4_PORT=8002" in content
+        assert "DS4_DIR=" in content
+
+
+class TestDs4Menubar:
+    def test_ds4_watchdog_threshold_is_generous(self):
+        """ds4's cold load is ~70s. The MLX watchdog (60s) copied here
+        would SIGKILL every legitimate load, forever. 300s matches the
+        readiness deadline in start-local-models and _restart_ds4."""
+        assert menubar.DS4_STUCK_LOADING_S == 300
+        assert menubar.DS4_STUCK_LOADING_S > 70
+
+
 class TestModelHasVision:
     def test_model_info_vision_keys_signal_vision(self):
         """GGUF vision models carry the vision tower; Ollama exposes it
@@ -620,16 +719,17 @@ class TestDefaultProfilesSeeding:
         assert targets == {"qwen3.6:27b-mlx": "ollama", "embed:8b": "ollama"}
         # HF-repo TTS excluded (not a keep-warm server target); non-warm 'code' absent
 
-    def test_warm_models_bare_names_are_mlx_served(self):
+    def test_warm_models_bare_names_are_mlx_or_ds4_served(self):
         """Every bare-name (no ':' and no '/') warm model in a shipped preset
-        must appear as a served_model_name in config/mlx-server/config.yaml.
-        This guards the string-shape heuristic in warm_ping_targets: a bare name
-        is classified as 'mlx', so a bare name that isn't in the MLX config would
-        silently ping the wrong backend (or no backend at all)."""
+        must be either a served_model_name in config/mlx-server/config.yaml
+        or the ds4-served model. This guards warm_ping_targets' string-shape
+        heuristic: a bare name in neither set would silently ping the wrong
+        backend (or no backend at all)."""
         import yaml
+        from lib.models import DS4_MODEL_NAME
         cfg_path = Path(__file__).resolve().parent.parent / "config" / "mlx-server" / "config.yaml"
         cfg = yaml.safe_load(cfg_path.read_text())
-        served = {m["served_model_name"] for m in cfg["models"]}
+        served = {m["served_model_name"] for m in cfg["models"]} | {DS4_MODEL_NAME}
         for name, prof in menubar.DEFAULT_PROFILES["profiles"].items():
             tasks = prof["tasks"]
             for key in prof.get("warm", []):
@@ -638,8 +738,39 @@ class TestDefaultProfilesSeeding:
                     continue  # ollama tag or HF repo — fine, warm_ping_targets handles them
                 assert model in served, (
                     f"profile {name!r} warm bare-name {model!r} "
-                    f"is not a served_model_name in mlx-server/config.yaml"
+                    f"is neither an MLX served_model_name nor ds4-served"
                 )
+
+    def test_512gb_warm_ping_skips_glm52(self):
+        """The concrete ship assertion: with the real repo yaml (glm-5.2
+        removed) and the real 512gb preset, warm pings no longer target
+        glm-5.2 — it dropped out naturally by leaving the served set."""
+        import yaml
+        cfg_path = Path(__file__).resolve().parent.parent / "config" / "mlx-server" / "config.yaml"
+        served = {m["served_model_name"]
+                  for m in yaml.safe_load(cfg_path.read_text())["models"]}
+        data = {"active": "512gb", "profiles": menubar.DEFAULT_PROFILES["profiles"]}
+        targets = dict(menubar.warm_ping_targets(data, mlx_served=served))
+        assert "glm-5.2" not in targets
+        assert targets.get("qwen3-embedding:8b") == "ollama"
+
+    def test_warm_ping_targets_excludes_ds4_served_bare_names(self):
+        """A bare warm name that is NOT an MLX served-name is ds4-served:
+        always resident, no idle unload, so a keep-warm ping is useless —
+        and before ds4 existed the old heuristic would have pinged MLX for
+        a model MLX doesn't serve (404 every 240s)."""
+        data = {"active": "t", "profiles": {"t": {
+            "warm": ["general", "embedding"],
+            "tasks": {"general": "glm-5.2", "embedding": "qwen3.5-fast"}}}}
+        targets = dict(menubar.warm_ping_targets(
+            data, mlx_served={"qwen3.5-fast"}))
+        assert targets == {"qwen3.5-fast": "mlx"}
+
+    def test_warm_ping_targets_legacy_without_served_set(self):
+        """mlx_served=None keeps the old classify-bare-as-mlx behavior."""
+        data = {"active": "t", "profiles": {"t": {
+            "warm": ["general"], "tasks": {"general": "qwen3.5-fast"}}}}
+        assert menubar.warm_ping_targets(data) == [("qwen3.5-fast", "mlx")]
 
 
 class TestWarmGate:

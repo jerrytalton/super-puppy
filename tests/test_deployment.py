@@ -12,6 +12,7 @@ Covers:
 - _post_update_health_check: regression detection
 """
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -915,6 +916,105 @@ class TestPostUpdateConfigRefs:
             )
 
 
+class TestPostUpdateGlm52MigrationGate:
+    """C1: the glm-5.2 → ds4 MLX-yaml migration must additionally require
+    the ds4 binary to be present. Auto-update never runs install.sh, so a
+    512GB machine that hasn't been provisioned with ds4 would otherwise have
+    its working glm-5.2 MLX entry silently stripped with nothing to replace
+    it. Runs the real migration block extracted verbatim out of
+    post-update.sh (regex-sliced, like TestPostUpdateConfigRefs above)
+    against a fake sysctl/HOME/REPO_DIR, so a regression in the actual
+    script text fails this test — not a hand-copied reimplementation of it.
+    """
+
+    def _extract_migration_block(self):
+        import re
+
+        script = (Path(__file__).parent.parent / "bin" / "post-update.sh").read_text()
+        m = re.search(
+            r"(# One-shot migration.*?\nif \[ \"\$\(sysctl.*?\nfi\n)",
+            script, re.DOTALL)
+        assert m, "migration block not found in post-update.sh — did the anchor comment move?"
+        return m.group(1)
+
+    def _run(self, tmp_path, ds4_present, ram_gb=512):
+        mlx_dir = tmp_path / "mlx-server"
+        mlx_dir.mkdir()
+        (mlx_dir / "config.yaml").write_text(
+            "models:\n  - served_model_name: glm-5.2\n")
+
+        ds4_dir = tmp_path / "ds4"
+        if ds4_present:
+            ds4_dir.mkdir()
+            server_bin = ds4_dir / "ds4-server"
+            server_bin.write_bytes(b"#!/bin/sh\n")
+            server_bin.chmod(0o755)
+
+        home_dir = tmp_path / "home"
+        conf_dir = home_dir / ".config" / "local-models"
+        conf_dir.mkdir(parents=True)
+        (conf_dir / "network.conf").write_text(f'DS4_DIR="{ds4_dir}"\n')
+
+        fake_bin = tmp_path / "fakebin"
+        fake_bin.mkdir()
+        sysctl = fake_bin / "sysctl"
+        sysctl.write_text(
+            "#!/bin/bash\n"
+            f"echo {ram_gb * 1073741824}\n")
+        sysctl.chmod(0o755)
+
+        repo_dir = tmp_path / "repo" / "bin"
+        repo_dir.mkdir(parents=True)
+        migrate_marker = tmp_path / "migrate_ran"
+        stub_migrate = repo_dir / "migrate-mlx-config.py"
+        stub_migrate.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            f"open({str(migrate_marker)!r}, 'w').write('ran')\n"
+            "sys.exit(0)\n")
+
+        block = self._extract_migration_block()
+        script_path = tmp_path / "run.sh"
+        script_path.write_text(
+            "#!/bin/bash\n"
+            "set -euo pipefail\n"
+            "log() { echo \"[test] $*\"; }\n"
+            f'MLX_DIR="{mlx_dir}"\n'
+            f'REPO_DIR="{tmp_path / "repo"}"\n'
+            f'HOME="{home_dir}"\n'
+            f"{block}\n")
+        script_path.chmod(0o755)
+
+        env = dict(os.environ)
+        env["PATH"] = f"{fake_bin}:{env['PATH']}"
+        result = subprocess.run(
+            ["bash", str(script_path)],
+            capture_output=True, text=True, timeout=10, env=env)
+        return result, migrate_marker
+
+    def test_migration_skipped_when_ds4_not_provisioned(self, tmp_path):
+        """512GB tier, no ds4-server binary: migration must not run."""
+        result, marker = self._run(tmp_path, ds4_present=False)
+        assert result.returncode == 0, result.stderr
+        assert not marker.exists(), (
+            "migration ran even though ds4 isn't installed — "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}")
+
+    def test_migration_runs_when_ds4_provisioned(self, tmp_path):
+        """512GB tier, ds4-server present: migration proceeds as before."""
+        result, marker = self._run(tmp_path, ds4_present=True)
+        assert result.returncode == 0, result.stderr
+        assert marker.exists(), (
+            "migration should run once ds4-server is present — "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}")
+
+    def test_migration_skipped_below_512gb_tier_even_with_ds4(self, tmp_path):
+        """Belt-and-suspenders: the pre-existing RAM gate must still hold."""
+        result, marker = self._run(tmp_path, ds4_present=True, ram_gb=128)
+        assert result.returncode == 0, result.stderr
+        assert not marker.exists()
+
+
 class TestWarmTickWiring:
     """_on_warm_tick must thread the module-level ping_warm with the app's
     ports — an arg mismatch would only surface as a swallowed exception in
@@ -925,6 +1025,7 @@ class TestWarmTickWiring:
         app.mode = "server"
         app.servers_started = True
         app.ollama_port, app.mlx_port = "11434", "8000"
+        app.mlx_config_info = {}
         with patch.object(menubar, "load_profiles", return_value={}), \
              patch.object(menubar, "warm_ping_targets",
                           return_value=[("m:1b", "ollama")]), \
@@ -933,3 +1034,282 @@ class TestWarmTickWiring:
         assert mock_thread.call_args.kwargs["target"] is menubar.ping_warm
         assert mock_thread.call_args.kwargs["args"] == (
             [("m:1b", "ollama")], "11434", "8000")
+
+
+class TestCopyPlaygroundUrl:
+    """The copied Playground URL must carry the auth token — the profile
+    server has required it since c923ac6, and a tokenless bookmark yields
+    {"error":"unauthorized"} on every phone that saved it."""
+
+    def _run_copy(self, token):
+        app = object.__new__(menubar.LocalModelsApp)
+        app.profile_port = 8101
+        pbcopy_calls = []
+
+        def fake_run(cmd, **kw):
+            if cmd[0] == "tailscale":
+                m = MagicMock()
+                m.stdout = json.dumps({"Self": {"DNSName": "box.tail.ts.net."}})
+                return m
+            pbcopy_calls.append((cmd, kw))
+            return MagicMock()
+
+        with patch.object(menubar.subprocess, "run", side_effect=fake_run), \
+             patch.object(menubar, "_AUTH_TOKEN", token), \
+             patch.object(menubar.rumps, "notification"):
+            app._copy_playground_url(None)
+        assert pbcopy_calls and pbcopy_calls[0][0] == ["pbcopy"]
+        return pbcopy_calls[0][1]["input"].decode()
+
+    def test_copied_url_includes_auth_token(self):
+        assert self._run_copy("sekret") == \
+            "https://box.tail.ts.net:8101/tools?token=sekret"
+
+    def test_copied_url_omits_empty_token(self):
+        assert self._run_copy("") == "https://box.tail.ts.net:8101/tools"
+
+
+# ---------------------------------------------------------------------------
+# bin/migrate-mlx-config.py — glm-5.2 → ds4 one-shot migration
+# ---------------------------------------------------------------------------
+
+def _load_migrate_module():
+    path = Path(__file__).parent.parent / "bin" / "migrate-mlx-config.py"
+    spec = importlib.util.spec_from_file_location("migrate_mlx_config", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+SAMPLE_YAML = """\
+server:
+  host: "127.0.0.1"
+  port: 8000
+
+models:
+  # Tiny model to verify server works
+  - model_path: mlx-community/Llama-3.2-3B-Instruct-4bit
+    model_type: lm
+    served_model_name: llama-3b
+    context_length: 8192
+
+  # Frontier (512GB tier) — GLM-5.2, ~418GB at 4-bit
+  - model_path: mlx-community/GLM-5.2-4bit
+    model_type: lm
+    served_model_name: glm-5.2
+    context_length: 131072
+    on_demand: true
+    on_demand_idle_timeout: 300
+
+  # User-added custom model — must survive untouched
+  - model_path: mlx-community/My-Custom-7B
+    model_type: lm
+    served_model_name: my-custom
+    context_length: 4096
+"""
+
+
+class TestMigrateMlxConfig:
+    def test_removes_glm52_block_and_its_comment(self):
+        mod = _load_migrate_module()
+        out, removed = mod.remove_served_model(SAMPLE_YAML, "glm-5.2")
+        assert removed is True
+        assert "glm-5.2" not in out
+        assert "GLM-5.2-4bit" not in out
+        assert "Frontier (512GB tier)" not in out          # comment gone too
+
+    def test_preserves_other_entries_including_user_custom(self):
+        mod = _load_migrate_module()
+        out, _ = mod.remove_served_model(SAMPLE_YAML, "glm-5.2")
+        assert "served_model_name: llama-3b" in out
+        assert "served_model_name: my-custom" in out
+        assert "User-added custom model" in out
+
+    def test_idempotent_second_run(self):
+        """post-update.sh runs on every update; the second run must be a
+        no-op, not a crash or a mangled file."""
+        mod = _load_migrate_module()
+        once, _ = mod.remove_served_model(SAMPLE_YAML, "glm-5.2")
+        twice, removed = mod.remove_served_model(once, "glm-5.2")
+        assert removed is False
+        assert twice == once
+
+    def test_cli_rewrites_file_and_exits_zero(self, tmp_path):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(SAMPLE_YAML)
+        script = Path(__file__).parent.parent / "bin" / "migrate-mlx-config.py"
+        result = subprocess.run(
+            ["python3", str(script), str(cfg), "glm-5.2"],
+            capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0, result.stderr
+        assert "glm-5.2" not in cfg.read_text()
+        # And again — idempotent at the CLI level too.
+        result = subprocess.run(
+            ["python3", str(script), str(cfg), "glm-5.2"],
+            capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0
+
+    def test_cli_writes_timestamped_backup_before_first_modification(self, tmp_path):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(SAMPLE_YAML)
+        script = Path(__file__).parent.parent / "bin" / "migrate-mlx-config.py"
+        result = subprocess.run(
+            ["python3", str(script), str(cfg), "glm-5.2"],
+            capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0, result.stderr
+        backups = list(tmp_path.glob("config.yaml.pre-ds4-*"))
+        assert len(backups) == 1, backups
+        assert backups[0].read_text() == SAMPLE_YAML
+
+    def test_cli_does_not_duplicate_backup_on_rerun(self, tmp_path):
+        """post-update.sh re-runs this on every update; only the FIRST
+        run's pre-migration state is worth keeping."""
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(SAMPLE_YAML)
+        script = Path(__file__).parent.parent / "bin" / "migrate-mlx-config.py"
+        subprocess.run(["python3", str(script), str(cfg), "glm-5.2"],
+                       capture_output=True, text=True, timeout=10)
+        subprocess.run(["python3", str(script), str(cfg), "glm-5.2"],
+                       capture_output=True, text=True, timeout=10)
+        backups = list(tmp_path.glob("config.yaml.pre-ds4-*"))
+        assert len(backups) == 1, backups
+
+    def test_no_backup_written_when_nothing_removed(self, tmp_path):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(SAMPLE_YAML.replace("glm-5.2", "already-gone"))
+        script = Path(__file__).parent.parent / "bin" / "migrate-mlx-config.py"
+        result = subprocess.run(
+            ["python3", str(script), str(cfg), "glm-5.2"],
+            capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0, result.stderr
+        assert list(tmp_path.glob("config.yaml.pre-ds4-*")) == []
+
+
+class TestGlm52PatchRetired:
+    """The pinned mlx-lm patch is retired by the ds4 ship. A dangling
+    invocation of the deleted script would hard-fail install.sh on 512GB
+    machines; a dangling doc reference sends users to a runbook that no
+    longer exists."""
+
+    def test_patch_script_deleted_and_unreferenced(self):
+        repo = Path(__file__).parent.parent
+        assert not (repo / "bin" / "apply-mlx-glm52-patch.sh").exists(), \
+            "bin/apply-mlx-glm52-patch.sh should be deleted (retired by ds4)"
+        offenders = []
+        for sub in ("install.sh", "uninstall.sh", "CLAUDE.md", "README.md"):
+            if "apply-mlx-glm52-patch" in (repo / sub).read_text():
+                offenders.append(sub)
+        for md in (repo / "docs").glob("*.md"):
+            if "apply-mlx-glm52-patch" in md.read_text():
+                offenders.append(str(md.relative_to(repo)))
+        assert not offenders, f"stale glm52-patch references: {offenders}"
+
+    def test_install_provisions_ds4_pinned(self):
+        """install.sh must clone the PINNED commit (engine is weeks old;
+        an unpinned clone ships whatever antirez pushed last night)."""
+        text = (Path(__file__).parent.parent / "install.sh").read_text()
+        assert "bd89932" in text
+        assert "antirez/ds4" in text
+        assert "GLM-5.2-UD-Q2_K_RoutedQ2K.gguf" in text
+        assert "ds4flash.gguf" in text
+
+
+class TestInstallDs4CloneSurvivesBranchDeletion:
+    """install.sh pins ds4 by commit, but originally cloned by branch
+    (`--branch glm5.2`). If that branch is deleted/renamed upstream (the
+    repo is weeks old and still moving), the clone must still succeed by
+    falling back to the default branch and fetching the pinned sha
+    directly — the commit stays reachable even without the branch."""
+
+    def test_branch_clone_failure_falls_back_to_default_branch_and_pinned_sha(self):
+        text = (Path(__file__).parent.parent / "install.sh").read_text()
+        assert "git clone --branch glm5.2" in text
+        assert "cloning the default branch and checking out the pinned commit directly" in text
+        assert 'git clone https://github.com/antirez/ds4 "$DS4_DIR"' in text
+        assert 'fetch --quiet origin "$DS4_COMMIT"' in text
+
+
+class TestInstallDs4GgufSizeVerification:
+    """install.sh downloads a 244GiB file over hf; a truncated/corrupt
+    download must not be silently treated as ready to serve."""
+
+    def _extract_block(self):
+        text = (Path(__file__).parent.parent / "install.sh").read_text()
+        start = text.index('if hf download "$DS4_GGUF_REPO"')
+        end_marker = '            fi\n        else\n            echo "  Warning: hf CLI unavailable'
+        end = text.index(end_marker)
+        block = text[start:end] + "            fi\n"
+        assert "DS4_MODEL_BYTES" in block
+        assert "failed-size-check" in block
+        return block
+
+    def _run(self, tmp_path, actual_bytes, expected_bytes, fake_hf_ok=True):
+        gguf_dir = tmp_path / "gguf"
+        gguf_dir.mkdir()
+        gguf_file = "GLM-5.2-UD-Q2_K_RoutedQ2K.gguf"
+
+        # Fake repo checkout: a stub lib/models.py with a controllable
+        # DS4_MODEL_BYTES, so the test can exercise match/mismatch with
+        # small files instead of a real 244GiB download.
+        fake_repo = tmp_path / "fake_repo"
+        (fake_repo / "lib").mkdir(parents=True)
+        (fake_repo / "lib" / "__init__.py").write_text("")
+        (fake_repo / "lib" / "models.py").write_text(
+            f"DS4_MODEL_BYTES = {expected_bytes}\n")
+
+        fake_bin = tmp_path / "fakebin"
+        fake_bin.mkdir()
+        hf_stub = fake_bin / "hf"
+        if fake_hf_ok:
+            hf_stub.write_text(
+                "#!/bin/sh\n"
+                f"python3 -c \"open('{gguf_dir}/{gguf_file}', 'wb').write(b'x' * {actual_bytes})\"\n"
+                "exit 0\n")
+        else:
+            hf_stub.write_text("#!/bin/sh\nexit 1\n")
+        hf_stub.chmod(0o755)
+
+        script = (
+            "#!/bin/bash\n"
+            "set -u\n"
+            f'DS4_GGUF_REPO="antirez/GLM-5.2-GGUF"\n'
+            f'DS4_GGUF_FILE="{gguf_file}"\n'
+            f'DS4_DIR="{tmp_path}"\n'
+            f'REPO_DIR="{fake_repo}"\n'
+            + self._extract_block()
+        )
+        script_path = tmp_path / "run.sh"
+        script_path.write_text(script)
+        script_path.chmod(0o755)
+
+        env = dict(os.environ)
+        env["PATH"] = f"{fake_bin}:{env['PATH']}"
+        result = subprocess.run(
+            ["bash", str(script_path)], capture_output=True, text=True,
+            timeout=30, env=env)
+        return result, gguf_dir / gguf_file, gguf_dir / f"{gguf_file}.failed-size-check"
+
+    def test_matching_size_is_accepted(self, tmp_path):
+        result, good_path, failed_path = self._run(
+            tmp_path, actual_bytes=1000, expected_bytes=1000, fake_hf_ok=True)
+        assert result.returncode == 0, result.stderr
+        assert "size mismatch" not in result.stderr
+        assert good_path.exists()
+        assert not failed_path.exists()
+
+    def test_mismatched_size_is_warned_and_marked_failed(self, tmp_path):
+        result, good_path, failed_path = self._run(
+            tmp_path, actual_bytes=1234, expected_bytes=1000, fake_hf_ok=True)
+        assert result.returncode == 0, result.stderr
+        assert "size mismatch" in result.stderr
+        assert not good_path.exists()
+        assert failed_path.exists()
+        assert failed_path.read_bytes() == b"x" * 1234
+
+    def test_hf_download_failure_short_circuits_before_size_check(self, tmp_path):
+        result, good_path, failed_path = self._run(
+            tmp_path, actual_bytes=0, expected_bytes=1000, fake_hf_ok=False)
+        assert result.returncode == 0, result.stderr
+        assert "download failed" in result.stdout
+        assert not good_path.exists()
+        assert not failed_path.exists()

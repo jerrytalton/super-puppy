@@ -5,6 +5,7 @@ requiring live Ollama/MLX services. Heavy dependencies (mcp, httpx, torch,
 starlette) are mocked at import time.
 """
 
+import asyncio
 import json
 import sys
 import threading
@@ -231,6 +232,142 @@ class TestPickModel:
         msg = str(exc_info.value)
         assert "nonexistent" in msg
         assert "not found" in msg
+
+
+# ── ds4 chat dispatch ───────────────────────────────────────────────
+
+class _FakeDs4Response:
+    """Mimics httpx.Response for ds4: .text carries raw control chars, so
+    strict .json() raises exactly like the real failure mode."""
+
+    status_code = 200
+
+    def __init__(self, text):
+        self.text = text
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return json.loads(self.text)  # strict — raises on control chars
+
+
+def _fake_async_client(response_text, captured):
+    class _FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            captured["client_kwargs"] = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, json=None):
+            captured["url"] = url
+            captured["body"] = json
+            return _FakeDs4Response(response_text)
+
+    return _FakeAsyncClient
+
+
+class TestChatDs4:
+    def test_chat_routes_ds4_and_parses_unescaped_control_chars(self):
+        """The real 2026-07-22 failure: ds4's encoder emits raw control
+        chars inside long reasoning_content; strict JSON parsing (resp.json /
+        plain json.loads) raises and crashes dispatch. chat() must route
+        backend='ds4' to chat_ds4 (the old else-branch misrouted it to MLX
+        :8000) and parse with strict=False."""
+        raw = ('{"choices":[{"message":{"content":"OK then",'
+               '"reasoning_content":"thinking\x01hard"}}]}')
+        captured = {}
+        with patch.object(server.httpx, "AsyncClient",
+                          _fake_async_client(raw, captured)):
+            result = asyncio.run(server.chat(
+                "glm-5.2", "ds4",
+                [{"role": "user", "content": "hi"}]))
+        assert "OK then" in result
+        assert captured["url"].endswith(":8002/v1/chat/completions")
+
+    def test_chat_ds4_timeout_is_600_not_300(self):
+        """At ~11.5 tok/s a 4096-token generation takes ~356s, and ds4
+        serializes requests — 300s cuts off real in-flight requests. Pin the
+        timeout the way test_chat_routes_ds4_and_parses_unescaped_control_chars
+        pins the URL, so a regression back to 300 fails loudly."""
+        raw = '{"choices":[{"message":{"content":"hi"}}]}'
+        captured = {}
+        with patch.object(server.httpx, "AsyncClient",
+                          _fake_async_client(raw, captured)):
+            asyncio.run(server.chat_ds4(
+                "glm-5.2", [{"role": "user", "content": "hi"}]))
+        assert captured["client_kwargs"]["timeout"] == 600
+
+    def test_chat_ds4_never_forwards_mlx_enable_thinking_shim(self):
+        """ds4's own MLX-convention shim (chat_template_kwargs.enable_thinking)
+        is VERIFIED BROKEN on ds4 (200 OK but reasoning migrates into content,
+        no think-block markers to strip). think=False must NOT put that key
+        on the wire — it uses ds4's native `thinking` field instead."""
+        raw = '{"choices":[{"message":{"content":"hi"}}]}'
+        captured = {}
+        with patch.object(server.httpx, "AsyncClient",
+                          _fake_async_client(raw, captured)):
+            asyncio.run(server.chat_ds4(
+                "glm-5.2", [{"role": "user", "content": "hi"}], think=False))
+        assert "chat_template_kwargs" not in captured["body"]
+
+    def test_chat_ds4_think_false_sends_native_thinking_disabled(self):
+        """ds4's native thinking control (verified live 2026-07-23):
+        thinking is default-on, and think=False disables it via
+        `"thinking": {"type": "disabled"}`."""
+        raw = '{"choices":[{"message":{"content":"hi"}}]}'
+        captured = {}
+        with patch.object(server.httpx, "AsyncClient",
+                          _fake_async_client(raw, captured)):
+            asyncio.run(server.chat_ds4(
+                "glm-5.2", [{"role": "user", "content": "hi"}], think=False))
+        assert captured["body"]["thinking"] == {"type": "disabled"}
+
+    def test_chat_ds4_think_true_omits_thinking_key(self):
+        """think=True (or the default) must omit the `thinking` key entirely
+        so ds4's default (thinking on) applies."""
+        raw = '{"choices":[{"message":{"content":"hi"}}]}'
+        captured = {}
+        with patch.object(server.httpx, "AsyncClient",
+                          _fake_async_client(raw, captured)):
+            asyncio.run(server.chat_ds4(
+                "glm-5.2", [{"role": "user", "content": "hi"}], think=True))
+        assert "thinking" not in captured["body"]
+
+    def test_chat_ds4_falls_back_to_reasoning_content(self):
+        """glm-5.2 on ds4 always thinks and can burn its whole token budget
+        thinking — content comes back empty. Surface reasoning_content
+        instead of returning an empty string."""
+        raw = ('{"choices":[{"message":{"content":"",'
+               '"reasoning_content":"the answer is 42"}}]}')
+        with patch.object(server.httpx, "AsyncClient",
+                          _fake_async_client(raw, {})):
+            result = asyncio.run(server.chat_ds4(
+                "glm-5.2", [{"role": "user", "content": "hi"}]))
+        assert result == "the answer is 42"
+
+    def test_gpu_tracking_accepts_ds4_key(self):
+        """_gpu_active is a defaultdict for exactly this reason (a plain
+        dict KeyError'd on mlx-audio and broke local_speak) — pin the
+        guarantee for the new backend."""
+        with server._gpu_request("ds4", "chat:glm-5.2"):
+            assert server._gpu_active["ds4"] == 1
+        assert server._gpu_active["ds4"] == 0
+
+    def test_pick_model_any_llm_fallback_includes_ds4(self):
+        """With no prefs and no task match, pick_model falls back to 'any
+        LLM'. The old ('ollama', 'mlx') tuple silently excluded a
+        ds4-backed registry — glm-5.2 would be invisible to fallback."""
+        server._models["glm-5.2"] = {
+            "backend": "ds4", "total_params_b": 740,
+            "active_params_b": 32, "context": 131072, "vision": False,
+        }
+        with patch.object(server, "load_mcp_prefs", return_value={}):
+            assert server.pick_model("general") == ("glm-5.2", "ds4")
 
 
 # ── load_mcp_prefs / thinking_enabled ──────────────────────────────
@@ -824,5 +961,124 @@ class TestGpuStatusShape:
         import asyncio
         with patch.object(server, "JSONResponse", side_effect=lambda d: d):
             data = asyncio.run(server._gpu_status(None))
-        for backend in ("ollama", "mlx"):
+        for backend in ("ollama", "mlx", "ds4"):
             assert isinstance(data[backend]["active"], int)
+
+
+# ── ds4 discovery ───────────────────────────────────────────────────
+
+def _fake_discovery_client(ds4_up, ds4_context_length=None):
+    """AsyncClient stub: Ollama and MLX unreachable; ds4 configurable.
+    Exercises the real discover_models control flow, not a mock of it."""
+    class _Resp:
+        status_code = 200
+        def json(self):
+            if ds4_context_length is None:
+                return {}
+            return {"data": [{"id": "glm-5.2",
+                               "context_length": ds4_context_length}]}
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            if url.startswith(server.DS4_URL):
+                if ds4_up:
+                    return _Resp()
+                raise ConnectionError("ds4 down")
+            raise ConnectionError("backend down")
+
+        async def post(self, url, **kwargs):
+            raise ConnectionError("backend down")
+
+    return _Client
+
+
+class TestDs4Discovery:
+    def _discover(self, ds4_up, tmp_path, ds4_context_length=None):
+        # MLX_SERVER_CONFIG must point away from the real user yaml: an
+        # unmigrated ~/.config/mlx-server/config.yaml still lists glm-5.2
+        # as an MLX served-name and would leak into the registry.
+        from unittest.mock import MagicMock
+        from pathlib import Path
+        import lib.hf_scanner as hf_scanner
+        with patch.object(server.httpx, "AsyncClient",
+                          _fake_discovery_client(ds4_up, ds4_context_length)), \
+             patch.object(server, "MLX_SERVER_CONFIG",
+                          Path(tmp_path) / "absent.yaml"), \
+             patch.object(hf_scanner, "scan_hf_cache",
+                          MagicMock(return_value=[])):
+            return asyncio.run(server.discover_models())
+
+    def test_ds4_up_inserts_glm52_with_hardcoded_metadata(self, tmp_path):
+        """ds4's /v1/models returns no params/vision metadata (this stub
+        returns no body at all, exercising the DS4_CONTEXT fallback).
+        Without the hardcoded params/vision, TASK_FILTERS min_active_b
+        (reasoning: 10) and min_ctx (long_context: 64000) silently drop
+        glm-5.2 from every task list."""
+        models = self._discover(True, tmp_path)
+        assert models["glm-5.2"] == {
+            "backend": "ds4",
+            "total_params_b": 740,
+            "active_params_b": 32,
+            "context": 131072,
+            "vision": False,
+        }
+
+    def test_ds4_up_prefers_live_context_length(self, tmp_path):
+        """A --ctx launch-flag drift must surface through discovery, not
+        hide behind the DS4_CONTEXT constant."""
+        models = self._discover(True, tmp_path, ds4_context_length=65536)
+        assert models["glm-5.2"]["context"] == 65536
+
+    def test_ds4_down_means_glm52_absent(self, tmp_path):
+        """Same semantics as MLX-down today: unreachable backend, no model."""
+        models = self._discover(False, tmp_path)
+        assert "glm-5.2" not in models
+
+
+class TestDs4YamlGate:
+    """I2: mirrors app/profile-server.py's
+    test_ds4_down_but_installed_keeps_glm52_absent. If a user's MLX yaml
+    still lists glm-5.2 (unmigrated, or manually re-added per the rollback
+    doc) and ds4 is provisioned but down, the MCP layer must not register
+    it as an MLX-backed model — that would invite a stale 418GB cold load
+    on a machine where ds4 is supposed to own the name."""
+
+    def _discover(self, tmp_path, ds4_installed_value):
+        from unittest.mock import MagicMock
+        from pathlib import Path
+        import lib.hf_scanner as hf_scanner
+
+        yaml_path = Path(tmp_path) / "config.yaml"
+        yaml_path.write_text(
+            "models:\n"
+            "  - model_path: mlx-community/GLM-5.2-4bit\n"
+            "    model_type: lm\n"
+            "    served_model_name: glm-5.2\n"
+            "    context_length: 131072\n"
+            "    on_demand: true\n")
+        with patch.object(server.httpx, "AsyncClient",
+                          _fake_discovery_client(False)), \
+             patch.object(server, "MLX_SERVER_CONFIG", yaml_path), \
+             patch.object(server, "ds4_installed",
+                          return_value=ds4_installed_value), \
+             patch.object(hf_scanner, "scan_hf_cache",
+                          MagicMock(return_value=[])):
+            return asyncio.run(server.discover_models())
+
+    def test_ds4_down_but_installed_keeps_glm52_absent(self, tmp_path):
+        models = self._discover(tmp_path, ds4_installed_value=True)
+        assert "glm-5.2" not in models
+
+    def test_ds4_not_installed_allows_mlx_glm52_fallback(self, tmp_path):
+        models = self._discover(tmp_path, ds4_installed_value=False)
+        assert "glm-5.2" in models
+        assert models["glm-5.2"]["backend"] == "mlx"

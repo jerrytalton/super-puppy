@@ -22,10 +22,11 @@ from __future__ import annotations
 
 import pytest
 
+from lib.models import DS4_MODEL_NAME
 from tests._smoke_helpers import (
     assert_media_output, assert_tool_output_contains, call_api_test, client,
-    ps, require_local_services, smoke_tmp, write_png, write_speech_wav,
-    write_text,
+    ps, require_ds4, require_local_services, smoke_tmp, write_png,
+    write_speech_wav, write_text,
 )
 
 
@@ -110,6 +111,20 @@ def test_chat_follows_a_basic_instruction(client):
         client, tool="general", model=model, expect_any=["banana"],
         prompt="Reply with exactly one word: banana",
     )
+
+
+def test_ds4_glm52_chat_correctness(client):
+    """glm-5.2 pinned explicitly (not via _model_for): the release gate for
+    the whole ds4 dispatch chain — profile-server → :8002 → strict-tolerant
+    JSON parse → content/reasoning_content extraction. glm-5.2 always
+    thinks on ds4, so a real response exercises exactly the reasoning-heavy
+    payloads where the control-char encoder bug bites. Skips below the
+    512GB tier; FAILS if ds4 is installed but down (require_ds4)."""
+    require_ds4()
+    assert_tool_output_contains(
+        client, tool="general", model=DS4_MODEL_NAME,
+        expect_any=["kumquat"],
+        prompt="Reply with exactly one word: kumquat")
 
 
 def test_summarize_reflects_source(client, smoke_tmp):

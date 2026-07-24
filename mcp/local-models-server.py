@@ -36,11 +36,17 @@ from lib.hf_scanner import (
     read_newest_hf_config,
 )
 from lib.models import (
+    DS4_ACTIVE_PARAMS_B,
+    DS4_MODEL_NAME,
+    DS4_TOTAL_PARAMS_B,
     HF_TASK_BACKENDS,
+    LLM_BACKENDS,
     MCP_PREFS_FILE,
     MLX_SERVER_CONFIG,
     NETWORK_CONF,
     active_params_b,
+    ds4_installed,
+    ds4_live_context,
     mflux_command,
     mflux_is_turbo,
     model_has_vision,
@@ -59,6 +65,9 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 MLX_URL = os.environ.get("MLX_URL", "http://localhost:8000")
+# ds4 is internal-only (never tailscale-served) so this is always localhost;
+# bin/local-models-mcp-detect exports it with the configured DS4_PORT.
+DS4_URL = os.environ.get("DS4_URL", "http://localhost:8002")
 MCP_HOST = os.environ.get("MCP_HOST", "127.0.0.1")
 MCP_PORT = int(os.environ.get("MCP_PORT", "8100"))
 
@@ -354,7 +363,7 @@ _JOB_TTL = 3600  # expire uncollected jobs after 1 hour
 
 
 async def discover_models():
-    """Query Ollama and MLX for available models and capabilities."""
+    """Query Ollama, MLX, and ds4 for available models and capabilities."""
     models = {}
     # Outer client timeout has to comfortably exceed N_models * per-call —
     # at 10s, a cold Ollama with 30+ tagged models would time out the
@@ -465,15 +474,46 @@ async def discover_models():
 
         # Register on-demand MLX models from config that aren't loaded yet
         for sn, mp in _mlx_cfg_map.items():
-            if sn not in models:
-                models[sn] = {
-                    "backend": "mlx",
-                    "total_params_b": 0,
-                    "active_params_b": 0,
-                    "context": 0,
-                    "vision": model_has_vision(
-                        mp, hf_config=read_newest_hf_config(mp)),
+            if sn in models:
+                continue
+            if sn == DS4_MODEL_NAME and ds4_installed():
+                # Mirrors the profile server's gate: ds4 owns glm-5.2 on
+                # machines where it's provisioned. When ds4 is down the
+                # model must be absent, not resurface as a stale MLX
+                # entry inviting a 418GB cold load. Machines without a
+                # ds4 install keep the MLX fallback path.
+                continue
+            models[sn] = {
+                "backend": "mlx",
+                "total_params_b": 0,
+                "active_params_b": 0,
+                "context": 0,
+                "vision": model_has_vision(
+                    mp, hf_config=read_newest_hf_config(mp)),
+            }
+
+        # ds4 (glm-5.2, 512GB tier). Its /v1/models returns no params/vision
+        # metadata, so those two fields are hardcoded from lib.models — see
+        # the audit spec. It DOES report context_length; ds4_live_context()
+        # prefers that over the DS4_CONTEXT constant so a --ctx launch-flag
+        # drift can't silently diverge from what discovery advertises.
+        # Placed after MLX and overwriting any stale claim: an unmigrated
+        # user yaml may still list glm-5.2 as an MLX served-name, but when
+        # ds4 answers, ds4 is the backend that actually serves it.
+        # If ds4 is unreachable, glm-5.2 is simply absent (same semantics
+        # as MLX-down today).
+        try:
+            resp = await client.get(f"{DS4_URL}/v1/models", timeout=5)
+            if resp.status_code == 200:
+                models[DS4_MODEL_NAME] = {
+                    "backend": "ds4",
+                    "total_params_b": DS4_TOTAL_PARAMS_B,
+                    "active_params_b": DS4_ACTIVE_PARAMS_B,
+                    "context": ds4_live_context(resp.json()),
+                    "vision": False,
                 }
+        except Exception as e:
+            logging.info("ds4 discovery skipped: %s", e)
 
         # HuggingFace cache: TTS, transcription, image_edit, image_gen
         from lib.hf_scanner import scan_hf_cache
@@ -584,11 +624,11 @@ def pick_model(task: str, override: str | None = None) -> tuple[str, str]:
             if info.get("task") == task and (not is_eligible or is_eligible(name, info["backend"])):
                 return name, info["backend"]
         for name, info in _models.items():
-            if info["backend"] in ("ollama", "mlx") and (not is_eligible or is_eligible(name, info["backend"])):
+            if info["backend"] in LLM_BACKENDS and (not is_eligible or is_eligible(name, info["backend"])):
                 return name, info["backend"]
 
     # Build actionable error message.
-    available = [n for n, m in _models.items() if m["backend"] in ("ollama", "mlx")]
+    available = [n for n, m in _models.items() if m["backend"] in LLM_BACKENDS]
     parts = [f"No model available for task '{task}'."]
     if override:
         parts.append(f"Requested model '{override}' not found.")
@@ -653,12 +693,48 @@ async def chat_mlx(model: str, messages: list[dict],
         raise RuntimeError(f"MLX chat ({model}): request timed out after 300s")
 
 
+async def chat_ds4(model: str, messages: list[dict],
+                   max_tokens: int = 4096, think: bool = True) -> str:
+    # ds4's own MLX-convention shim (chat_template_kwargs.enable_thinking)
+    # is verified broken (2026-07-22) — HTTP 200, but the reasoning migrates
+    # into `content` with no think-block markers to strip. That field must
+    # never be sent to ds4. ds4 has a NATIVE thinking control instead
+    # (verified live 2026-07-23): thinking is default-on; think=False
+    # disables it via `"thinking": {"type": "disabled"}`.
+    body = {"model": model, "messages": messages, "max_tokens": max_tokens,
+            "stream": False}
+    if not think:
+        body["thinking"] = {"type": "disabled"}
+    try:
+        # timeout=600: at ~11.5 tok/s a 4096-token generation takes ~356s,
+        # and ds4 serializes requests (single live session) — 300s cut off
+        # real requests still being worked on. Mirrors the profile server's
+        # _chat timeout for the same reason.
+        async with httpx.AsyncClient(timeout=600) as client:
+            resp = await client.post(f"{DS4_URL}/v1/chat/completions", json=body)
+            resp.raise_for_status()
+            # ds4's JSON encoder can emit unescaped control characters in
+            # long reasoning_content (observed 2026-07-22); strict parsing
+            # (resp.json()) intermittently crashes dispatch.
+            data = json.loads(resp.text, strict=False)
+            msg = data["choices"][0]["message"]
+            return msg.get("content") or msg.get("reasoning_content") or ""
+    except httpx.HTTPStatusError as e:
+        raise RuntimeError(_http_error_detail(e, f"ds4 chat ({model})")) from e
+    except httpx.ConnectError:
+        raise RuntimeError(f"ds4 chat ({model}): cannot connect to {DS4_URL} — is ds4-server running?")
+    except httpx.TimeoutException:
+        raise RuntimeError(f"ds4 chat ({model}): request timed out after 600s")
+
+
 async def chat(model: str, backend: str, messages: list[dict],
                max_tokens: int = 4096, think: bool = True) -> str:
     with _gpu_request(backend, f"chat:{model}"):
         warning = _gpu_contention_warning(backend)
         if backend == "ollama":
             result = await chat_ollama(model, messages, max_tokens, think)
+        elif backend == "ds4":
+            result = await chat_ds4(model, messages, max_tokens, think)
         else:
             result = await chat_mlx(model, messages, max_tokens, think)
         return warning + result
@@ -670,8 +746,8 @@ async def chat(model: str, backend: str, messages: list[dict],
 async def local_models_status() -> str:
     """Show available local models and their capabilities.
 
-    Returns the current state of Ollama and MLX backends: which models
-    are available, their parameter counts, context lengths, vision
+    Returns the current state of Ollama, MLX, and ds4 backends: which
+    models are available, their parameter counts, context lengths, vision
     capability, and backend type.
     """
     global _models
@@ -679,9 +755,13 @@ async def local_models_status() -> str:
 
     ollama = {k: v for k, v in _models.items() if v["backend"] == "ollama"}
     mlx = {k: v for k, v in _models.items() if v["backend"] == "mlx"}
+    ds4 = {k: v for k, v in _models.items() if v["backend"] == "ds4"}
 
     lines = [f"Ollama ({OLLAMA_URL}): {len(ollama)} models",
-             f"MLX ({MLX_URL}): {len(mlx)} models", ""]
+             f"MLX ({MLX_URL}): {len(mlx)} models"]
+    if ds4:
+        lines.append(f"ds4 ({DS4_URL}): {len(ds4)} models")
+    lines.append("")
 
     for name, info in sorted(_models.items(), key=lambda x: -x[1]["total_params_b"]):
         parts = [f"  {name}"]
@@ -1879,7 +1959,9 @@ async def _startup():
     _models = await discover_models()
     ollama_count = sum(1 for v in _models.values() if v["backend"] == "ollama")
     mlx_count = sum(1 for v in _models.values() if v["backend"] == "mlx")
-    logging.info("local-models MCP: %d Ollama + %d MLX models", ollama_count, mlx_count)
+    ds4_count = sum(1 for v in _models.values() if v["backend"] == "ds4")
+    logging.info("local-models MCP: %d Ollama + %d MLX + %d ds4 models",
+                 ollama_count, mlx_count, ds4_count)
 
 
 async def _gpu_status(request):
@@ -1901,6 +1983,13 @@ async def _gpu_status(request):
                     for e in _gpu_active_details["mlx"]
                 ],
             },
+            "ds4": {
+                "active": _gpu_active["ds4"],
+                "tasks": [
+                    {**e, "elapsed_ms": int((now - e["started"]) * 1000)}
+                    for e in _gpu_active_details["ds4"]
+                ],
+            },
         }
     try:
         async with httpx.AsyncClient(timeout=2) as client:
@@ -1914,6 +2003,12 @@ async def _gpu_status(request):
             data["ollama"]["responsive"] = True
     except Exception:
         data["ollama"]["responsive"] = False
+    try:
+        async with httpx.AsyncClient(timeout=2) as client:
+            await client.get(f"{DS4_URL}/v1/models")
+            data["ds4"]["responsive"] = True
+    except Exception:
+        data["ds4"]["responsive"] = False
     return JSONResponse(data)
 
 
@@ -1923,7 +2018,7 @@ async def _activity_status(request):
     period = int(request.query_params.get("period", 86400))
     with _gpu_lock:
         active = []
-        for backend in ("ollama", "mlx"):
+        for backend in ("ollama", "mlx", "ds4"):
             for e in _gpu_active_details[backend]:
                 active.append({
                     "description": e["description"],

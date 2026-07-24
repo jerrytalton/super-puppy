@@ -112,6 +112,31 @@ PYEOF
     fi
 done
 
+# One-shot migration (2026-07 ds4 ship): glm-5.2 is served by ds4 on the
+# 512GB tier now. The merge above is append-only and will never remove the
+# user's old glm-5.2 MLX entry, which would double-serve the name (MLX
+# claims it first in discovery order) and keep 418GB of dead weights.
+# Failure-tolerant on purpose: post-update.sh failing rolls back the whole
+# update (menubar._auto_update), and a cosmetic yaml migration must never
+# do that.
+#
+# Gated on the ds4 binary actually being present, not just the RAM tier:
+# auto-update never runs install.sh, so a 512GB machine that hasn't been
+# provisioned with ds4 (fresh box, install skipped/failed) would otherwise
+# have its working glm-5.2 MLX entry stripped with nothing to replace it —
+# silent model loss with no UI signal. DS4_DIR resolved exactly like
+# install.sh: network.conf override, else the default share dir.
+DS4_DIR=$(grep '^DS4_DIR=' "$HOME/.config/local-models/network.conf" 2>/dev/null \
+    | head -1 | cut -d= -f2- | tr -d '"' || true)
+DS4_DIR="${DS4_DIR:-$HOME/.local/share/super-puppy/ds4}"
+if [ "$(sysctl -n hw.memsize | awk '{printf "%d", $1 / 1073741824}')" -ge 512 ] \
+   && [ -f "$MLX_DIR/config.yaml" ] \
+   && [ -x "$DS4_DIR/ds4-server" ]; then
+    python3 "$REPO_DIR/bin/migrate-mlx-config.py" "$MLX_DIR/config.yaml" glm-5.2 \
+        && log "MLX config migration checked (glm-5.2 → ds4)" \
+        || log "WARNING: glm-5.2 MLX-entry migration failed (non-fatal)"
+fi
+
 # LaunchAgent — reload if ProgramArguments changed so launchd uses the new path
 PLIST_DST="$HOME/Library/LaunchAgents/com.local-models.menubar.plist"
 PLIST_LABEL="com.local-models.menubar"

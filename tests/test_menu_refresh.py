@@ -54,14 +54,18 @@ def _bare_app(**overrides):
     inst.mlx_ok = False
     inst.ollama_loading = False
     inst.mlx_loading = False
+    inst.ds4_present = False
+    inst.ds4_ok = False
+    inst.ds4_loading = False
     inst.remote_reachable = False
     inst._mcp_proc = None
     inst._last_restart_attempt = 0
     inst.desktop_ip = ""
     inst.desktop_fqdn = ""
     for attr in ("menu_status", "menu_remote_access", "menu_profiles",
-                 "menu_ollama", "menu_mlx", "menu_mcp",
-                 "menu_ollama_restart", "menu_mlx_restart", "menu_mcp_restart",
+                 "menu_ollama", "menu_mlx", "menu_ds4", "menu_mcp",
+                 "menu_ollama_restart", "menu_mlx_restart",
+                 "menu_ds4_restart", "menu_mcp_restart",
                  "menu_version", "menu_mode_remote", "menu_mode_local",
                  "menu_tools_sub", "menu_playground", "menu_quit"):
         setattr(inst, attr, MagicMock())
@@ -112,6 +116,27 @@ class TestUpdateMenuNoMissingAttrs:
                         mode="client", remote_reachable=True,
                         mcp_models=["remote-model"])
         app._update_menu()
+
+    def test_desktop_with_ds4_present_and_up(self):
+        """512GB tier: ds4 row present and healthy — must not raise, and
+        must render through the ds4-specific status branch."""
+        app = _bare_app(remote_access_enabled=True, ds4_present=True,
+                        ds4_ok=True)
+        app._update_menu()
+
+    def test_desktop_with_ds4_present_and_loading(self):
+        """512GB tier: ds4 mid cold-load — the yellow/loading branch."""
+        app = _bare_app(remote_access_enabled=True, ds4_present=True,
+                        ds4_ok=False, ds4_loading=True)
+        app._update_menu()
+
+    def test_laptop_client_mode_hides_ds4_row(self):
+        """Client mode must hide the ds4 row too, not just Ollama/MLX."""
+        app = _bare_app(desktop=False, remote_access_enabled=False,
+                        mode="client", remote_reachable=True,
+                        ds4_present=True, mcp_models=["remote-model"])
+        app._update_menu()
+        app.menu_ds4.hide.assert_called_once()
 
 
 class TestRemoteReachabilityRequiresLiveBackend:

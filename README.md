@@ -86,6 +86,15 @@ curl http://localhost:8000/v1/chat/completions -H "Content-Type: application/jso
 curl http://localhost:8000/v1/models
 ```
 
+On the 512GB tier, glm-5.2 is served by [ds4](https://github.com/antirez/ds4) with the same OpenAI-compatible API on port 8002 (localhost only):
+
+```bash
+curl http://localhost:8002/v1/chat/completions -H "Content-Type: application/json" -d '{
+  "model": "glm-5.2",
+  "messages": [{"role":"user","content":"hello"}]
+}'
+```
+
 ### Playground
 
 The menu bar app serves a web-based Playground where you can test any capability interactively — text generation, vision, image generation, transcription, TTS, translation. Open it from the Super Puppy menu or access it from other devices on your network. With Tailscale configured, the Playground is accessible from anywhere over HTTPS.
@@ -135,7 +144,7 @@ All remote access uses Tailscale — services bind to localhost and are proxied 
 
 A puppy icon in the menu bar provides:
 
-- **Status** — Ollama/MLX running or down, MCP configured or not
+- **Status** — Ollama/MLX/ds4 running or down, MCP configured or not
 - **Model Profiles** — RAM-tier presets (32GB / 64GB / 128GB / 512GB) with a warm-set memory view
 - **Task preferences** — pick which model backs each MCP tool
 - **Playground** — web UI to test any tool interactively
@@ -146,7 +155,7 @@ A puppy icon in the menu bar provides:
 ## Commands
 
 ```bash
-start-local-models            # start Ollama + MLX servers
+start-local-models            # start Ollama + MLX (+ ds4 on the 512GB tier)
 start-local-models --status   # show what's running
 start-local-models --stop     # stop servers
 start-local-models --local    # force local servers even if server is reachable
@@ -232,11 +241,10 @@ Profiles are keyed to the machine class they target — the installer picks one 
 
 A 256GB machine runs the `128gb` tier; a 512GB machine runs `512gb`.
 
-\* glm-5.2 needs two mlx model files from an unmerged upstream PR plus two
-mlx-openai-server fixes; `install.sh` applies them automatically on 512GB
-machines via `bin/apply-mlx-glm52-patch.sh` (idempotent — re-run it after
-any `uv tool upgrade mlx-openai-server`). See
-[docs/troubleshooting.md](docs/troubleshooting.md) for details.
+\* glm-5.2 is served by [ds4](https://github.com/antirez/ds4) (pinned
+build, provisioned by `install.sh` on 512GB machines) from a ~244GiB Q2K
+GGUF — always resident, OpenAI-compatible on localhost:8002. See
+[docs/troubleshooting.md](docs/troubleshooting.md) for build/run details.
 
 #### Warm vs on-demand
 
@@ -258,7 +266,7 @@ under contention it lapses instead of competing.
 
 ### MLX Models
 
-Edit `~/.config/mlx-server/config.yaml`. Every model is `on_demand: true` (loads when first requested, unloads after an idle timeout) — the active profile decides what's actually pulled and kept warm, so one config serves all tiers. Use `model_type: multimodal` for vision models. Your edits persist across auto-updates.
+Edit `~/.config/mlx-server/config.yaml`. Every model is `on_demand: true` (loads when first requested, unloads after an idle timeout) — the active profile decides what's actually pulled and kept warm, so one config serves all tiers. Use `model_type: multimodal` for vision models. Your edits persist across auto-updates. One exception: the retired glm-5.2 MLX entry is removed once on 512GB machines by the ds4 migration (it moved to the ds4 backend).
 
 
 ## CLAUDE.md Setup
@@ -286,7 +294,7 @@ super-puppy/
 │   ├── local-models-mcp-auth    # MCP auth token management
 │   ├── tailscale-status         # Tailscale connectivity check
 │   ├── post-update.sh           # Post-update hook for auto-update
-│   ├── apply-mlx-glm52-patch.sh # Pinned mlx patches for glm-5.2 (512GB tier)
+│   ├── migrate-mlx-config.py    # One-shot user-config migration (glm-5.2 → ds4)
 │   └── release.sh               # Cut a gated, signed release (see docs/RELEASING.md)
 ├── config/
 │   ├── mlx-server/              # MLX server config (single, on-demand)

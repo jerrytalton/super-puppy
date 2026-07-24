@@ -48,6 +48,7 @@ def _import_profile_server():
 
     os.environ.setdefault("OLLAMA_URL", "http://localhost:11434")
     os.environ.setdefault("MLX_URL", "http://localhost:8000")
+    os.environ.setdefault("DS4_URL", "http://localhost:8002")
     os.environ["PROFILE_IDLE_TIMEOUT"] = "0"
     # In-process Flask testing has no bearer token. Set the documented
     # escape hatch here so these suites don't depend on another test
@@ -102,6 +103,31 @@ def require_local_services():
         pytest.skip("Ollama not reachable at localhost:11434", allow_module_level=True)
     if not _reachable("http://localhost:8000/v1/models"):
         pytest.skip("MLX-OpenAI-server not reachable at localhost:8000", allow_module_level=True)
+
+
+DS4_URL = os.environ.get("DS4_URL", "http://localhost:8002")
+
+
+def require_ds4():
+    """For suites exercising the ds4-served glm-5.2 path.
+
+    Machines without a ds4 install (below the 512GB tier) skip. Machines
+    WITH an install FAIL loudly when the server doesn't answer: on the box
+    that serves glm-5.2, a ds4 outage must never hide as a model-not-pulled
+    skip — that's exactly how backend outages went unnoticed before.
+    """
+    from lib.models import ds4_installed
+    if not ds4_installed():
+        # allow_module_level: the everyday suite calls this at import time,
+        # like require_local_services above.
+        pytest.skip("ds4 not installed on this machine (512GB tier only)",
+                    allow_module_level=True)
+    if not _reachable(f"{DS4_URL}/v1/models"):
+        # At module level this surfaces as a collection error — loud on
+        # purpose: the box that serves glm-5.2 must not hide a ds4 outage.
+        pytest.fail(
+            f"ds4-server is installed but not answering at {DS4_URL} — "
+            "start it (start-local-models) or check /tmp/local-models-ds4.log")
 
 
 # ── minimal test fixtures ───────────────────────────────────────────
@@ -185,6 +211,7 @@ SKIP_SUBSTRINGS = (
     "connection refused",
     "connection error",
     "connectionerror",
+    "is ds4-server running",
     "is not installed",
     # Media models that aren't pulled yet — skip, don't fail.
     "still downloading",

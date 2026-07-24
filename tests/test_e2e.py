@@ -63,7 +63,7 @@ def _discover_profile_port() -> int | None:
                     continue
                 port = int(port_match.group(1))
                 # Skip well-known ports that are definitely not the profile server
-                if port in (8100, 11434, 8000, 80, 443):
+                if port in (8100, 11434, 8000, 8002, 80, 443):
                     continue
                 try:
                     cmdline = subprocess.check_output(
@@ -237,6 +237,7 @@ class TestMCPModels:
         data = json.loads(body)
         assert "ollama" in data, "GPU status missing 'ollama' key"
         assert "mlx" in data, "GPU status missing 'mlx' key"
+        assert "ds4" in data, "GPU status missing 'ds4' key"
 
 
 @pytest.mark.e2e

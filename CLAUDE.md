@@ -15,12 +15,12 @@ Local AI model infrastructure for Apple Silicon. Menu bar app + standard APIs + 
 
 ## Key Design Decisions
 
-- The MCP server discovers models live from Ollama and MLX at startup (parallel `/api/show` calls). Any new `ollama pull` is immediately available as a tool.
+- The MCP server discovers models live from Ollama, MLX, and ds4 at startup (parallel `/api/show` calls). Any new `ollama pull` is immediately available as a tool. ds4's `/v1/models` carries no metadata, so glm-5.2's params/context/size are hardcoded in `lib/models.py` (`DS4_*` constants).
 - The menu bar app queries model capabilities live from Ollama `/api/show` and MLX `config.json` files in the HuggingFace cache. No hardcoded param tables.
-- MLX models marked `on_demand: true` download on first use and unload after idle timeout.
+- MLX models marked `on_demand: true` download on first use and unload after idle timeout. glm-5.2 is NOT one of them anymore: it's served by ds4 (always resident) on the 512GB tier.
 - All remote access uses **Tailscale only** — no mDNS, no LAN binding. `tailscale serve` proxies all ports with TLS.
 - The `local-models-mcp-detect` wrapper probes the desktop via Tailscale before launching. Clients use the server if reachable, fall back to localhost.
-- **glm-5.2 (512gb tier) requires patched mlx-lm/mlx-openai-server.** Released mlx-lm can't load GLM-5.2's shared-indexer layout, and stock mlx-openai-server can't keep a 390GB on-demand model resident. `bin/apply-mlx-glm52-patch.sh` (run by install.sh on 512GB machines, idempotent, pinned to upstream PR ml-explore/mlx-lm#1463) fixes both; re-run it after any `uv tool upgrade mlx-openai-server`. Details: docs/troubleshooting.md.
+- **glm-5.2 (512gb tier) is served by ds4, not MLX.** antirez/ds4 (glm5.2 branch, pinned `bd89932`, built by install.sh into `DS4_DIR`) serves the Q2K-routed GGUF (~244GiB resident vs 390GB on MLX — the co-residency OOM class is gone, and the old pinned mlx-lm patch is retired). Quirks encoded in code and docs/troubleshooting.md: launch needs `cwd=$DS4_DIR` (metal shader paths), responses need `json.loads(..., strict=False)` (unescaped control chars in reasoning_content), and the `enable_thinking` toggle must never be forwarded (broken: reasoning migrates into content). ds4 serializes requests — parallel fan-outs to glm-5.2 queue.
 
 ## Runtime Architecture
 
@@ -29,12 +29,13 @@ The menu bar app (`app/menubar.py`) launches via `app/SuperPuppy.app` and spawns
 - **Profile server** (`app/profile-server.py`) — Flask app on a fixed port (8101 on desktop, random on laptop). Serves the Model Profiles UI (`app/profiles.html`) and the Playground (`app/tools.html`). Auto-starts on desktop when Remote Access is enabled (no idle timeout).
 - **Ollama** — `http://localhost:11434` (localhost-only; Tailscale serve proxies for remote access)
 - **MLX-OpenAI-Server** — `http://localhost:8000`, config at `~/.config/mlx-server/config.yaml`
+- **ds4-server** — `http://localhost:8002` (512GB tier only), serving glm-5.2 from a Q2K GGUF under `DS4_DIR` (default `~/.local/share/super-puppy/ds4`, override in network.conf). Launched by `start-local-models` with `cwd=$DS4_DIR` (it resolves `metal/flash_attn.metal` relative to cwd). Always-resident: loads once (~70s), never unloads. Port 8002 is **internal-only** — never added to `tailscale serve`; client-mode traffic reaches glm-5.2 through the desktop's MCP (8100) and profile server (8101).
 
 ### Modes
 
 | Mode | When | What happens |
 |------|------|------|
-| **Server** | `IS_SERVER=true` in network.conf | Runs Ollama, MLX, MCP locally. Tailscale exposes ports when Remote Access is on. |
+| **Server** | `IS_SERVER=true` in network.conf | Runs Ollama, MLX, ds4 (512GB tier), MCP locally. Tailscale exposes ports when Remote Access is on. |
 | **Client** | Server reachable via Tailscale | Routes to server's MCP. Falls back to local if unreachable. |
 | **Offline** | Laptop, desktop unreachable | Runs local Ollama/MLX as fallback. |
 
@@ -48,6 +49,8 @@ All services bind to localhost. The "Remote Access" toggle in the menu bar manag
 | 8101 | Profile server / Playground | `https://{fqdn}:8101/tools` |
 | 11434 | Ollama | `https://{fqdn}:11434` |
 | 8000 | MLX | `https://{fqdn}:8000` |
+
+ds4 (8002) is deliberately absent from this table — internal-only, never served.
 
 **All remote URLs must use `https://{tailscale_fqdn}:{port}`**, not `http://{ip}`. Tailscale serve rejects plain HTTP.
 
@@ -88,7 +91,7 @@ The menu bar app POSTs each machine's 7-day usage summary (`local_usage_summary`
 | Mode override | `~/.config/local-models/mode.conf` |
 | Remote access toggle | `~/.config/local-models/remote_access.conf` |
 | Auth token | `~/.config/local-models/mcp_auth_token` |
-| MLX server config | `~/.config/mlx-server/config.yaml` (user-writable, survives updates) |
+| MLX server config | `~/.config/mlx-server/config.yaml` (user-writable, survives updates; one-shot exception — the ds4 migration removes a leftover glm-5.2 entry on 512GB machines) |
 | Claude MCP config | `~/.claude.json` |
 | Activity DB | `~/.config/local-models/activity.db` (`SP_ACTIVITY_DB` override) |
 | Fleet report endpoint | `POST https://{fqdn}:8101/api/fleet/report` |
@@ -97,6 +100,7 @@ The menu bar app POSTs each machine's 7-day usage summary (`local_usage_summary`
 | Session-start hook script | `bin/sp-session-ping` (symlinked to `~/.local/bin/`) |
 | Config audit script | `bin/sp-doctor` (symlinked to `~/.local/bin/`) |
 | Menu bar log | `/tmp/local-models-menubar.log` |
+| ds4 logs | `/tmp/local-models-ds4.log` (launch), `/tmp/local-models-ds4-restart.log` (menu restart) |
 | Instance lock | `~/.config/local-models/menubar.lock` |
 
 ### Task types
@@ -120,12 +124,13 @@ Single source of truth for constants and logic used by menubar, MCP server, and 
 - `STANDARD_TASKS`, `SPECIAL_TASKS`, `TASK_FILTERS` — task definitions and model filtering
 - `DEFAULT_PROFILES`, `PROFILES_VERSION` — preset profile definitions (task→model maps). Seeded by the menu bar app on startup (`seed_profiles_if_missing()`), migrated/served by the profile server, and read by `install.sh` to know which models to pull. Bump `PROFILES_VERSION` to force-refresh presets on all machines.
 - `active_params_b()` — 4-strategy MoE active parameter computation (AXB parse → known table → FFN subtraction → ratio fallback)
+- `LLM_BACKENDS` — the three chat backends (`ollama`, `mlx`, `ds4`); `DS4_MODEL_NAME`/`DS4_MODEL_BYTES`/`DS4_TOTAL_PARAMS_B`/`DS4_ACTIVE_PARAMS_B`/`DS4_CONTEXT` — hardcoded glm-5.2 metadata for ds4 discovery (ds4's `/v1/models` returns none); `ds4_dir()`/`ds4_installed()` — DS4_DIR resolution and presence gate
 - `model_matches_filter()` — check if a model qualifies for a task
 - Config path constants (`PROFILES_FILE`, `MCP_PREFS_FILE`, `CLAUDE_CONFIG_FILE`, etc.)
 
 ## Local Model Tools (MCP)
 
-The `mcp/local-models-server.py` MCP server runs as a persistent streamable-HTTP service on port 8100, managed by the menu bar app. It exposes Ollama, MLX, and local tool models (TTS via mlx-audio, image editing via mflux) as MCP tools. Claude connects via `type: "http"` to `http://127.0.0.1:8100/mcp` (local) or `https://{fqdn}:8100/mcp` (remote). Wrapper script is `bin/local-models-mcp-detect`.
+The `mcp/local-models-server.py` MCP server runs as a persistent streamable-HTTP service on port 8100, managed by the menu bar app. It exposes Ollama, MLX, ds4 (glm-5.2 on the 512GB tier), and local tool models (TTS via mlx-audio, image editing via mflux) as MCP tools. Claude connects via `type: "http"` to `http://127.0.0.1:8100/mcp` (local) or `https://{fqdn}:8100/mcp` (remote). Wrapper script is `bin/local-models-mcp-detect`.
 
 Dependencies are pinned to exact versions in PEP 723 inline metadata.
 
@@ -141,7 +146,8 @@ Run all tests: `uv run --with pytest --with flask --with pyyaml --with requests 
 - `tests/test_profile_server.py` — 56 tests for Flask routes, profiles CRUD, model selection, config, auth
 - `tests/test_playground_coverage.py` — 4 tests ensuring MCP tools have playground UI and API routes
 - `tests/test_tools_smoke_laptop.py` — 11 live smoke tests (32gb tier), marked `@pytest.mark.smoke`. Drives each task through the real profile-server → Ollama/MLX/mflux stack, with the model map derived from `DEFAULT_PROFILES` so it can't drift. Included in the default `pytest tests/` run; skips cleanly if services are down or a model isn't pulled. Excluded from the pre-commit hook because cold loads make it occasionally flaky.
-- `tests/test_tools_smoke_everyday.py` — same but for the 512gb tier's bigger models. Marked `@pytest.mark.smoke` and `@pytest.mark.slow`; excluded by default. Run with `pytest -m slow` or `pytest -m ''`.
+- `tests/test_tools_smoke_everyday.py` — same but for the 512gb tier's bigger models. Marked `@pytest.mark.smoke` and `@pytest.mark.slow`; excluded by default. Run with `pytest -m slow` or `pytest -m ''`. Requires ds4 on the 512GB tier (fails loud if ds4-server is installed but down).
+- `tests/test_tools_correctness.py` — release-gated output-correctness cases (`correctness` marker, run by `bin/release.sh`), including one pinned ds4 glm-5.2 chat case so releases gate on the live ds4 path.
 - `tests/test_e2e.py` — 43 end-to-end tests against live services
 - `tests/test_error_handling.py` — 24 tests for error handling and model validation
 - `tests/test_remote_access.sh` — bash script testing Tailscale HTTPS endpoints
@@ -151,7 +157,7 @@ Smoke tests intentionally **do not mock** `requests`/`subprocess` — they're th
 ## Menu Bar Features
 
 - **Remote / Local toggle** — switch between desktop and local models. "Local (override)" shown when user forced local but desktop is reachable.
-- **Service status** — green/yellow/red dots for Ollama, MLX, MCP. Shows "restarting…" during auto-restart, "not shared" when MCP is unreachable in client mode.
+- **Service status** — green/yellow/red dots for Ollama, MLX, ds4 (512GB tier only), MCP. Shows "restarting…" during auto-restart, "not shared" when MCP is unreachable in client mode.
 - **Copy Diagnostics** — dumps mode, versions, service status, recent log lines to clipboard for remote debugging.
 - **Version display** — from git tags (e.g. `v1.0.0`), shown in menu.
 - **Notification debounce** — connectivity changes throttled to 60-second minimum interval.

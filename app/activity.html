@@ -135,9 +135,11 @@ nav a.active { color: #fff; background: var(--accent); }
 }
 .backend-ollama { background: #e8f5e9; color: #2e7d32; }
 .backend-mlx { background: #e3f2fd; color: #1565c0; }
+.backend-ds4 { background: #f6ebf4; color: #8e4585; }
 @media (prefers-color-scheme: dark) {
   .backend-ollama { background: #1b3a1e; color: #66bb6a; }
   .backend-mlx { background: #0d2744; color: #42a5f5; }
+  .backend-ds4 { background: #3a2136; color: #ce93c4; }
 }
 .source-tag {
   display: inline-block; padding: 2px 8px; border-radius: 10px;
@@ -376,7 +378,9 @@ function render(data) {
   } else {
     activeEl.innerHTML = data.active.map(r => {
       const p = parseActive(r);
-      const color = r.backend === 'ollama' ? 'var(--green)' : 'var(--accent)';
+      const color = r.backend === 'ollama' ? 'var(--green)'
+                  : r.backend === 'ds4' ? '#b07aa1'
+                  : 'var(--accent)';
       const src = r.source === 'playground' ? 'playground' : 'mcp';
       return `<div class="active-card">
         <div class="active-dot" style="background:${color}"></div>
