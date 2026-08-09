@@ -122,9 +122,21 @@ def image_dimensions(path: str | Path) -> tuple[int, int] | None:
     return None
 
 
+_ANSWER_RE = re.compile(r"<answer>(.*?)</answer>", re.S)
+
 _BOX_RE = re.compile(
-    r"[Cc]lick\s*\(\s*box\s*=\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)"
-    r"|\(\s*(\d+)\s*,\s*(\d+)\s*\)")
+    r"[Cc]lick\s*\(\s*box\s*=\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)"
+    r"|[(\[]\s*([\d.]+)\s*,\s*([\d.]+)\s*[)\]]")
+
+
+def _is_fractional(*values: str) -> bool:
+    """Whether coordinates are in 0-1 space rather than 0-`coord_space`.
+
+    UI-Venus emits both, for the same image, depending on how it phrases
+    the answer: `Click(box=(300,800))` and `[0.5, 0.5]` are both "click
+    here". Only the fractional form carries a decimal point.
+    """
+    return any("." in v and float(v) <= 1.0 for v in values)
 
 
 def normalize_grounding(raw: str, image_width: int | None,
@@ -134,21 +146,28 @@ def normalize_grounding(raw: str, image_width: int | None,
     action with pixel coordinates.
 
     UI-Venus / Qwen-VL grounding models emit e.g.
-    ``<answer>Click(box=(529,719))</answer>`` with coordinates in a
-    0-`coord_space` normalized space. This denormalizes to actual pixels
-    and wraps it as ``[{"action":"click","x":..,"y":..,"description":..}]``.
+    ``<answer>Click(box=(529,719))</answer>`` or ``<answer>[280, 633]
+    </answer>`` in a 0-`coord_space` space, or ``<answer>[0.5, 0.5]
+    </answer>`` in 0-1 space. This denormalizes to actual pixels and
+    wraps it as ``[{"action":"click","x":..,"y":..,"description":..}]``.
     Returns `raw` unchanged when no coordinate pair is found or image
     dimensions are unknown (so unrecognized formats pass through).
+
+    Only the ``<answer>`` block is parsed when present: the ``<think>``
+    block is scratch work whose stray numbers would otherwise ground the
+    click on the model's discarded reasoning.
     """
     if not image_width or not image_height:
         return raw
-    m = _BOX_RE.search(raw)
+    answer = _ANSWER_RE.search(raw)
+    m = _BOX_RE.search(answer.group(1) if answer else raw)
     if not m:
         return raw
-    nx = int(m.group(1) if m.group(1) is not None else m.group(3))
-    ny = int(m.group(2) if m.group(2) is not None else m.group(4))
-    px = round(nx / coord_space * image_width)
-    py = round(ny / coord_space * image_height)
+    nx = m.group(1) if m.group(1) is not None else m.group(3)
+    ny = m.group(2) if m.group(2) is not None else m.group(4)
+    span = 1.0 if _is_fractional(nx, ny) else coord_space
+    px = round(float(nx) / span * image_width)
+    py = round(float(ny) / span * image_height)
     action = {"action": "click", "x": px, "y": py,
               "description": raw.strip()[:120]}
     return json.dumps([action], indent=2)

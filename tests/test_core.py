@@ -529,6 +529,38 @@ class TestMlxVlmDispatch:
         raw = "I cannot determine where to click."
         assert normalize_grounding(raw, 1000, 700) == raw
 
+    def test_normalize_grounding_reads_bracketed_pair(self):
+        """UI-Venus-1.5 emits `[x, y]` as often as `Click(box=(x,y))` —
+        same 0-1000 space, brackets instead of parens. Live output:
+        `<answer> [280, 633] </answer>`."""
+        import json
+        from lib.mlx_vlm import normalize_grounding
+        out = normalize_grounding("<answer> [280, 633] </answer>", 400, 400)
+        action = json.loads(out)[0]
+        assert (action["x"], action["y"]) == (112, 253)
+
+    def test_normalize_grounding_reads_fractional_coords(self):
+        """The same model also answers in 0-1 fractional space. Live
+        output for 'click the center': `<answer> [0.5, 0.5] </answer>`.
+        Dividing those by 1000 lands every click on the top-left pixel."""
+        import json
+        from lib.mlx_vlm import normalize_grounding
+        out = normalize_grounding("<answer> [0.5, 0.5] </answer>", 400, 400)
+        action = json.loads(out)[0]
+        assert (action["x"], action["y"]) == (200, 200)
+
+    def test_normalize_grounding_ignores_coords_in_think_block(self):
+        """The <think> block is scratch work and routinely contains
+        numbers — including wrong ones. Only <answer> is the model's
+        actual output; parsing think first grounds the click on prose."""
+        import json
+        from lib.mlx_vlm import normalize_grounding
+        raw = ("<think> The button might be near (900,900), but checking "
+               "the layout again it is higher up. </think>\n"
+               "<answer> Click(box=(100,200)) </answer>")
+        action = json.loads(normalize_grounding(raw, 400, 400))[0]
+        assert (action["x"], action["y"]) == (40, 80)
+
     def test_repo_for_resolves_served_name(self, tmp_path):
         from lib.mlx_vlm import repo_for
         cfg = tmp_path / "config.yaml"
