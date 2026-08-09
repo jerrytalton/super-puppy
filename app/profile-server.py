@@ -67,6 +67,7 @@ from lib.models import (
     ds4_live_context,
     image_backend_eligible as _image_backend_eligible,
     merge_profile_picks as _merge_profile_picks,
+    mflux_edit_command as _mflux_edit_command,
     migrate_profiles,
     mflux_command,
     mflux_is_turbo,
@@ -2632,20 +2633,23 @@ def _handle_test_image_edit(body, pick):
         return jsonify({"error": _PLAYGROUND_PATH_ERROR}), 403
     prompt = body.get("prompt", "")
     out_path = f"/tmp/playground_edit_{int(time.time())}.png"
+    edit = _mflux_edit_command(model)
+    cmd = [edit.binary, *edit.extra_args,
+           edit.image_flag, image_path,
+           "--prompt", prompt,
+           "--output", out_path,
+           "--steps", "8"]
+    if edit.supports_strength:
+        cmd += ["--image-strength", "0.75"]
     with _track_playground("image_edit", model, backend):
         try:
             result = subprocess.run(
-                ["mflux-generate-kontext",
-                 "--image-path", image_path,
-                 "--prompt", prompt,
-                 "--output", out_path,
-                 "--steps", "8",
-                 "--image-strength", "0.75"],
+                cmd,
                 capture_output=True, text=True, timeout=600,
                 env=_subprocess_env(),
             )
             if result.returncode != 0:
-                return jsonify({"error": f"image_edit: mflux-generate-kontext failed:\n{result.stderr[-300:]}"})
+                return jsonify({"error": f"image_edit: {edit.binary} failed:\n{result.stderr[-300:]}"})
             return jsonify({
                 "result": f"Saved to {out_path}",
                 "image_path": out_path,

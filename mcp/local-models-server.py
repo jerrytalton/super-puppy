@@ -49,6 +49,7 @@ from lib.models import (
     ds4_live_context,
     image_backend_eligible,
     mflux_command,
+    mflux_edit_command,
     mflux_is_turbo,
     model_has_vision,
     pick_model_from_prefs,
@@ -1204,14 +1205,16 @@ async def local_image_edit(
     with _gpu_request(backend, f"image_edit:{selected}"):
         warning = _gpu_contention_warning(backend)
 
+        edit = mflux_edit_command(selected)
         cmd = [
-            "mflux-generate-kontext",
-            "--image-path", image_path,
+            edit.binary, *edit.extra_args,
+            edit.image_flag, image_path,
             "--prompt", prompt,
             "--output", output_path,
             "--steps", str(steps),
-            "--image-strength", str(strength),
         ]
+        if edit.supports_strength:
+            cmd += ["--image-strength", str(strength)]
         if seed is not None:
             cmd.extend(["--seed", str(seed)])
 
