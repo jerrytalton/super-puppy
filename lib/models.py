@@ -241,6 +241,20 @@ HF_TASK_BACKENDS: dict[str, str] = {
 }
 
 
+def image_backend_eligible(_name: str, backend: str) -> bool:
+    """Gate image_gen/image_edit candidates to the mflux backend.
+
+    Ollama 0.32 rejects /api/generate for image models with a 400 while
+    /api/show still advertises `capabilities: ["image"]` — the same lie its
+    `-mlx` tags tell about vision. Both image tasks dispatch through mflux,
+    so an Ollama-backed candidate resolves by name and then dies at
+    dispatch with a backend error the user can do nothing about. Gating
+    here makes the picker fall through to a pref that can actually serve
+    the task, exactly as the vision gate does for tower-less tags.
+    """
+    return backend == HF_TASK_BACKENDS["image_gen"]
+
+
 def resolve_pref_candidate(
     candidate: str,
     models: dict[str, dict],
@@ -281,8 +295,22 @@ def resolve_pref_candidate(
         if (name == latest or name.startswith(suffix_target)) \
                 and _ok(name, models[name]["backend"]):
             return name, models[name]["backend"]
+    # "/" alone does not mean "HF repo id" — Ollama namespaced tags look the
+    # same ("x/z-image-turbo:bf16"). Two extra conditions keep those out:
+    #   * `":" not in candidate` — HF repo ids are alphanumeric plus '-', '_'
+    #     and '.' (huggingface_hub's validate_repo_id rejects a colon), while
+    #     an Ollama tag always carries one.
+    #   * `candidate not in models` — download-on-demand is only for models
+    #     the registry doesn't have. Without it, a known Ollama model that
+    #     is_eligible just rejected gets re-admitted here and relabelled with
+    #     the HF backend.
+    # Miss either and the caller is handed an Ollama tag to feed to mflux,
+    # which dies with HFValidationError instead of falling through to a pref
+    # that works.
     if (allow_hf_on_demand and task in HF_TASK_BACKENDS
-            and "/" in candidate and _ok(candidate, HF_TASK_BACKENDS[task])):
+            and candidate not in models
+            and "/" in candidate and ":" not in candidate
+            and _ok(candidate, HF_TASK_BACKENDS[task])):
         return candidate, HF_TASK_BACKENDS[task]
     return None
 

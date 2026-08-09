@@ -65,6 +65,7 @@ from lib.models import (
     active_params_b,
     ds4_installed,
     ds4_live_context,
+    image_backend_eligible as _image_backend_eligible,
     migrate_profiles,
     mflux_command,
     mflux_is_turbo,
@@ -2141,6 +2142,8 @@ def _pick_model_for_task(task):
     is_eligible = None
     if task == "vision":
         is_eligible = lambda name, _b: models.get(name, {}).get("has_vision", False)
+    elif task in ("image_gen", "image_edit"):
+        is_eligible = _image_backend_eligible
     result = _pick_model_from_prefs(
         task, models, prefs,
         allow_hf_on_demand=True,

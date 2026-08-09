@@ -102,7 +102,26 @@ FAKE_MODELS = {
         "total_params_b": 4, "quant": "bf16",
         "is_loaded": False, "expires_at": None,
     },
+    # An Ollama tag that advertises capabilities: ["image"] and cannot serve
+    # it — Ollama 0.32 returns 400 from /api/generate for these.
+    "x/flux2-klein:latest": {
+        "name": "x/flux2-klein:latest", "backend": "ollama",
+        "active_params_b": 9, "context": 0,
+        "has_vision": False, "family": "flux",
+        "disk_bytes": 6_000_000_000, "vram_bytes": 6_000_000_000,
+        "total_params_b": 9, "quant": "bf16",
+        "is_loaded": False, "expires_at": None,
+    },
+    "black-forest-labs/FLUX.2-klein-4B": {
+        "name": "black-forest-labs/FLUX.2-klein-4B", "backend": "mflux",
+        "active_params_b": 4, "context": 0,
+        "has_vision": False, "family": "image_gen",
+        "disk_bytes": 23_700_000_000, "vram_bytes": 23_700_000_000,
+        "total_params_b": 4, "quant": "bf16",
+        "is_loaded": False, "expires_at": None,
+    },
 }
+
 
 
 # ── Pure functions ──────────────────────────────────────────────────
@@ -452,6 +471,52 @@ class TestPickModelForTask:
              patch.object(ps, "get_all_models", return_value=FAKE_MODELS):
             name, backend, warning = ps._pick_model_for_task("vision")
         assert name is None
+
+    def test_image_gen_skips_ollama_backed_pref(self):
+        """An Ollama image tag is skipped for the mflux model behind it.
+
+        Ollama 0.32 answers /api/generate with 400 "image generation models
+        are not currently supported" while still advertising
+        capabilities: ["image"], so resolving by name alone hands back a
+        model that cannot serve the request.
+        """
+        with patch.object(ps, "load_default_prefs",
+                          return_value={"image_gen": [
+                              "x/flux2-klein:latest",
+                              "black-forest-labs/FLUX.2-klein-4B"]}), \
+             patch.object(ps, "get_all_models", return_value=FAKE_MODELS):
+            name, backend, warning = ps._pick_model_for_task("image_gen")
+        assert name == "black-forest-labs/FLUX.2-klein-4B"
+        assert backend == "mflux"
+
+    def test_unpulled_ollama_tag_is_not_mistaken_for_an_hf_repo(self):
+        """An Ollama tag that isn't pulled locally must not slip through the
+        HF download-on-demand path just because it contains a slash.
+
+        `x/z-image-turbo:bf16` is absent from the registry, so the
+        "not in models" guard passes; only the colon test keeps it out.
+        Letting it through hands mflux a repo id huggingface_hub rejects
+        (HFValidationError) instead of falling through to a usable pref.
+        """
+        with patch.object(ps, "load_default_prefs",
+                          return_value={"image_gen": [
+                              "x/z-image-turbo:bf16",
+                              "black-forest-labs/FLUX.2-klein-4B"]}), \
+             patch.object(ps, "get_all_models", return_value=FAKE_MODELS):
+            name, backend, warning = ps._pick_model_for_task("image_gen")
+        assert name == "black-forest-labs/FLUX.2-klein-4B"
+        assert backend == "mflux"
+
+    def test_image_gen_ollama_only_pref_returns_none(self):
+        """With nothing but an Ollama image tag, report no model rather
+        than dispatching into a backend that 400s."""
+        with patch.object(ps, "load_default_prefs",
+                          return_value={"image_gen": ["x/flux2-klein:latest"]}), \
+             patch.object(ps, "get_all_models", return_value=FAKE_MODELS):
+            name, backend, warning = ps._pick_model_for_task("image_gen")
+        assert name is None
+        assert warning is not None
+
 
 
 # ── Profiles CRUD ───────────────────────────────────────────────────

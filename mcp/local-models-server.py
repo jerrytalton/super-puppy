@@ -47,6 +47,7 @@ from lib.models import (
     active_params_b,
     ds4_installed,
     ds4_live_context,
+    image_backend_eligible,
     mflux_command,
     mflux_is_turbo,
     model_has_vision,
@@ -603,6 +604,8 @@ def pick_model(task: str, override: str | None = None) -> tuple[str, str]:
     is_eligible = None
     if task == "vision":
         is_eligible = lambda name, _backend: _models.get(name, {}).get("vision", False)
+    elif task in ("image_gen", "image_edit"):
+        is_eligible = image_backend_eligible
 
     result = pick_model_from_prefs(
         task, _models, prefs,
