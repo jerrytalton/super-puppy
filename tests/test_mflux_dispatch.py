@@ -11,7 +11,13 @@ import shutil
 
 import pytest
 
-from lib.models import _MFLUX_DISPATCH, mflux_command, mflux_is_turbo
+from lib.models import (
+    _MFLUX_DISPATCH,
+    _MFLUX_EDIT_DISPATCH,
+    mflux_command,
+    mflux_edit_command,
+    mflux_is_turbo,
+)
 
 
 DISPATCH_CASES = [
@@ -77,3 +83,64 @@ def test_mflux_dispatch_binaries_installed():
     assert not missing, (
         f"mflux dispatch names binaries not on PATH: {missing}. "
         "Either mflux was upgraded/downgraded, or the dispatch table is stale.")
+
+
+# ── edit dispatch ────────────────────────────────────────────────────
+
+EDIT_CASES = [
+    # (input,                                binary,                      base-model,       image flag,      strength)
+    ("black-forest-labs/FLUX.1-Kontext-dev", "mflux-generate-kontext",    "",               "--image-path",  True),
+    ("black-forest-labs/FLUX.2-klein-9B",    "mflux-generate-flux2-edit", "flux2-klein-9b", "--image-paths", False),
+    ("black-forest-labs/FLUX.2-klein-4B",    "mflux-generate-flux2-edit", "flux2-klein-4b", "--image-paths", False),
+    ("Qwen/Qwen-Image-Edit-2509",            "mflux-generate-qwen-edit",  "qwen",           "--image-paths", False),
+    ("briaai/Fibo-Edit",                     "mflux-generate-fibo-edit",  "fibo-edit",      "--image-paths", False),
+]
+
+
+@pytest.mark.parametrize("model_id,binary,base,image_flag,strength", EDIT_CASES)
+def test_mflux_edit_command(model_id, binary, base, image_flag, strength):
+    """Editing has its own binaries AND its own argument conventions.
+
+    kontext takes a single --image-path and honours --image-strength; the
+    flux2/qwen/fibo edit binaries take a variadic --image-paths and have no
+    strength knob. Passing the wrong flag is an immediate argparse failure,
+    and passing the wrong binary silently edits with the wrong weights.
+    """
+    cmd = mflux_edit_command(model_id)
+    assert cmd.binary == binary
+    assert cmd.image_flag == image_flag
+    assert cmd.supports_strength is strength
+    if base:
+        assert "--base-model" in cmd.extra_args
+        assert cmd.extra_args[cmd.extra_args.index("--base-model") + 1] == base
+    else:
+        assert "--base-model" not in cmd.extra_args
+    assert "--model" in cmd.extra_args, "resolved model must reach the binary"
+
+
+def test_edit_dispatch_does_not_reuse_the_generate_table():
+    """Regression guard for the bug this replaced.
+
+    mflux_command() maps Kontext to a *generate* binary that has no image
+    input at all, so image_edit cannot route through it.
+    """
+    gen_binary, _ = mflux_command("black-forest-labs/FLUX.1-Kontext-dev")
+    edit = mflux_edit_command("black-forest-labs/FLUX.1-Kontext-dev")
+    assert gen_binary != edit.binary
+    assert edit.binary == "mflux-generate-kontext"
+
+
+def test_unknown_edit_model_keeps_the_caller_model():
+    """An unrecognized id must not be silently swapped for Kontext's own
+    weights — it falls back to the kontext binary but carries --model, so a
+    genuinely incompatible choice fails loudly in mflux instead."""
+    cmd = mflux_edit_command("some-org/mystery-editor")
+    assert cmd.extra_args == ["--model", "some-org/mystery-editor"]
+
+
+def test_mflux_edit_binaries_installed():
+    if shutil.which("mflux-generate") is None:
+        pytest.skip("mflux not installed on this machine")
+    named = {b for _, b, _, _, _ in _MFLUX_EDIT_DISPATCH}
+    missing = sorted(b for b in named if shutil.which(b) is None)
+    assert not missing, f"mflux edit dispatch names binaries not on PATH: {missing}"

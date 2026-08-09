@@ -11,7 +11,7 @@ import os
 import re
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 # ── Config file paths ─────────────────────────────────────────────────
 
@@ -869,6 +869,58 @@ def mflux_command(model_id: str) -> tuple[str, list[str]]:
                 args += ["--model", model_id]
             return binary, args
     return "mflux-generate", ["--model", model_id]
+
+
+# ── mflux edit dispatch ──────────────────────────────────────────────
+#
+# Editing is a different binary set from generation, with three different
+# interfaces: kontext takes a single --image-path and honours
+# --image-strength; the flux2/qwen/fibo edit binaries take a variadic
+# --image-paths and have no strength knob. So this can't reuse
+# _MFLUX_DISPATCH — feeding an edit model to mflux_command() picks a
+# *generate* binary that has no image input at all.
+
+class MfluxEditCommand(NamedTuple):
+    binary: str
+    extra_args: list[str]
+    image_flag: str          # "--image-path" (single) or "--image-paths" (variadic)
+    supports_strength: bool
+
+
+_MFLUX_EDIT_DISPATCH: tuple[tuple[str, str, str, str, bool], ...] = (
+    # (substring match on lowercased id, binary, --base-model, image flag, strength)
+    ("kontext",          "mflux-generate-kontext",    "",               "--image-path",  True),
+    ("flux.2-klein-4b",  "mflux-generate-flux2-edit", "flux2-klein-4b", "--image-paths", False),
+    ("flux2-klein-4b",   "mflux-generate-flux2-edit", "flux2-klein-4b", "--image-paths", False),
+    ("flux.2-klein-9b",  "mflux-generate-flux2-edit", "flux2-klein-9b", "--image-paths", False),
+    ("flux2-klein-9b",   "mflux-generate-flux2-edit", "flux2-klein-9b", "--image-paths", False),
+    ("flux.2-klein",     "mflux-generate-flux2-edit", "flux2-klein-9b", "--image-paths", False),
+    ("flux2-klein",      "mflux-generate-flux2-edit", "flux2-klein-9b", "--image-paths", False),
+    ("qwen-image-edit",  "mflux-generate-qwen-edit",  "qwen",           "--image-paths", False),
+    ("fibo-edit",        "mflux-generate-fibo-edit",  "fibo-edit",      "--image-paths", False),
+)
+
+
+def mflux_edit_command(model_id: str) -> MfluxEditCommand:
+    """Return how to invoke mflux for an image-edit model.
+
+    Both servers used to hardcode `mflux-generate-kontext` and drop the
+    resolved model on the floor, so a profile naming Qwen-Image-Edit
+    silently got FLUX Kontext instead — wrong weights, no error.
+
+    Unrecognized ids fall back to the kontext binary but still carry the
+    caller's `--model`, so an incompatible choice fails loudly in mflux
+    rather than being silently swapped for something else.
+    """
+    normalized = model_id.lower().replace("_", "-")
+    for needle, binary, base, image_flag, strength in _MFLUX_EDIT_DISPATCH:
+        if needle in normalized:
+            args = ["--base-model", base] if base else []
+            if "/" in model_id:
+                args += ["--model", model_id]
+            return MfluxEditCommand(binary, args, image_flag, strength)
+    return MfluxEditCommand(
+        "mflux-generate-kontext", ["--model", model_id], "--image-path", True)
 
 
 def mflux_is_turbo(model_id: str) -> bool:
