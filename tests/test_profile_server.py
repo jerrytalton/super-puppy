@@ -11,11 +11,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Stub mlx_audio before importing profile-server (it imports at top level
-# on macOS but isn't needed for testing)
-for mod in ("mlx_audio", "mlx_audio.tts"):
-    if mod not in sys.modules:
-        sys.modules[mod] = MagicMock()
+# NB: do NOT stub mlx_audio here. profile-server imports it lazily inside
+# the TTS handler, so the import below doesn't need it — and a module-level
+# stub never comes back out of sys.modules. This file sorts before
+# test_tools_*, so the leaked MagicMock made the smoke suite's real-mlx_audio
+# guard pass against a stub, running "live" TTS against a mock in the release
+# gate (and skipping when run standalone). The one test that exercises TTS
+# patches sys.modules itself.
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
@@ -29,16 +31,21 @@ os.environ.setdefault("MLX_URL", "http://localhost:8000")
 os.environ["PROFILE_IDLE_TIMEOUT"] = "0"  # disable idle shutdown
 os.environ["SP_ALLOW_NO_AUTH"] = "1"  # tests run without a real token
 
-# Stub hf_scanner to avoid scanning the real HF cache
+# Stub hf_scanner to avoid scanning the real HF cache — scoped to the import
+# below, since the smoke suite deliberately wants the REAL scanner (it stubs
+# only the slow full-cache scan) and a leaked MagicMock would hand its video
+# handler a mock snapshot helper.
+from tests._stub_helpers import stubbed_modules  # noqa: E402
+
 hf_scanner_mock = MagicMock()
 hf_scanner_mock.scan_hf_cache = MagicMock(return_value=[])
-sys.modules["lib.hf_scanner"] = hf_scanner_mock
 
 _ps_path = Path(__file__).resolve().parent.parent / "app" / "profile-server.py"
-spec = importlib.util.spec_from_file_location("profile_server", str(_ps_path))
-ps = importlib.util.module_from_spec(spec)
-sys.modules["profile_server"] = ps
-spec.loader.exec_module(ps)
+with stubbed_modules({"lib.hf_scanner": hf_scanner_mock}):
+    spec = importlib.util.spec_from_file_location("profile_server", str(_ps_path))
+    ps = importlib.util.module_from_spec(spec)
+    sys.modules["profile_server"] = ps
+    spec.loader.exec_module(ps)
 
 
 # ── Fixtures ────────────────────────────────────────────────────────
@@ -99,6 +106,24 @@ FAKE_MODELS = {
         "active_params_b": 4, "context": 0,
         "has_vision": False, "family": "tts",
         "disk_bytes": 4_000_000_000, "vram_bytes": 4_000_000_000,
+        "total_params_b": 4, "quant": "bf16",
+        "is_loaded": False, "expires_at": None,
+    },
+    # An Ollama tag that advertises capabilities: ["image"] and cannot serve
+    # it — Ollama 0.32 returns 400 from /api/generate for these.
+    "x/flux2-klein:latest": {
+        "name": "x/flux2-klein:latest", "backend": "ollama",
+        "active_params_b": 9, "context": 0,
+        "has_vision": False, "family": "flux",
+        "disk_bytes": 6_000_000_000, "vram_bytes": 6_000_000_000,
+        "total_params_b": 9, "quant": "bf16",
+        "is_loaded": False, "expires_at": None,
+    },
+    "black-forest-labs/FLUX.2-klein-4B": {
+        "name": "black-forest-labs/FLUX.2-klein-4B", "backend": "mflux",
+        "active_params_b": 4, "context": 0,
+        "has_vision": False, "family": "image_gen",
+        "disk_bytes": 23_700_000_000, "vram_bytes": 23_700_000_000,
         "total_params_b": 4, "quant": "bf16",
         "is_loaded": False, "expires_at": None,
     },
@@ -452,6 +477,51 @@ class TestPickModelForTask:
              patch.object(ps, "get_all_models", return_value=FAKE_MODELS):
             name, backend, warning = ps._pick_model_for_task("vision")
         assert name is None
+
+    def test_image_gen_skips_ollama_backed_pref(self):
+        """An Ollama image tag is skipped for the mflux model behind it.
+
+        Ollama 0.32 answers /api/generate with 400 "image generation models
+        are not currently supported" while still advertising
+        capabilities: ["image"], so resolving by name alone hands back a
+        model that cannot serve the request.
+        """
+        with patch.object(ps, "load_default_prefs",
+                          return_value={"image_gen": [
+                              "x/flux2-klein:latest",
+                              "black-forest-labs/FLUX.2-klein-4B"]}), \
+             patch.object(ps, "get_all_models", return_value=FAKE_MODELS):
+            name, backend, warning = ps._pick_model_for_task("image_gen")
+        assert name == "black-forest-labs/FLUX.2-klein-4B"
+        assert backend == "mflux"
+
+    def test_unpulled_ollama_tag_is_not_mistaken_for_an_hf_repo(self):
+        """An Ollama tag that isn't pulled locally must not slip through the
+        HF download-on-demand path just because it contains a slash.
+
+        `x/z-image-turbo:bf16` is absent from the registry, so the
+        "not in models" guard passes; only the colon test keeps it out.
+        Letting it through hands mflux a repo id huggingface_hub rejects
+        (HFValidationError) instead of falling through to a usable pref.
+        """
+        with patch.object(ps, "load_default_prefs",
+                          return_value={"image_gen": [
+                              "x/z-image-turbo:bf16",
+                              "black-forest-labs/FLUX.2-klein-4B"]}), \
+             patch.object(ps, "get_all_models", return_value=FAKE_MODELS):
+            name, backend, warning = ps._pick_model_for_task("image_gen")
+        assert name == "black-forest-labs/FLUX.2-klein-4B"
+        assert backend == "mflux"
+
+    def test_image_gen_ollama_only_pref_returns_none(self):
+        """With nothing but an Ollama image tag, report no model rather
+        than dispatching into a backend that 400s."""
+        with patch.object(ps, "load_default_prefs",
+                          return_value={"image_gen": ["x/flux2-klein:latest"]}), \
+             patch.object(ps, "get_all_models", return_value=FAKE_MODELS):
+            name, backend, warning = ps._pick_model_for_task("image_gen")
+        assert name is None
+        assert warning is not None
 
 
 # ── Profiles CRUD ───────────────────────────────────────────────────

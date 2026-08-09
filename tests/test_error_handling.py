@@ -16,9 +16,10 @@ import pytest
 
 # ── Import profile server (same pattern as test_profile_server.py) ──
 
-for mod in ("mlx_audio", "mlx_audio.tts"):
-    if mod not in sys.modules:
-        sys.modules[mod] = MagicMock()
+# NB: do NOT stub mlx_audio here — profile-server imports it lazily inside
+# the TTS handler, and a module-level stub never leaves sys.modules. This
+# file sorts before test_tools_*, so the leak made the smoke suite's
+# real-mlx_audio guard pass against a MagicMock.
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
@@ -31,15 +32,17 @@ os.environ.setdefault("MLX_URL", "http://localhost:8000")
 os.environ["PROFILE_IDLE_TIMEOUT"] = "0"
 os.environ["SP_ALLOW_NO_AUTH"] = "1"  # tests run without a real token
 
+from tests._stub_helpers import stubbed_modules  # noqa: E402
+
 hf_scanner_mock = MagicMock()
 hf_scanner_mock.scan_hf_cache = MagicMock(return_value=[])
-sys.modules["lib.hf_scanner"] = hf_scanner_mock
 
 _ps_path = Path(__file__).resolve().parent.parent / "app" / "profile-server.py"
-spec = importlib.util.spec_from_file_location("profile_server_eh", str(_ps_path))
-ps = importlib.util.module_from_spec(spec)
-sys.modules["profile_server_eh"] = ps
-spec.loader.exec_module(ps)
+with stubbed_modules({"lib.hf_scanner": hf_scanner_mock}):
+    spec = importlib.util.spec_from_file_location("profile_server_eh", str(_ps_path))
+    ps = importlib.util.module_from_spec(spec)
+    sys.modules["profile_server_eh"] = ps
+    spec.loader.exec_module(ps)
 
 
 # ── Import MCP server (same pattern as test_mcp_server.py) ──────────
@@ -49,43 +52,46 @@ _starlette_mock.middleware.base.BaseHTTPMiddleware = type(
     "BaseHTTPMiddleware", (), {})
 _starlette_mock.responses.JSONResponse = MagicMock()
 
-for mod_name in (
-    "httpx", "mcp", "mcp.server", "mcp.server.fastmcp",
-    "mcp.server.transport_security",
-    "starlette", "starlette.middleware", "starlette.middleware.base",
-    "starlette.responses",
-    "torch", "sentence_transformers",
-    "mlx_audio", "mlx_audio.tts",
-    "anyio", "yaml", "pyyaml",
-):
-    if mod_name not in sys.modules:
-        if mod_name.startswith("starlette"):
-            sys.modules[mod_name] = _starlette_mock
-        else:
-            sys.modules[mod_name] = MagicMock()
-
-_fastmcp_mock = MagicMock()
-_fastmcp_mock.return_value = MagicMock()
-sys.modules["mcp.server.fastmcp"].FastMCP = _fastmcp_mock
-sys.modules["mcp.server.transport_security"].TransportSecuritySettings = MagicMock()
-sys.modules["starlette.middleware.base"].BaseHTTPMiddleware = type(
-    "BaseHTTPMiddleware", (), {"dispatch": lambda self, req, call_next: None})
-sys.modules["starlette.responses"].JSONResponse = MagicMock()
+# NB: mlx_audio and yaml deliberately absent — both are imported lazily by
+# the server, so it loads without them, and stubbing them leaks into later
+# modules (mlx_audio broke the smoke suite's real-deps guard; yaml broke
+# lib.mlx_vlm.repo_for's safe_load).
+_MCP_IMPORT_STUBS = {
+    name: (_starlette_mock if name.startswith("starlette") else MagicMock())
+    for name in (
+        "httpx", "mcp", "mcp.server", "mcp.server.fastmcp",
+        "mcp.server.transport_security",
+        "starlette", "starlette.middleware", "starlette.middleware.base",
+        "starlette.responses",
+        "torch", "sentence_transformers",
+        "anyio",
+    )
+}
 
 _server_path = Path(__file__).resolve().parent.parent / "mcp"
 sys.path.insert(0, str(_server_path))
 
-with patch.dict("os.environ", {
-    "MCP_AUTH_TOKEN": "test-token-123",
-    "OLLAMA_URL": "http://localhost:11434",
-    "MLX_URL": "http://localhost:8000",
-}):
-    spec_mcp = importlib.util.spec_from_file_location(
-        "local_models_server_eh",
-        str(_server_path / "local-models-server.py"))
-    server = importlib.util.module_from_spec(spec_mcp)
-    sys.modules["local_models_server_eh"] = server
-    spec_mcp.loader.exec_module(server)
+with stubbed_modules(_MCP_IMPORT_STUBS):
+    _fastmcp_mock = MagicMock()
+    _fastmcp_mock.return_value = MagicMock()
+    sys.modules["mcp.server.fastmcp"].FastMCP = _fastmcp_mock
+    sys.modules["mcp.server.transport_security"].TransportSecuritySettings = \
+        MagicMock()
+    sys.modules["starlette.middleware.base"].BaseHTTPMiddleware = type(
+        "BaseHTTPMiddleware", (), {"dispatch": lambda self, req, call_next: None})
+    sys.modules["starlette.responses"].JSONResponse = MagicMock()
+
+    with patch.dict("os.environ", {
+        "MCP_AUTH_TOKEN": "test-token-123",
+        "OLLAMA_URL": "http://localhost:11434",
+        "MLX_URL": "http://localhost:8000",
+    }):
+        spec_mcp = importlib.util.spec_from_file_location(
+            "local_models_server_eh",
+            str(_server_path / "local-models-server.py"))
+        server = importlib.util.module_from_spec(spec_mcp)
+        sys.modules["local_models_server_eh"] = server
+        spec_mcp.loader.exec_module(server)
 
 
 # ── Fixtures ────────────────────────────────────────────────────────

@@ -241,6 +241,46 @@ HF_TASK_BACKENDS: dict[str, str] = {
 }
 
 
+def merge_profile_picks(prefs: dict, profile: dict) -> dict:
+    """Promote a profile's task picks to the front of each preference list.
+
+    `mcp_preferences.json` — not profiles.json — is what the pickers actually
+    read, and a PROFILES_VERSION bump only rewrites the presets. Without this,
+    a preset fix (say, moving image_gen off a backend that stopped working)
+    lands on disk and changes nothing: the stale pref still wins, and the new
+    model is never even a candidate.
+
+    Non-destructive: previously-configured models stay in the list behind the
+    profile's pick, so a machine keeps its fallbacks. Same operation the
+    Activate button performs, shared so the two can't drift.
+    """
+    merged = dict(prefs)
+    for task, pick in (profile.get("tasks") or {}).items():
+        existing = merged.get(task, [])
+        if isinstance(existing, str):
+            existing = [existing]
+        merged[task] = [pick] + [m for m in existing if m != pick]
+    if profile.get("thinking"):
+        thinking = dict(merged.get("thinking") or {})
+        thinking.update(profile["thinking"])
+        merged["thinking"] = thinking
+    return merged
+
+
+def image_backend_eligible(_name: str, backend: str) -> bool:
+    """Gate image_gen/image_edit candidates to the mflux backend.
+
+    Ollama 0.32 rejects /api/generate for image models with a 400 while
+    /api/show still advertises `capabilities: ["image"]` — the same lie its
+    `-mlx` tags tell about vision. Both image tasks dispatch through mflux,
+    so an Ollama-backed candidate resolves by name and then dies at
+    dispatch with a backend error the user can do nothing about. Gating
+    here makes the picker fall through to a pref that can actually serve
+    the task, exactly as the vision gate does for tower-less tags.
+    """
+    return backend == HF_TASK_BACKENDS["image_gen"]
+
+
 def resolve_pref_candidate(
     candidate: str,
     models: dict[str, dict],
@@ -281,8 +321,22 @@ def resolve_pref_candidate(
         if (name == latest or name.startswith(suffix_target)) \
                 and _ok(name, models[name]["backend"]):
             return name, models[name]["backend"]
+    # "/" alone does not mean "HF repo id" — Ollama namespaced tags look the
+    # same ("x/z-image-turbo:bf16"). Two extra conditions keep those out:
+    #   * `":" not in candidate` — HF repo ids are alphanumeric plus '-', '_'
+    #     and '.' (huggingface_hub's validate_repo_id rejects a colon), while
+    #     an Ollama tag always carries one.
+    #   * `candidate not in models` — download-on-demand is only for models
+    #     the registry doesn't have. Without it, a known Ollama model that
+    #     is_eligible just rejected gets re-admitted here and relabelled with
+    #     the HF backend.
+    # Miss either and the caller is handed an Ollama tag to feed to mflux,
+    # which dies with HFValidationError instead of falling through to a pref
+    # that works.
     if (allow_hf_on_demand and task in HF_TASK_BACKENDS
-            and "/" in candidate and _ok(candidate, HF_TASK_BACKENDS[task])):
+            and candidate not in models
+            and "/" in candidate and ":" not in candidate
+            and _ok(candidate, HF_TASK_BACKENDS[task])):
         return candidate, HF_TASK_BACKENDS[task]
     return None
 
@@ -508,7 +562,7 @@ TASK_FILTERS: dict[str, dict[str, Any]] = {
 # max_ram_gb cap gates model-pull validation in install.sh and the profile
 # server. The active default is 64gb (fits M5 / mid GPU class).
 
-PROFILES_VERSION = 32  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 33  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -533,7 +587,14 @@ DEFAULT_PROFILES = {
                 "transcription": "whisper-v3-turbo",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
                 "embedding": "embeddinggemma:300m",
-                "image_gen": "x/flux2-klein:latest",
+                # image_gen runs on mflux, not Ollama. Ollama 0.32 rejects
+                # /api/generate for image models (400 "image generation
+                # models are not currently supported") while /api/show still
+                # advertises capabilities: ["image"] — so an Ollama tag here
+                # resolves fine and then dies at dispatch. HF repo ids only:
+                # resolve_pref_candidate's on-demand path requires a "/".
+                # 4B (23.7GB, ungated) on the small tiers; the 9B is 52.9GB.
+                "image_gen": "black-forest-labs/FLUX.2-klein-4B",
             },
         },
         "64gb": {
@@ -553,7 +614,11 @@ DEFAULT_PROFILES = {
                 "embedding": "qwen3-embedding:8b",
                 "unfiltered": "dolphin3:8b",
                 "computer_use": "ui-venus",
-                "image_gen": "x/flux2-klein:latest",
+                "image_gen": "black-forest-labs/FLUX.2-klein-4B",
+                # Same Kontext model the larger tiers use: _handle_test_image_edit
+                # hardcodes `mflux-generate-kontext`, so this value gates whether
+                # the task is offered at all rather than selecting the weights.
+                "image_edit": "black-forest-labs/FLUX.1-Kontext-dev",
             },
         },
         "128gb": {
@@ -579,7 +644,7 @@ DEFAULT_PROFILES = {
                 "embedding": "qwen3-embedding:8b",
                 "unfiltered": "dolphin3:8b",
                 "computer_use": "ui-venus",
-                "image_gen": "x/z-image-turbo:bf16",
+                "image_gen": "black-forest-labs/FLUX.2-klein-9B",
                 "image_edit": "black-forest-labs/FLUX.1-Kontext-dev",
                 "video": "AITRADER/Wan2.2-T2V-A14B-mlx-bf16",
             },
@@ -604,7 +669,7 @@ DEFAULT_PROFILES = {
                 "embedding": "qwen3-embedding:8b",
                 "unfiltered": "dolphin3:8b",
                 "computer_use": "ui-venus",
-                "image_gen": "x/z-image-turbo:bf16",
+                "image_gen": "black-forest-labs/FLUX.2-klein-9B",
                 "image_edit": "black-forest-labs/FLUX.1-Kontext-dev",
                 "video": "AITRADER/Wan2.2-T2V-A14B-mlx-bf16",
             },

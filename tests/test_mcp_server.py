@@ -15,77 +15,76 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# ── Mock heavy dependencies before importing the MCP server ─────────
-# The server imports mcp, httpx, starlette, torch, sentence-transformers,
-# mlx-audio at the top level. We mock them all.
+# ── Mock heavy dependencies for the MCP server import ───────────────
+# The server imports mcp, httpx, starlette, torch, sentence-transformers at
+# the top level. We mock them for the duration of the import only —
+# see tests/_stub_helpers.py for why leaving them in sys.modules is harmful.
+#
+# NB: mlx_audio and yaml are deliberately absent. Both are imported lazily
+# inside functions no MCP test exercises, so the server imports fine without
+# them, and stubbing them poisons later modules (mlx_audio broke the smoke
+# suite's real-deps guard; yaml broke lib.mlx_vlm.repo_for's safe_load).
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from tests._stub_helpers import stubbed_modules  # noqa: E402
 
 _starlette_mock = MagicMock()
 _starlette_mock.middleware.base.BaseHTTPMiddleware = type(
     "BaseHTTPMiddleware", (), {})
 _starlette_mock.responses.JSONResponse = MagicMock()
 
-for mod_name in (
-    "httpx", "mcp", "mcp.server", "mcp.server.fastmcp",
-    "mcp.server.transport_security",
-    "starlette", "starlette.middleware", "starlette.middleware.base",
-    "starlette.responses",
-    "torch", "sentence_transformers",
-    "mlx_audio", "mlx_audio.tts",
-    "anyio",
-    # NB: do NOT mock yaml here — it's only imported lazily inside
-    # functions no MCP test exercises, and mocking it globally poisons
-    # lib.mlx_vlm.repo_for's yaml.safe_load in other test modules.
-):
-    if mod_name not in sys.modules:
-        if mod_name.startswith("starlette"):
-            sys.modules[mod_name] = _starlette_mock
-        else:
-            sys.modules[mod_name] = MagicMock()
+_MCP_IMPORT_STUBS = {
+    name: (_starlette_mock if name.startswith("starlette") else MagicMock())
+    for name in (
+        "httpx", "mcp", "mcp.server", "mcp.server.fastmcp",
+        "mcp.server.transport_security",
+        "starlette", "starlette.middleware", "starlette.middleware.base",
+        "starlette.responses",
+        "torch", "sentence_transformers",
+        "anyio",
+    )
+}
 
-# Make FastMCP return a mock whose .tool() decorator returns the function
-# unchanged — that way @mcp.tool()-decorated functions remain callable from
-# tests instead of being replaced with a MagicMock. Other attribute access
-# falls through to MagicMock as before.
-_fastmcp_instance = MagicMock()
-_fastmcp_instance.tool = lambda *a, **kw: (lambda fn: fn)
-# Default: no active MCP request → _current_client() returns "" (the real
-# get_context() yields a context whose request is None outside a tool call).
-# Tests that need attribution patch server._current_client or server.mcp.get_context.
-_fastmcp_instance.get_context.return_value.request_context.request = None
-_fastmcp_mock = MagicMock(return_value=_fastmcp_instance)
-sys.modules["mcp.server.fastmcp"].FastMCP = _fastmcp_mock
-sys.modules["mcp.server.transport_security"].TransportSecuritySettings = MagicMock()
-
-# Provide BaseHTTPMiddleware as a real class so the server can subclass it
-sys.modules["starlette.middleware.base"].BaseHTTPMiddleware = type(
-    "BaseHTTPMiddleware", (), {"dispatch": lambda self, req, call_next: None})
-sys.modules["starlette.responses"].JSONResponse = MagicMock()
-
-# Ensure lib/ is importable
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-# Now import the server — this will use our mocked modules
-import importlib
-import mcp as _mcp_mod  # noqa: F811 - this is the mock
-
-# We need to import the server module carefully
 _server_path = Path(__file__).resolve().parent.parent / "mcp"
 sys.path.insert(0, str(_server_path))
 
-# Patch os.environ for MCP_AUTH_TOKEN before import
-with patch.dict("os.environ", {
-    "MCP_AUTH_TOKEN": "test-token-123",
-    "OLLAMA_URL": "http://localhost:11434",
-    "MLX_URL": "http://localhost:8000",
-}):
-    # The server reads env vars at module level
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        "local_models_server",
-        str(_server_path / "local-models-server.py"))
-    server = importlib.util.module_from_spec(spec)
-    sys.modules["local_models_server"] = server
-    spec.loader.exec_module(server)
+with stubbed_modules(_MCP_IMPORT_STUBS):
+    # Make FastMCP return a mock whose .tool() decorator returns the function
+    # unchanged — that way @mcp.tool()-decorated functions remain callable
+    # from tests instead of being replaced with a MagicMock. Other attribute
+    # access falls through to MagicMock as before.
+    _fastmcp_instance = MagicMock()
+    _fastmcp_instance.tool = lambda *a, **kw: (lambda fn: fn)
+    # Default: no active MCP request → _current_client() returns "" (the real
+    # get_context() yields a context whose request is None outside a tool
+    # call). Tests that need attribution patch server._current_client or
+    # server.mcp.get_context.
+    _fastmcp_instance.get_context.return_value.request_context.request = None
+    _fastmcp_mock = MagicMock(return_value=_fastmcp_instance)
+    sys.modules["mcp.server.fastmcp"].FastMCP = _fastmcp_mock
+    sys.modules["mcp.server.transport_security"].TransportSecuritySettings = \
+        MagicMock()
+
+    # Provide BaseHTTPMiddleware as a real class so the server can subclass it
+    sys.modules["starlette.middleware.base"].BaseHTTPMiddleware = type(
+        "BaseHTTPMiddleware", (), {"dispatch": lambda self, req, call_next: None})
+    sys.modules["starlette.responses"].JSONResponse = MagicMock()
+
+    # Patch os.environ for MCP_AUTH_TOKEN before import — the server reads
+    # env vars at module level.
+    with patch.dict("os.environ", {
+        "MCP_AUTH_TOKEN": "test-token-123",
+        "OLLAMA_URL": "http://localhost:11434",
+        "MLX_URL": "http://localhost:8000",
+    }):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "local_models_server",
+            str(_server_path / "local-models-server.py"))
+        server = importlib.util.module_from_spec(spec)
+        sys.modules["local_models_server"] = server
+        spec.loader.exec_module(server)
 
 
 # ── Fixtures ────────────────────────────────────────────────────────

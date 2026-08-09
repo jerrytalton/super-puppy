@@ -48,10 +48,19 @@ echo "== test suite =="
 # to <5.13 — PyPI mlx-audio + transformers 5.13 can't load the TTS models
 # (register/weight-key mismatches), so the tts correctness test would false-fail.
 # pillow backs the image_gen/image_edit color assertions.
+JUNIT="$(mktemp -t sp-release-junit)"
+trap 'rm -f "$JUNIT"' EXIT
 uv run --with pytest --with flask --with pyyaml --with requests --with pillow \
     --with "transformers==5.12.1" \
     --with "mlx-audio[tts] @ git+https://github.com/Blaizzy/mlx-audio.git@e42e1431fcf89af313375296c46d03a0153c4aa7" \
-    pytest tests/ -q -m "not slow and not e2e"
+    pytest tests/ -q -m "not slow and not e2e" --junitxml="$JUNIT"
+
+echo "== live coverage gate =="
+# Passing and having-verified-something are different outcomes with the same
+# exit code: the live suites skip when services are down or models aren't
+# pulled. v1.5.0 shipped a broken local_image precisely that way. Refuse to
+# tag from a machine that exercised no real backend.
+python3 "$REPO_DIR/bin/check-live-coverage.py" "$JUNIT"
 
 echo "== fleet compat gate (vs $PREV) =="
 uv run tests/fleet/run_compat.py
