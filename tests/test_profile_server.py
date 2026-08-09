@@ -11,11 +11,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Stub mlx_audio before importing profile-server (it imports at top level
-# on macOS but isn't needed for testing)
-for mod in ("mlx_audio", "mlx_audio.tts"):
-    if mod not in sys.modules:
-        sys.modules[mod] = MagicMock()
+# NB: do NOT stub mlx_audio here. profile-server imports it lazily inside
+# the TTS handler, so the import below doesn't need it — and a module-level
+# stub never comes back out of sys.modules. This file sorts before
+# test_tools_*, so the leaked MagicMock made the smoke suite's real-mlx_audio
+# guard pass against a stub, running "live" TTS against a mock in the release
+# gate (and skipping when run standalone). The one test that exercises TTS
+# patches sys.modules itself.
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
@@ -29,16 +31,21 @@ os.environ.setdefault("MLX_URL", "http://localhost:8000")
 os.environ["PROFILE_IDLE_TIMEOUT"] = "0"  # disable idle shutdown
 os.environ["SP_ALLOW_NO_AUTH"] = "1"  # tests run without a real token
 
-# Stub hf_scanner to avoid scanning the real HF cache
+# Stub hf_scanner to avoid scanning the real HF cache — scoped to the import
+# below, since the smoke suite deliberately wants the REAL scanner (it stubs
+# only the slow full-cache scan) and a leaked MagicMock would hand its video
+# handler a mock snapshot helper.
+from tests._stub_helpers import stubbed_modules  # noqa: E402
+
 hf_scanner_mock = MagicMock()
 hf_scanner_mock.scan_hf_cache = MagicMock(return_value=[])
-sys.modules["lib.hf_scanner"] = hf_scanner_mock
 
 _ps_path = Path(__file__).resolve().parent.parent / "app" / "profile-server.py"
-spec = importlib.util.spec_from_file_location("profile_server", str(_ps_path))
-ps = importlib.util.module_from_spec(spec)
-sys.modules["profile_server"] = ps
-spec.loader.exec_module(ps)
+with stubbed_modules({"lib.hf_scanner": hf_scanner_mock}):
+    spec = importlib.util.spec_from_file_location("profile_server", str(_ps_path))
+    ps = importlib.util.module_from_spec(spec)
+    sys.modules["profile_server"] = ps
+    spec.loader.exec_module(ps)
 
 
 # ── Fixtures ────────────────────────────────────────────────────────
@@ -121,7 +128,6 @@ FAKE_MODELS = {
         "is_loaded": False, "expires_at": None,
     },
 }
-
 
 
 # ── Pure functions ──────────────────────────────────────────────────
@@ -516,7 +522,6 @@ class TestPickModelForTask:
             name, backend, warning = ps._pick_model_for_task("image_gen")
         assert name is None
         assert warning is not None
-
 
 
 # ── Profiles CRUD ───────────────────────────────────────────────────

@@ -43,6 +43,18 @@ def _import_profile_server():
             allow_module_level=True,
         )
 
+    # A bare `import` only proves the NAME resolves. A unit-test module that
+    # stubs mlx_audio into sys.modules and never removes it would satisfy the
+    # import above with a MagicMock, and this suite would then run "live" TTS
+    # against a mock — passing while proving nothing. Real modules have a str
+    # __file__; MagicMock auto-generates one that isn't.
+    if not isinstance(getattr(mlx_audio, "__file__", None), str):
+        pytest.skip(
+            "mlx_audio in sys.modules is a stub, not the real package — an "
+            "earlier test module leaked a mock; smoke tests need real deps",
+            allow_module_level=True,
+        )
+
     sys.path.insert(0, str(REPO))
     sys.path.insert(0, str(REPO / "app"))
 
