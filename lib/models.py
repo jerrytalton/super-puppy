@@ -508,7 +508,7 @@ TASK_FILTERS: dict[str, dict[str, Any]] = {
 # max_ram_gb cap gates model-pull validation in install.sh and the profile
 # server. The active default is 64gb (fits M5 / mid GPU class).
 
-PROFILES_VERSION = 32  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 33  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -533,7 +533,14 @@ DEFAULT_PROFILES = {
                 "transcription": "whisper-v3-turbo",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
                 "embedding": "embeddinggemma:300m",
-                "image_gen": "x/flux2-klein:latest",
+                # image_gen runs on mflux, not Ollama. Ollama 0.32 rejects
+                # /api/generate for image models (400 "image generation
+                # models are not currently supported") while /api/show still
+                # advertises capabilities: ["image"] — so an Ollama tag here
+                # resolves fine and then dies at dispatch. HF repo ids only:
+                # resolve_pref_candidate's on-demand path requires a "/".
+                # 4B (23.7GB, ungated) on the small tiers; the 9B is 52.9GB.
+                "image_gen": "black-forest-labs/FLUX.2-klein-4B",
             },
         },
         "64gb": {
@@ -553,7 +560,11 @@ DEFAULT_PROFILES = {
                 "embedding": "qwen3-embedding:8b",
                 "unfiltered": "dolphin3:8b",
                 "computer_use": "ui-venus",
-                "image_gen": "x/flux2-klein:latest",
+                "image_gen": "black-forest-labs/FLUX.2-klein-4B",
+                # Same Kontext model the larger tiers use: _handle_test_image_edit
+                # hardcodes `mflux-generate-kontext`, so this value gates whether
+                # the task is offered at all rather than selecting the weights.
+                "image_edit": "black-forest-labs/FLUX.1-Kontext-dev",
             },
         },
         "128gb": {
@@ -579,7 +590,7 @@ DEFAULT_PROFILES = {
                 "embedding": "qwen3-embedding:8b",
                 "unfiltered": "dolphin3:8b",
                 "computer_use": "ui-venus",
-                "image_gen": "x/z-image-turbo:bf16",
+                "image_gen": "black-forest-labs/FLUX.2-klein-9B",
                 "image_edit": "black-forest-labs/FLUX.1-Kontext-dev",
                 "video": "AITRADER/Wan2.2-T2V-A14B-mlx-bf16",
             },
@@ -604,7 +615,7 @@ DEFAULT_PROFILES = {
                 "embedding": "qwen3-embedding:8b",
                 "unfiltered": "dolphin3:8b",
                 "computer_use": "ui-venus",
-                "image_gen": "x/z-image-turbo:bf16",
+                "image_gen": "black-forest-labs/FLUX.2-klein-9B",
                 "image_edit": "black-forest-labs/FLUX.1-Kontext-dev",
                 "video": "AITRADER/Wan2.2-T2V-A14B-mlx-bf16",
             },
