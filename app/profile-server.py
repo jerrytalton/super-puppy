@@ -66,6 +66,7 @@ from lib.models import (
     ds4_installed,
     ds4_live_context,
     image_backend_eligible as _image_backend_eligible,
+    merge_profile_picks as _merge_profile_picks,
     migrate_profiles,
     mflux_command,
     mflux_is_turbo,
@@ -1332,6 +1333,14 @@ def load_profiles():
             return data
         refreshed = migrate_profiles(data)
         save_profiles(refreshed)
+        # Refresh the prefs the pickers read, for the same reason the menu bar
+        # does on its startup migration: whichever process wins the race must
+        # leave mcp_preferences.json consistent with the new presets, or a
+        # corrected pick stays permanently shadowed by a stale one. The merge
+        # is idempotent, so both doing it is harmless.
+        profile = (refreshed.get("profiles") or {}).get(refreshed.get("active"))
+        if profile:
+            save_mcp_prefs(_merge_profile_picks(load_default_prefs(), profile))
         return refreshed
     save_profiles(DEFAULT_PROFILES)
     return copy.deepcopy(DEFAULT_PROFILES)
@@ -1761,13 +1770,7 @@ def api_profiles_activate(name):
     if not profile:
         return jsonify({"error": f"Profile '{name}' not found"}), 404
 
-    current = load_default_prefs()
-    if profile.get("tasks"):
-        for task, pick in profile["tasks"].items():
-            existing = current.get(task, [])
-            current[task] = [pick] + [m for m in existing if m != pick]
-    if profile.get("thinking"):
-        current.setdefault("thinking", {}).update(profile["thinking"])
+    current = _merge_profile_picks(load_default_prefs(), profile)
 
     # The prompt lists only the profile's own picks, but `current` (the merged
     # fallback lists) is what gets saved so the MCP server keeps its fallbacks.

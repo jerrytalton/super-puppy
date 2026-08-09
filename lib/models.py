@@ -241,6 +241,32 @@ HF_TASK_BACKENDS: dict[str, str] = {
 }
 
 
+def merge_profile_picks(prefs: dict, profile: dict) -> dict:
+    """Promote a profile's task picks to the front of each preference list.
+
+    `mcp_preferences.json` — not profiles.json — is what the pickers actually
+    read, and a PROFILES_VERSION bump only rewrites the presets. Without this,
+    a preset fix (say, moving image_gen off a backend that stopped working)
+    lands on disk and changes nothing: the stale pref still wins, and the new
+    model is never even a candidate.
+
+    Non-destructive: previously-configured models stay in the list behind the
+    profile's pick, so a machine keeps its fallbacks. Same operation the
+    Activate button performs, shared so the two can't drift.
+    """
+    merged = dict(prefs)
+    for task, pick in (profile.get("tasks") or {}).items():
+        existing = merged.get(task, [])
+        if isinstance(existing, str):
+            existing = [existing]
+        merged[task] = [pick] + [m for m in existing if m != pick]
+    if profile.get("thinking"):
+        thinking = dict(merged.get("thinking") or {})
+        thinking.update(profile["thinking"])
+        merged["thinking"] = thinking
+    return merged
+
+
 def image_backend_eligible(_name: str, backend: str) -> bool:
     """Gate image_gen/image_edit candidates to the mflux backend.
 

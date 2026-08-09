@@ -646,6 +646,34 @@ class TestDefaultProfilesSeeding:
             result = json.loads(prof_path.read_text())
         assert result == custom
 
+    def test_version_bump_refreshes_mcp_prefs(self, tmp_path):
+        """A preset fix has to reach mcp_preferences.json, which is what the
+        pickers actually read.
+
+        Rewriting profiles.json alone is inert — the stale pref still wins and
+        the corrected model never becomes a candidate. That is how the
+        image_gen fix would have shipped dead to every existing machine while
+        looking correct on disk.
+        """
+        prof_path = tmp_path / "profiles.json"
+        prefs_path = tmp_path / "mcp_preferences.json"
+        prof_path.write_text(json.dumps({
+            "version": menubar.PROFILES_VERSION - 1, "active": "64gb",
+            "profiles": {"64gb": {"label": "64 GB", "max_ram_gb": 64,
+                                  "tasks": {"image_gen": "x/stale:tag"}}}}))
+        prefs_path.write_text(json.dumps({"image_gen": ["x/stale:tag"]}))
+
+        with patch.object(menubar, "PROFILES_FILE", str(prof_path)), \
+             patch.object(menubar, "MCP_PREFS_FILE", str(prefs_path)):
+            assert menubar.seed_profiles_if_missing() is True
+            prefs = json.loads(prefs_path.read_text())
+
+        expected = menubar.DEFAULT_PROFILES["profiles"]["64gb"]["tasks"]["image_gen"]
+        assert prefs["image_gen"][0] == expected, \
+            "migrated preset pick must win over the stale pref"
+        assert "x/stale:tag" in prefs["image_gen"], \
+            "existing entries must survive as fallbacks, not be discarded"
+
     def test_tiers_present_and_capped(self):
         profs = menubar.DEFAULT_PROFILES["profiles"]
         assert set(profs) == {"32gb", "64gb", "128gb", "512gb"}

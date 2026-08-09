@@ -626,6 +626,7 @@ from lib.models import (
     ALWAYS_EXCLUDE, active_params_b, model_matches_filter,
     MCP_PREFS_FILE as _MCP_PREFS_PATH, CLAUDE_CONFIG_FILE,
     validate_network_conf, DEFAULT_PROFILES, PROFILES_VERSION, migrate_profiles,
+    merge_profile_picks,
     warm_model_names,
 )
 MCP_PREFS_FILE = str(_MCP_PREFS_PATH)
@@ -969,7 +970,14 @@ def seed_profiles_if_missing():
         save_profiles({**DEFAULT_PROFILES})
         return True
     if data.get("version") != PROFILES_VERSION:
-        save_profiles(migrate_profiles(data))
+        migrated = migrate_profiles(data)
+        save_profiles(migrated)
+        # Refresh the prefs the pickers actually read. Rewriting presets alone
+        # is inert: mcp_preferences.json is consulted first, so a stale entry
+        # keeps winning and the corrected preset is never a candidate.
+        profile = (migrated.get("profiles") or {}).get(migrated.get("active"))
+        if profile:
+            save_mcp_prefs(merge_profile_picks(load_mcp_prefs(), profile))
         return True
     return False
 
