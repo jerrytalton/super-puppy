@@ -1313,3 +1313,79 @@ class TestInstallDs4GgufSizeVerification:
         assert "download failed" in result.stdout
         assert not good_path.exists()
         assert not failed_path.exists()
+
+
+class TestLiveCoverageGate:
+    """bin/check-live-coverage.py — refuses a release whose live layer skipped.
+
+    The suites that drive real Ollama/MLX/mflux calls skip when services are
+    down or models aren't pulled, and pytest exits 0 either way. v1.5.0
+    shipped a broken local_image through exactly that gap, so the gate has to
+    distinguish "verified" from "declined to verify".
+    """
+
+    SCRIPT = Path(__file__).resolve().parent.parent / "bin" / "check-live-coverage.py"
+
+    @staticmethod
+    def _report(tmp_path, cases):
+        """cases: list of (classname, skipped) -> junit xml path."""
+        parts = ['<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest">']
+        for i, (classname, skipped) in enumerate(cases):
+            body = "<skipped/>" if skipped else ""
+            parts.append(f'<testcase classname="{classname}" name="t{i}">{body}</testcase>')
+        parts.append("</testsuite></testsuites>")
+        path = tmp_path / "junit.xml"
+        path.write_text("".join(parts))
+        return path
+
+    def _run(self, report, *extra):
+        return subprocess.run(
+            [sys.executable, str(self.SCRIPT), str(report), *extra],
+            capture_output=True, text=True)
+
+    def test_passes_when_live_tests_executed(self, tmp_path):
+        report = self._report(tmp_path, [
+            ("tests.test_tools_correctness", False),
+            ("tests.test_tools_smoke_laptop", False),
+        ])
+        result = self._run(report)
+        assert result.returncode == 0, result.stderr
+        assert "2 live test(s) executed" in result.stdout
+
+    def test_fails_when_every_live_test_skipped(self, tmp_path):
+        """The v1.5.0 scenario: green suite, nothing actually verified."""
+        report = self._report(tmp_path, [
+            ("tests.test_tools_correctness", True),
+            ("tests.test_tools_smoke_laptop", True),
+            ("tests.test_profile_server", False),
+        ])
+        result = self._run(report)
+        assert result.returncode == 1
+        assert "0 live test(s) ran" in result.stderr
+
+    def test_unit_tests_alone_do_not_satisfy_the_gate(self, tmp_path):
+        """A full green unit suite proves nothing about a live backend."""
+        report = self._report(tmp_path, [
+            ("tests.test_profile_server", False),
+            ("tests.test_mcp_server", False),
+            ("tests.test_core", False),
+        ])
+        assert self._run(report).returncode == 1
+
+    def test_min_threshold_is_enforced(self, tmp_path):
+        report = self._report(tmp_path, [("tests.test_tools_correctness", False)])
+        assert self._run(report).returncode == 0
+        assert self._run(report, "--min", "5").returncode == 1
+
+    def test_missing_report_fails_closed(self, tmp_path):
+        result = self._run(tmp_path / "nope.xml")
+        assert result.returncode == 1
+        assert "no junit report" in result.stderr
+
+    def test_malformed_report_fails_closed(self, tmp_path):
+        """An unreadable gate result is not a pass."""
+        bad = tmp_path / "junit.xml"
+        bad.write_text("<testsuites><unclosed>")
+        result = self._run(bad)
+        assert result.returncode == 1
+        assert "unreadable" in result.stderr
