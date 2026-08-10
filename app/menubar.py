@@ -680,6 +680,19 @@ def get_version(ref="HEAD"):
         return "dev"
 
 
+_RELEASE_VERSION_RE = re.compile(r"^v\d+(?:\.\d+)*$")
+
+
+def is_release_version(version):
+    """Whether *version* names an exact release tag.
+
+    get_version() returns "v1.6.0" when HEAD sits exactly on a tag, and
+    "v1.6.0+3" when it is three commits past one. Only the former is a
+    release; "dev" and bare hashes are not.
+    """
+    return bool(_RELEASE_VERSION_RE.match(version or ""))
+
+
 def get_latest_remote_tag():
     """Return (tag_name, tag_hash) for the latest semver tag on origin.
 
@@ -1578,6 +1591,7 @@ class LocalModelsApp(rumps.App):
         self._update_defer_count = 0   # consecutive MCP idle deferrals
         self.app_version = get_version()
         self._launch_hash = self._get_head_hash()
+        self._warned_untagged_head = None  # dedupe the untagged-drift warning
         self.app_ready = False         # set True once run loop starts
         self._health_checked = False   # post-update health comparison done
         self._rolled_back = False      # set True if startup rollback fired
@@ -3331,6 +3345,20 @@ class LocalModelsApp(rumps.App):
             current_hash = self._get_head_hash()
             if current_hash and current_hash != self._launch_hash:
                 current_ver = get_version()
+                # Only ever restart onto an exact release tag. A checkout
+                # left on a branch moves HEAD on every push to it, and
+                # treating that as a release silently ships untagged,
+                # ungated code to the fleet: thistle rode main through
+                # v1.5.0+51, +52 and +54 in one afternoon this way.
+                if not is_release_version(current_ver):
+                    if getattr(self, "_warned_untagged_head", None) != current_hash:
+                        self._warned_untagged_head = current_hash
+                        logging.warning(
+                            "HEAD moved to untagged %s (%s) — not restarting. "
+                            "This checkout tracks a branch; detach it at a "
+                            "release tag to receive updates.",
+                            current_ver, current_hash[:8])
+                    return
                 logging.info("Code on disk changed since launch (%s → %s) — restarting",
                              self.app_version, current_ver)
                 remote_tag = current_ver

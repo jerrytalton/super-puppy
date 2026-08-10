@@ -98,6 +98,33 @@ def app_instance(update_dir):
 
 
 # ---------------------------------------------------------------------------
+# is_release_version
+# ---------------------------------------------------------------------------
+
+class TestIsReleaseVersion:
+    """The gate that keeps untagged code off the fleet.
+
+    Widening this predicate re-opens the bug it exists to close, so the
+    shapes get_version() actually emits are pinned here.
+    """
+
+    @pytest.mark.parametrize("version", ["v1.6.0", "v1.0.0", "v2.10.3", "v1"])
+    def test_exact_tags_are_releases(self, version):
+        assert menubar.is_release_version(version)
+
+    @pytest.mark.parametrize("version", [
+        "v1.5.0+51",   # the shape thistle rode onto untagged main
+        "v1.5.0+1",
+        "dev",         # no tags in the repo
+        "a1b2c3d",     # git describe --always fallback
+        "",
+        None,
+    ])
+    def test_everything_else_is_not(self, version):
+        assert not menubar.is_release_version(version)
+
+
+# ---------------------------------------------------------------------------
 # get_latest_remote_tag
 # ---------------------------------------------------------------------------
 
@@ -503,6 +530,40 @@ class TestCheckForUpdates:
             app_instance._check_for_updates()
 
         mock_update.assert_called_once_with("v2.0.0")
+
+    def test_drift_to_untagged_commit_does_not_update(self, app_instance, update_dir):
+        """Drift onto an untagged commit must never restart the app onto it.
+
+        A checkout left on a branch moves HEAD on every push to that branch,
+        and the drift path read that as a release: thistle auto-updated to
+        `v1.5.0+51`, then `+52`, then `+54` in one afternoon, running code
+        that had never been tagged or gated. Only exact release tags ship.
+        """
+        app_instance._update_defer_count = 0
+        with patch("app.menubar.check_repo_update_available",
+                    return_value=(0, "", "")), \
+             patch.object(app_instance, "_get_head_hash",
+                          return_value="untagged789"), \
+             patch("app.menubar.get_version", return_value="v1.5.0+51"), \
+             patch.object(app_instance, "_mcp_recently_active", return_value=False), \
+             patch.object(app_instance, "_auto_update") as mock_update:
+            app_instance._check_for_updates()
+
+        mock_update.assert_not_called()
+
+    def test_drift_to_exact_tag_still_updates(self, app_instance, update_dir):
+        """A manual checkout of a newer tag must still restart onto it."""
+        app_instance._update_defer_count = 0
+        with patch("app.menubar.check_repo_update_available",
+                    return_value=(0, "", "")), \
+             patch.object(app_instance, "_get_head_hash",
+                          return_value="taggedabc"), \
+             patch("app.menubar.get_version", return_value="v1.6.0"), \
+             patch.object(app_instance, "_mcp_recently_active", return_value=False), \
+             patch.object(app_instance, "_auto_update") as mock_update:
+            app_instance._check_for_updates()
+
+        mock_update.assert_called_once_with("v1.6.0")
 
     def test_no_drift_no_restart(self, app_instance, update_dir):
         """No remote update, HEAD unchanged — no action."""

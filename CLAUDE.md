@@ -63,6 +63,8 @@ The app fetches tags every 2 minutes. If a newer tagged release exists:
 
 Users only receive tagged releases, not every push to main. To cut a release, use `bin/release.sh vX.Y.Z` (gated on tests + cross-version compat, then signed, verified, and pushed) — see `docs/RELEASING.md`.
 
+The app also restarts when HEAD moves locally (a manual checkout of a newer tag), but **only onto an exact release tag** — `is_release_version()` gates it. A checkout left on a branch moves HEAD on every push to that branch; adopting those commits would ship untagged, ungated code, so the app logs a warning naming the untagged version and keeps running what it launched with. Dev checkouts that track a branch therefore need a manual restart to pick up work in progress.
+
 Crash rollback: if the app dies within 90 seconds of an update (`UPDATE_CRASH_WINDOW` in `app/menubar.py`), checks out the previous tag. Skipped releases aren't retried until a newer tag lands.
 
 Signature verification runs against the *existing* `allowed_signers` before any new trust root from the tag is installed — current trust root must approve the next one. Key rotations therefore have to ride a tag signed by the outgoing key.
