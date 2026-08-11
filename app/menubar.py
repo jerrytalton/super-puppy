@@ -693,6 +693,33 @@ def is_release_version(version):
     return bool(_RELEASE_VERSION_RE.match(version or ""))
 
 
+def is_launchd_supervised():
+    """Whether launchd will relaunch this process after a non-zero exit.
+
+    bin/local-models-menubar exports SP_SUPERVISED=1, and the LaunchAgent
+    is the only thing that runs it. An instance started by `open` — Finder,
+    or the Restart menu item — is a LaunchServices process with no
+    KeepAlive behind it, so exiting there is terminal rather than a restart.
+    """
+    return os.environ.get("SP_SUPERVISED") == "1"
+
+
+def relaunch_detached():
+    """Start a replacement instance that outlives this process.
+
+    The sleep lets us finish exiting first, so the new instance doesn't
+    lose the single-instance lock race against the one on its way out.
+    """
+    bundle = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "SuperPuppy.app")
+    subprocess.Popen(
+        ["bash", "-c", f"sleep 2 && open '{bundle}'"],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
 def get_latest_remote_tag():
     """Return (tag_name, tag_hash) for the latest semver tag on origin.
 
@@ -3533,7 +3560,15 @@ class LocalModelsApp(rumps.App):
             pass
         # Exit non-zero so launchd's KeepAlive restarts us on the new code.
         # os._exit bypasses atexit handlers to ensure a clean, fast exit.
-        logging.info("Exiting for restart (os._exit(1)) — launchd will relaunch")
+        # Without a supervisor that exit is one-way: nothing brings the app
+        # back, and the update markers stay on disk as the only evidence.
+        if is_launchd_supervised():
+            logging.info("Exiting for restart (os._exit(1)) — launchd will relaunch")
+        else:
+            logging.warning(
+                "Exiting for restart (os._exit(1)) but launchd is not "
+                "supervising this instance — relaunching it directly")
+            relaunch_detached()
         os._exit(1)
 
     def _mcp_code_changed(self, target_ref="origin/main"):
@@ -3729,7 +3764,6 @@ class LocalModelsApp(rumps.App):
 
     def restart_app(self, _):
         """Restart the entire app (re-exec the app bundle)."""
-        app_path = os.path.join(os.path.dirname(__file__), "SuperPuppy.app")
         # Clean up, then relaunch
         if self.profile_server and self.profile_server.poll() is None:
             self.profile_server.terminate()
@@ -3740,12 +3774,13 @@ class LocalModelsApp(rumps.App):
             os.unlink(lock_file)
         except FileNotFoundError:
             pass
-        subprocess.Popen(
-            ["bash", "-c", f"sleep 2 && open '{app_path}'"],
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        # Under launchd, quitting is enough: the C launcher always exits
+        # non-zero and KeepAlive brings us back, supervised. Opening the
+        # bundle as well would start a LaunchServices instance that races
+        # the supervised one for the lock — and if it won, every later
+        # update exit would be terminal, since nothing supervises it.
+        if not is_launchd_supervised():
+            relaunch_detached()
         from PyObjCTools import AppHelper
         AppHelper.callAfter(rumps.quit_application)
 

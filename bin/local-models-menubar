@@ -90,4 +90,12 @@ if [ -z "${MCP_AUTH_TOKEN:-}" ]; then
 fi
 export MCP_AUTH_TOKEN
 
+# ── Supervision marker ────────────────────────────────────────────
+# Only the LaunchAgent runs this script, so reaching here means launchd
+# owns the process and its KeepAlive will restart us on a non-zero exit.
+# `open`ing the bundle goes straight to the C launcher and skips this,
+# which is exactly the case the app needs to tell apart: an unsupervised
+# instance that exits to apply an update never comes back.
+export SP_SUPERVISED=1
+
 exec "$REPO_DIR/app/SuperPuppy.app/Contents/MacOS/super-puppy"

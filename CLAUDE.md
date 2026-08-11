@@ -67,6 +67,8 @@ The app also restarts when HEAD moves locally (a manual checkout of a newer tag)
 
 Crash rollback: if the app dies within 90 seconds of an update (`UPDATE_CRASH_WINDOW` in `app/menubar.py`), checks out the previous tag. Skipped releases aren't retried until a newer tag lands.
 
+Step 4 assumes launchd is supervising. `bin/local-models-menubar` (the only thing the LaunchAgent runs) exports `SP_SUPERVISED=1`; `open`ing the bundle goes straight to the C launcher and skips it, producing a LaunchServices instance with no `KeepAlive` behind it. `is_launchd_supervised()` gates the difference — unsupervised, the app calls `relaunch_detached()` before exiting, and Tools → Restart skips its `open` when supervised rather than orphaning itself. Exit 0 reaches launchd only via the `stay_down` marker (a deliberate Quit), because `app/super-puppy.c` returns 1 unconditionally.
+
 Signature verification runs against the *existing* `allowed_signers` before any new trust root from the tag is installed — current trust root must approve the next one. Key rotations therefore have to ride a tag signed by the outgoing key.
 
 ### Authentication

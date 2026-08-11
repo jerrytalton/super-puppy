@@ -72,7 +72,9 @@ Remaining `:8000` notes (not blocking any tool):
 
 ### Auto-Update: Remaining Items
 - **Heavy MCP user**: 10-minute max deferral may interrupt long inference jobs. Consider longer ceiling or smarter detection.
-- **`KeepAlive` policy**: `SuccessfulExit: false` means a clean exit (0) permanently kills the app. Consider `KeepAlive: true` with an intentional-quit marker.
+- **`post-update.sh` only reloads the LaunchAgent when `ProgramArguments` changes**, so edits to any other plist key (`KeepAlive`, `ProcessType`, …) sit on disk without launchd ever picking them up. Widen the comparison to the whole plist.
+
+~~**`KeepAlive` policy**: `SuccessfulExit: false` means a clean exit (0) permanently kills the app.~~ **Done** — the intentional-quit marker this asked for already exists (`stay_down`, added in `ad3ef7d`), and `app/super-puppy.c` ends in `return 1` unconditionally, so a Python-level `exit(0)` can never reach launchd as success. Exit 0 means a deliberate Quit and nothing else. Leaving this listed as open cost real debugging time on 2026-08-09.
 
 ### MCP Server Improvements
 - Add `/health` endpoint returning service status, model counts, memory pressure

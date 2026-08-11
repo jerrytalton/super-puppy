@@ -658,6 +658,49 @@ class TestAutoUpdate:
         assert len(post_update_ran) == 1
         mock_exit.assert_called_once_with(1)
 
+    def test_unsupervised_relaunches_itself_before_exiting(self, app_instance, update_dir):
+        """An app launchd isn't supervising must arrange its own comeback.
+
+        _auto_update ends in os._exit(1) on the assumption that KeepAlive
+        brings it back. An instance started by `open` — Finder, or the
+        Restart menu item — is a LaunchServices process with no KeepAlive,
+        so that exit is terminal. The desktop died exactly this way: it
+        exited to update at 15:49 and never returned, leaving
+        update_started and update_pre_hash stranded on disk.
+        """
+        with patch.dict(os.environ):
+            os.environ.pop("SP_SUPERVISED", None)
+            with patch("app.menubar.apply_repo_update", return_value=(True, "ok")), \
+                 patch("app.menubar.subprocess.run", return_value=_mock_run()), \
+                 patch("app.menubar.subprocess.Popen") as mock_popen, \
+                 patch.object(app_instance, "_get_head_hash", return_value="launch000"), \
+                 patch.object(app_instance, "_mcp_code_changed", return_value=False), \
+                 patch.object(app_instance, "_stop_mcp_server", create=True), \
+                 patch("os.path.isfile", return_value=False), \
+                 patch("os._exit") as mock_exit:
+                app_instance._auto_update("v2.0.0")
+
+        mock_exit.assert_called_once_with(1)
+        assert mock_popen.called, \
+            "unsupervised app exited for an update without arranging a relaunch"
+
+    def test_supervised_leaves_the_relaunch_to_launchd(self, app_instance, update_dir):
+        """Under launchd, KeepAlive restarts us — spawning a second
+        instance would race the supervised one for the lock."""
+        with patch.dict(os.environ, {"SP_SUPERVISED": "1"}), \
+             patch("app.menubar.apply_repo_update", return_value=(True, "ok")), \
+             patch("app.menubar.subprocess.run", return_value=_mock_run()), \
+             patch("app.menubar.subprocess.Popen") as mock_popen, \
+             patch.object(app_instance, "_get_head_hash", return_value="launch000"), \
+             patch.object(app_instance, "_mcp_code_changed", return_value=False), \
+             patch.object(app_instance, "_stop_mcp_server", create=True), \
+             patch("os.path.isfile", return_value=False), \
+             patch("os._exit") as mock_exit:
+            app_instance._auto_update("v2.0.0")
+
+        mock_exit.assert_called_once_with(1)
+        mock_popen.assert_not_called()
+
     def test_mcp_code_changed_uses_target_tag(self, app_instance, update_dir):
         """For tag updates (HEAD == launch hash), diff target is the new tag."""
         with patch("app.menubar.apply_repo_update", return_value=(True, "ok")), \
@@ -744,6 +787,42 @@ class TestAutoUpdate:
 
         mock_checkout.assert_not_called()
         mock_exit.assert_called_once_with(1)
+
+
+# ---------------------------------------------------------------------------
+# restart_app
+# ---------------------------------------------------------------------------
+
+class TestRestartApp:
+    """Tools → Restart must not turn a supervised app into an orphan.
+
+    `open` on the bundle runs Contents/MacOS/super-puppy directly, so the
+    new instance is a LaunchServices process outside the launchd job. Once
+    that instance is the surviving one, every later os._exit(1) is fatal.
+    """
+
+    def _run_restart(self, app_instance, mock_popen_ctx):
+        with patch.dict(sys.modules, {"PyObjCTools": MagicMock()}), \
+             patch.object(app_instance, "_stop_mcp_server", create=True), \
+             patch("os.unlink"), \
+             mock_popen_ctx as mock_popen:
+            app_instance.restart_app(None)
+        return mock_popen
+
+    def test_supervised_restart_does_not_spawn_a_second_instance(self, app_instance):
+        with patch.dict(os.environ, {"SP_SUPERVISED": "1"}):
+            mock_popen = self._run_restart(
+                app_instance, patch("app.menubar.subprocess.Popen"))
+        mock_popen.assert_not_called()
+
+    def test_unsupervised_restart_spawns_relaunch(self, app_instance):
+        """Started by hand, nothing else will bring it back — so it must
+        launch its replacement itself."""
+        with patch.dict(os.environ):
+            os.environ.pop("SP_SUPERVISED", None)
+            mock_popen = self._run_restart(
+                app_instance, patch("app.menubar.subprocess.Popen"))
+        assert mock_popen.called
 
 
 # ---------------------------------------------------------------------------
