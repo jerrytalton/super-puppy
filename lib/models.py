@@ -756,6 +756,20 @@ def warm_model_names(data: dict) -> set[str]:
     return {tasks[k] for k in warm_task_keys(name, prof) if k in tasks}
 
 
+def profile_ollama_models(profile: dict) -> set[str]:
+    """The Ollama tags a profile's task picks need pulled locally.
+
+    Same classification warm_ping_targets and install.sh use: an Ollama
+    tag always carries ':' — including namespaced ones like
+    "x/z-image-turbo:bf16" — while HF repo ids never do (huggingface_hub
+    rejects a colon) and bare names are MLX- or ds4-served.
+    """
+    return {
+        model for model in (profile.get("tasks") or {}).values()
+        if ":" in model
+    }
+
+
 # ── Active param computation ──────────────────────────────────────────
 
 _AXB_PATTERN = re.compile(r"[_-]A(\d+(?:\.\d+)?)B", re.IGNORECASE)

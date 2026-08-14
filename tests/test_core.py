@@ -454,6 +454,85 @@ class TestDs4Menubar:
         assert menubar.DS4_STUCK_LOADING_S > 70
 
 
+class TestAutopull:
+    def test_profile_ollama_models_classifies_like_install_sh(self):
+        """Handing an HF repo id or an MLX/ds4 served-name to `ollama pull`
+        would 500 — ':' tags are Ollama's, colon-less names are not."""
+        from lib.models import DEFAULT_PROFILES, profile_ollama_models
+        prof = DEFAULT_PROFILES["profiles"]["128gb"]
+        assert profile_ollama_models(prof) == {
+            "qwen3-coder-next:latest", "qwen3.8:27b-mlx", "qwen3.8:27b",
+            "qwen3-embedding:8b", "dolphin3:8b",
+        }
+
+    def test_profile_ollama_models_namespaced_tag_is_ollamas(self):
+        """A namespaced Ollama tag ("x/z-image-turbo:bf16") carries both
+        ':' and '/' — install.sh and warm pings treat it as Ollama's, so
+        autopull must too or a namespaced pick never converges."""
+        from lib.models import profile_ollama_models
+        assert profile_ollama_models({"tasks": {
+            "unfiltered": "huihui_ai/dolphin3-abliterated:8b",
+            "image_gen": "black-forest-labs/FLUX.2-klein-4B",
+            "general": "qwen3.5-small",
+        }}) == {"huihui_ai/dolphin3-abliterated:8b"}
+
+    def test_profile_ollama_models_empty_profile(self):
+        from lib.models import profile_ollama_models
+        assert profile_ollama_models({}) == set()
+
+    def test_autopull_stream_handles_error_junk_and_success(self):
+        """A full-disk error line must return False without raising (it
+        feeds the retry cooldown), junk lines must be skipped, and only
+        Ollama's explicit success status may report a completed pull."""
+        import io
+        from unittest.mock import patch
+        import app.menubar as menubar
+
+        class Dummy:
+            _autopull_current = None
+
+        class FakeResp(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def run(lines):
+            resp = FakeResp(b"".join(l + b"\n" for l in lines))
+            with patch.object(menubar.urllib.request, "urlopen",
+                              return_value=resp):
+                return menubar.LocalModelsApp._autopull_stream(
+                    Dummy(), "http://localhost:1", "m:1")
+
+        assert run([
+            b"not json",
+            b'{"total": 100, "completed": 50, "status": "pulling"}',
+            b'{"status": "success"}',
+        ]) is True
+        assert run([b'{"error": "no space left on device"}']) is False
+        assert run([b'{"total": 10, "completed": 10}']) is False
+
+    def test_autopull_due_skips_installed_and_cooling_failures(self):
+        """A full disk or dead network must not retry-storm: a recent
+        failure waits out the cooldown, a stale one is retried, and an
+        installed model is never pulled again."""
+        import app.menubar as menubar
+        now = 100_000.0
+        due = menubar.autopull_due(
+            needed={"a:1", "b:1", "c:1", "d:1"},
+            installed={"b:1"},
+            failed_at={"c:1": now - 60, "d:1": now - 7200},
+            now=now,
+        )
+        assert due == ["a:1", "d:1"]
+
+    def test_autopull_due_nothing_missing(self):
+        import app.menubar as menubar
+        assert menubar.autopull_due(
+            needed={"a:1"}, installed={"a:1"}, failed_at={}, now=0.0) == []
+
+
 class TestModelHasVision:
     def test_model_info_vision_keys_signal_vision(self):
         """GGUF vision models carry the vision tower; Ollama exposes it

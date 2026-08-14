@@ -627,7 +627,7 @@ from lib.models import (
     MCP_PREFS_FILE as _MCP_PREFS_PATH, CLAUDE_CONFIG_FILE,
     validate_network_conf, DEFAULT_PROFILES, PROFILES_VERSION, migrate_profiles,
     merge_profile_picks,
-    warm_model_names,
+    warm_model_names, profile_ollama_models,
 )
 MCP_PREFS_FILE = str(_MCP_PREFS_PATH)
 
@@ -983,6 +983,27 @@ def ping_warm(targets, ollama_port, mlx_port):
         except Exception as e:
             logging.debug("keep-warm ping failed for %s: %s", model, e)
     return stats
+
+
+AUTOPULL_RETRY_S = 3600
+
+
+def autopull_due(needed, installed, failed_at, now, retry_s=AUTOPULL_RETRY_S):
+    """Missing Ollama tags worth pulling now.
+
+    Skips anything that failed within the cooldown so a full disk or dead
+    network can't retry-storm, while a long-running app still converges
+    (auto-update restarts are the only other retry opportunity).
+    """
+    due = []
+    for model in sorted(needed):
+        if model in installed:
+            continue
+        failed = failed_at.get(model)
+        if failed is not None and now - failed < retry_s:
+            continue
+        due.append(model)
+    return due
 
 
 def save_profiles(data):
@@ -1567,6 +1588,13 @@ def build_heartbeat_payload(machine, version, mode, summary, audit):
 
 
 class LocalModelsApp(rumps.App):
+    # Class-level defaults so the autopull thread-guard check and the menu
+    # read stay safe on partially-constructed instances (tests build via
+    # object.__new__ and never run the worker itself).
+    _autopull_thread = None
+    _autopull_current = None    # (model, pct) while a pull is running
+    _autopull_lock = threading.Lock()
+
     def __init__(self):
         icon = ICON_PATH if os.path.exists(ICON_PATH) else None
         super().__init__("Local Models", icon=icon, template=True,
@@ -1716,6 +1744,7 @@ class LocalModelsApp(rumps.App):
         self.timer.start()
         self.warm_timer = rumps.Timer(self._on_warm_tick, 240)
         self.warm_timer.start()
+        self._autopull_failed_at = {}   # model -> time.time() of last failure
         self.heartbeat_timer = rumps.Timer(self._on_heartbeat_tick, 900)
         self.heartbeat_timer.start()
         threading.Timer(30, lambda: self._on_heartbeat_tick(None)).start()
@@ -1737,6 +1766,7 @@ class LocalModelsApp(rumps.App):
         """Keep the active profile's warm models resident (re-ping before idle unload)."""
         if self.mode not in ("server", "offline") or not self.servers_started:
             return
+        self._maybe_autopull()
         targets = warm_ping_targets(load_profiles(),
                                     mlx_served=set(self.mlx_config_info))
         if not targets:
@@ -1744,6 +1774,80 @@ class LocalModelsApp(rumps.App):
         threading.Thread(target=ping_warm,
                          args=(targets, self.ollama_port, self.mlx_port),
                          daemon=True).start()
+
+    def _maybe_autopull(self):
+        """Kick the serial background puller unless one is already running.
+
+        Closes the auto-update gap: a release that repoints profile picks
+        (PROFILES_VERSION bump) restarts the app onto new presets, but
+        nothing else ever downloads the weights — keep-warm would target
+        an un-pulled tag forever. install.sh only pulls on fresh installs.
+        """
+        with self._autopull_lock:
+            t = self._autopull_thread
+            if t and t.is_alive():
+                return
+            self._autopull_thread = threading.Thread(
+                target=self._autopull_worker, daemon=True)
+            self._autopull_thread.start()
+
+    def _autopull_worker(self):
+        base = f"http://localhost:{self.ollama_port}"
+        data = load_profiles()
+        profile = (data.get("profiles") or {}).get(data.get("active"))
+        if not profile:
+            return
+        installed = get_ollama_models(base)
+        if not installed:
+            # Can't distinguish "no models" from "Ollama down/starting";
+            # a live tier always has at least one tag, so wait for a
+            # healthy tick rather than pulling into the void.
+            return
+        due = autopull_due(profile_ollama_models(profile), set(installed),
+                           self._autopull_failed_at, time.time())
+        for name in due:
+            self._autopull_current = (name, 0)
+            logging.info("autopull: pulling %s", name)
+            try:
+                ok = self._autopull_stream(base, name)
+            except Exception as e:
+                logging.warning("autopull: %s failed: %s", name, e)
+                ok = False
+            if ok:
+                logging.info("autopull: %s complete", name)
+            else:
+                self._autopull_failed_at[name] = time.time()
+            self._autopull_current = None
+
+    def _autopull_stream(self, base_url, name):
+        """One streaming /api/pull. Returns True only on Ollama's explicit
+        success status; logs progress every ~10%."""
+        body = json.dumps({"name": name, "stream": True}).encode()
+        req = urllib.request.Request(f"{base_url}/api/pull", data=body,
+                                     method="POST")
+        req.add_header("Content-Type", "application/json")
+        last_decile = -1
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            for line in resp:
+                try:
+                    chunk = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if chunk.get("error"):
+                    logging.warning("autopull: %s failed: %s",
+                                    name, chunk["error"])
+                    return False
+                total = chunk.get("total")
+                completed = chunk.get("completed")
+                if total and completed is not None:
+                    pct = int(completed * 100 / total)
+                    self._autopull_current = (name, pct)
+                    if pct // 10 > last_decile:
+                        last_decile = pct // 10
+                        logging.info("autopull: %s %d%%", name, pct)
+                if chunk.get("status") == "success":
+                    return True
+        return False
 
     def _fleet_report_target(self):
         """Resolve (url, token) for this machine's fleet heartbeat POST.
@@ -1805,6 +1909,8 @@ class LocalModelsApp(rumps.App):
             else:
                 self._refresh_client_mode()
         self._main_thread_update()
+        if self.mode in ("server", "offline"):
+            self._maybe_autopull()
 
     def _provision_mcp_token_env(self):
         """Publish SP_MCP_TOKEN into the GUI login session so GUI-launched
@@ -2791,7 +2897,11 @@ class LocalModelsApp(rumps.App):
                 and time.time() - getattr(self, '_last_restart_attempt', 0) < 120)
             down_detail = "restarting…" if restart_pending else "down"
 
-            if self.ollama_ok:
+            pulling = getattr(self, "_autopull_current", None)
+            if self.ollama_ok and pulling:
+                self._styled_menu(self.menu_ollama, GRN, "Ollama",
+                                  f"pulling {pulling[0]} {pulling[1]}%")
+            elif self.ollama_ok:
                 self._styled_menu(self.menu_ollama, GRN, "Ollama",
                                   f"{ollama_n} models")
             elif ollama_loading:
