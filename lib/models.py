@@ -409,16 +409,23 @@ def model_has_vision(
     name: str,
     *,
     ollama_model_info: dict | None = None,
+    ollama_projector_info: dict | None = None,
     hf_config: dict | None = None,
 ) -> bool:
     """Single source of truth: does this model have a working vision tower?
 
-    Checks four signals in order, any one is sufficient:
+    Checks five signals in order, any one is sufficient:
 
     1. Ollama model_info contains a "vision" architecture key (e.g.
        `qwen35.vision.embedding_length`, `qwen2vl.vision.image_size`).
        These keys are present only when the vision encoder weights are
        actually in the model — they are the reliable signal.
+    1b. Ollama /api/show `projector_info` declares a vision encoder.
+       Ollama ≥0.32 ships some models' vision encoders as a separate
+       projector blob (qwen3.8's is an 888MB mmproj layer), so their
+       model_info carries zero `*.vision.*` keys and the signal moves
+       here (`clip.has_vision_encoder`, `clip.vision.*`). Tower-less
+       tags return projector_info: null, so this stays honest.
     2. HF config.json declares a `vision_config` block, either at the
        top level or nested under `text_config` (Qwen3.5 family).
     3. HF config.json's `architectures` list contains a known
@@ -450,6 +457,13 @@ def model_has_vision(
             if "vision" in k:
                 return True
             if k == "capabilities" and isinstance(v, list) and "vision" in v:
+                return True
+
+    if ollama_projector_info:
+        for k, v in ollama_projector_info.items():
+            if k == "clip.has_vision_encoder" and v:
+                return True
+            if "vision" in k:
                 return True
 
     if hf_config:

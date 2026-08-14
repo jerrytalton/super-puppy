@@ -484,6 +484,37 @@ class TestModelHasVision:
         assert model_has_vision("qwen3-vl:7b")
         assert not model_has_vision("nemotron:9b")
 
+    def test_projector_info_signals_vision(self):
+        """Ollama ≥0.32 ships some vision encoders as a separate projector
+        blob (qwen3.8): model_info has zero vision keys and the honest
+        signal moves to /api/show's projector_info block (verified live,
+        Ollama 0.32.12 — qwen3.8:27b described a test image correctly)."""
+        from lib.models import model_has_vision
+        assert model_has_vision(
+            "qwen3.8:27b",
+            ollama_model_info={"qwen35.context_length": 262144},
+            ollama_projector_info={
+                "clip.has_vision_encoder": True,
+                "clip.projector_type": "qwen3vl_merger",
+            },
+        )
+
+    def test_absent_or_non_vision_projector_is_not_vision(self):
+        """Tower-less tags return projector_info: null — the lying
+        capabilities array still must not win. A non-vision projector
+        (e.g. a future audio mmproj) must not count either."""
+        from lib.models import model_has_vision
+        assert not model_has_vision(
+            "qwen3.6:27b-mlx",
+            ollama_model_info={"qwen35.context_length": 262144},
+            ollama_projector_info=None,
+        )
+        assert not model_has_vision(
+            "some-audio:7b",
+            ollama_model_info={},
+            ollama_projector_info={"clip.has_audio_encoder": True},
+        )
+
 
 class TestMlxVlmDispatch:
     _SAMPLE = (

@@ -1027,7 +1027,9 @@ def _fetch_ollama_models():
             if k.endswith(".context_length"):
                 ctx = int(v)
                 break
-        has_vision = _model_has_vision(name, ollama_model_info=mi)
+        has_vision = _model_has_vision(
+            name, ollama_model_info=mi,
+            ollama_projector_info=show.get("projector_info"))
 
         if not total_b and disk_bytes:
             total_b = disk_bytes / 2e9  # ~0.5 bytes per param at 4-bit

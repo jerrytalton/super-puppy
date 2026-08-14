@@ -399,7 +399,9 @@ async def discover_models():
                     )
                     mi = show.json().get("model_info", {})
                     family = show.json().get("details", {}).get("family", "")
-                    has_vision = model_has_vision(name, ollama_model_info=mi)
+                    has_vision = model_has_vision(
+                        name, ollama_model_info=mi,
+                        ollama_projector_info=show.json().get("projector_info"))
                     for k, v in mi.items():
                         if k.endswith(".context_length"):
                             ctx = int(v)
