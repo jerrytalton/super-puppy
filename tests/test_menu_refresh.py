@@ -62,10 +62,12 @@ def _bare_app(**overrides):
     inst._last_restart_attempt = 0
     inst.desktop_ip = ""
     inst.desktop_fqdn = ""
+    inst.conf = {}
     for attr in ("menu_status", "menu_remote_access", "menu_profiles",
                  "menu_ollama", "menu_mlx", "menu_ds4", "menu_mcp",
                  "menu_ollama_restart", "menu_mlx_restart",
                  "menu_ds4_restart", "menu_mcp_restart",
+                 "menu_ollama_cancel_pull", "menu_autopull_toggle",
                  "menu_version", "menu_mode_remote", "menu_mode_local",
                  "menu_tools_sub", "menu_playground", "menu_quit"):
         setattr(inst, attr, MagicMock())

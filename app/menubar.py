@@ -627,7 +627,7 @@ from lib.models import (
     MCP_PREFS_FILE as _MCP_PREFS_PATH, CLAUDE_CONFIG_FILE,
     validate_network_conf, DEFAULT_PROFILES, PROFILES_VERSION, migrate_profiles,
     merge_profile_picks,
-    warm_model_names, profile_ollama_models,
+    warm_model_names, profile_ollama_models, set_network_conf_value,
 )
 MCP_PREFS_FILE = str(_MCP_PREFS_PATH)
 
@@ -1671,6 +1671,9 @@ class LocalModelsApp(rumps.App):
         self.menu_mode_local = rumps.MenuItem(
             "Local", callback=self._select_local)
         self.menu_ollama = rumps.MenuItem("Ollama …")
+        self.menu_ollama_cancel_pull = rumps.MenuItem("Cancel Download",
+                                                      callback=None)
+        self.menu_ollama.add(self.menu_ollama_cancel_pull)
         self.menu_ollama_restart = rumps.MenuItem(
             "Restart Ollama", callback=self._restart_ollama)
         self.menu_ollama.add(self.menu_ollama_restart)
@@ -1700,6 +1703,9 @@ class LocalModelsApp(rumps.App):
                                               callback=self.open_audit))
         self.menu_tools_sub.add(rumps.MenuItem("Diagnostics",
                                               callback=self.open_diagnostics))
+        self.menu_autopull_toggle = rumps.MenuItem(
+            "Auto-Download Models", callback=self._toggle_autopull)
+        self.menu_tools_sub.add(self.menu_autopull_toggle)
         self.menu_tools_sub.add(None)
         self.menu_tools_sub.add(rumps.MenuItem("Restart",
                                               callback=self.restart_app))
@@ -1745,6 +1751,7 @@ class LocalModelsApp(rumps.App):
         self.warm_timer = rumps.Timer(self._on_warm_tick, 240)
         self.warm_timer.start()
         self._autopull_failed_at = {}   # model -> time.time() of last failure
+        self._autopull_cancel = threading.Event()
         # Downloads are tens of GB — the user is told when one starts and
         # how it ended. Once per model per app run: hourly cooldown retries
         # of a stuck pull (full disk) must not re-notify forever.
@@ -1780,6 +1787,19 @@ class LocalModelsApp(rumps.App):
                          args=(targets, self.ollama_port, self.mlx_port),
                          daemon=True).start()
 
+    def _toggle_autopull(self, _):
+        enabled = str(self.conf.get("AUTO_PULL", "true")).lower() != "false"
+        new_value = "false" if enabled else "true"
+        set_network_conf_value("AUTO_PULL", new_value)
+        self.conf["AUTO_PULL"] = new_value
+        if new_value == "false":
+            # Off means off: stop an in-flight batch too.
+            self._autopull_cancel.set()
+        self._update_menu()
+
+    def _cancel_autopull(self, _):
+        self._autopull_cancel.set()
+
     def _maybe_autopull(self):
         """Kick the serial background puller unless one is already running.
 
@@ -1788,6 +1808,8 @@ class LocalModelsApp(rumps.App):
         nothing else ever downloads the weights — keep-warm would target
         an un-pulled tag forever. install.sh only pulls on fresh installs.
         """
+        if str(self.conf.get("AUTO_PULL", "true")).lower() == "false":
+            return
         with self._autopull_lock:
             t = self._autopull_thread
             if t and t.is_alive():
@@ -1821,6 +1843,11 @@ class LocalModelsApp(rumps.App):
                 "in the background (progress on the Ollama menu row).")
         pulled, failed = [], []
         for name in due:
+            if self._autopull_cancel.is_set():
+                # Canceled: cool down the rest of the batch too, so the
+                # next warm tick doesn't immediately restart it.
+                self._autopull_failed_at[name] = time.time()
+                continue
             self._autopull_current = (name, 0)
             logging.info("autopull: pulling %s", name)
             try:
@@ -1833,8 +1860,16 @@ class LocalModelsApp(rumps.App):
                 pulled.append(name)
             else:
                 self._autopull_failed_at[name] = time.time()
-                failed.append(name)
+                if not self._autopull_cancel.is_set():
+                    failed.append(name)
             self._autopull_current = None
+        if self._autopull_cancel.is_set():
+            self._autopull_cancel.clear()
+            logging.info("autopull: canceled by user")
+            rumps.notification(
+                "Super Puppy", "Downloads canceled",
+                "Remaining models retry in an hour — turn off "
+                "Auto-Download Models to stop for good.")
         if pulled:
             rumps.notification("Super Puppy", "Models ready",
                                ", ".join(pulled))
@@ -1857,6 +1892,11 @@ class LocalModelsApp(rumps.App):
         last_decile = -1
         with urllib.request.urlopen(req, timeout=300) as resp:
             for line in resp:
+                if self._autopull_cancel.is_set():
+                    # Closing the response drops the connection; Ollama
+                    # aborts the pull and keeps partial blobs for resume.
+                    logging.info("autopull: %s canceled", name)
+                    return False
                 try:
                     chunk = json.loads(line)
                 except json.JSONDecodeError:
@@ -2904,6 +2944,8 @@ class LocalModelsApp(rumps.App):
                 self.menu_remote_access.title = "\u274c Remote Access"
 
         self._styled_menu(self.menu_profiles, "", "Models", profile)
+        self.menu_autopull_toggle.state = (
+            str(self.conf.get("AUTO_PULL", "true")).lower() != "false")
 
         # ── Per-service status lines ──
         ollama_loading = getattr(self, 'ollama_loading', False)
@@ -2926,6 +2968,11 @@ class LocalModelsApp(rumps.App):
             down_detail = "restarting…" if restart_pending else "down"
 
             pulling = getattr(self, "_autopull_current", None)
+            if pulling:
+                self.menu_ollama_cancel_pull.show()
+                self.menu_ollama_cancel_pull.set_callback(self._cancel_autopull)
+            else:
+                self.menu_ollama_cancel_pull.hide()
             if self.ollama_ok and pulling:
                 self._styled_menu(self.menu_ollama, GRN, "Ollama",
                                   f"pulling {pulling[0]} {pulling[1]}%")

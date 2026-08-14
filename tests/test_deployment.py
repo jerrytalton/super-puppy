@@ -1164,6 +1164,7 @@ class TestWarmTickWiring:
         app = object.__new__(menubar.LocalModelsApp)
         app.mode = "server"
         app.servers_started = True
+        app.conf = {}
         app.ollama_port, app.mlx_port = "11434", "8000"
         app.mlx_config_info = {}
         with patch.object(menubar, "load_profiles", return_value={}), \

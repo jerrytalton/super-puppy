@@ -38,6 +38,7 @@ _NETWORK_DEFAULTS = {
     "OP_REF": "",
     "IS_SERVER": "false",
     "AUTO_UPDATE": "true",
+    "AUTO_PULL": "true",
 }
 
 _NUMERIC_KEYS = {"OLLAMA_PORT", "MLX_PORT", "DS4_PORT", "SERVER_RAM_GB",
@@ -107,6 +108,28 @@ def validate_network_conf(logger=None) -> list[str]:
             warn(f"{MCP_PREFS_FILE} is not valid JSON: {e}")
 
     return warnings
+
+
+def set_network_conf_value(key: str, value: str) -> None:
+    """Update or append one key in network.conf.
+
+    network.conf is hand-edited — every other line (comments included)
+    is preserved verbatim.
+    """
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    lines = (NETWORK_CONF.read_text().splitlines()
+             if NETWORK_CONF.exists() else [])
+    prefix = f"{key}="
+    out, replaced = [], False
+    for line in lines:
+        if line.strip().startswith(prefix):
+            out.append(f"{key}={value}")
+            replaced = True
+        else:
+            out.append(line)
+    if not replaced:
+        out.append(f"{key}={value}")
+    NETWORK_CONF.write_text("\n".join(out) + "\n")
 
 
 # ── Chat backends & ds4 ──────────────────────────────────────────────

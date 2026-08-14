@@ -485,11 +485,15 @@ class TestAutopull:
         feeds the retry cooldown), junk lines must be skipped, and only
         Ollama's explicit success status may report a completed pull."""
         import io
+        import threading
         from unittest.mock import patch
         import app.menubar as menubar
 
         class Dummy:
             _autopull_current = None
+
+            def __init__(self):
+                self._autopull_cancel = threading.Event()
 
         class FakeResp(io.BytesIO):
             def __enter__(self):
@@ -498,12 +502,15 @@ class TestAutopull:
             def __exit__(self, *a):
                 return False
 
-        def run(lines):
+        def run(lines, cancel=False):
+            d = Dummy()
+            if cancel:
+                d._autopull_cancel.set()
             resp = FakeResp(b"".join(l + b"\n" for l in lines))
             with patch.object(menubar.urllib.request, "urlopen",
                               return_value=resp):
                 return menubar.LocalModelsApp._autopull_stream(
-                    Dummy(), "http://localhost:1", "m:1")
+                    d, "http://localhost:1", "m:1")
 
         assert run([
             b"not json",
@@ -512,6 +519,44 @@ class TestAutopull:
         ]) is True
         assert run([b'{"error": "no space left on device"}']) is False
         assert run([b'{"total": 10, "completed": 10}']) is False
+        # A user cancel must win even over a success line still in flight.
+        assert run([b'{"status": "success"}'], cancel=True) is False
+
+    def test_maybe_autopull_respects_auto_pull_flag(self):
+        """AUTO_PULL=false must mean NO giant background downloads —
+        the user's opt-out, mirroring AUTO_UPDATE."""
+        from unittest.mock import patch
+        import app.menubar as menubar
+        app = object.__new__(menubar.LocalModelsApp)
+        app.conf = {"AUTO_PULL": "false"}
+        with patch.object(menubar.threading, "Thread") as mock_thread:
+            app._maybe_autopull()
+        mock_thread.assert_not_called()
+        app.conf = {}
+        with patch.object(menubar.threading, "Thread") as mock_thread:
+            app._maybe_autopull()
+        mock_thread.assert_called_once()
+
+    def test_set_network_conf_value_preserves_user_content(self, tmp_path, monkeypatch):
+        """network.conf is hand-edited: updating one key must not clobber
+        comments or other keys, and a missing key is appended."""
+        import lib.models as models
+        conf = tmp_path / "network.conf"
+        conf.write_text(
+            "# user comment\n"
+            'TAILSCALE_HOSTNAME="my-box"\n'
+            "AUTO_PULL=true\n"
+        )
+        monkeypatch.setattr(models, "NETWORK_CONF", conf)
+        monkeypatch.setattr(models, "CONFIG_DIR", tmp_path)
+        models.set_network_conf_value("AUTO_PULL", "false")
+        text = conf.read_text()
+        assert "# user comment" in text
+        assert 'TAILSCALE_HOSTNAME="my-box"' in text
+        assert "AUTO_PULL=false" in text
+        assert "AUTO_PULL=true" not in text
+        models.set_network_conf_value("NEW_KEY", "1")
+        assert "NEW_KEY=1" in conf.read_text()
 
     def test_autopull_due_skips_installed_and_cooling_failures(self):
         """A full disk or dead network must not retry-storm: a recent
