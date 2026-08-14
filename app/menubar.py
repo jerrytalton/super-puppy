@@ -623,7 +623,7 @@ def mcp_accepts_host(host_header: str, timeout: int = 2) -> bool:
 
 from lib.models import (
     STANDARD_TASKS, SPECIAL_TASKS, TASK_FILTERS, KNOWN_ACTIVE_PARAMS,
-    ALWAYS_EXCLUDE, active_params_b, model_matches_filter,
+    ALWAYS_EXCLUDE, active_params_b, model_matches_filter, model_has_vision,
     MCP_PREFS_FILE as _MCP_PREFS_PATH, CLAUDE_CONFIG_FILE,
     validate_network_conf, DEFAULT_PROFILES, PROFILES_VERSION, migrate_profiles,
     merge_profile_picks,
@@ -1182,7 +1182,9 @@ def query_ollama_model_detail(base_url, model_name, timeout=5):
             block_count=block_count or 0,
         )
 
-        has_vision = any("vision" in k for k in model_info)
+        has_vision = model_has_vision(
+            model_name, ollama_model_info=model_info,
+            ollama_projector_info=info.get("projector_info"))
 
         return {
             "total_params": round(total_b),

@@ -461,8 +461,14 @@ def model_has_vision(
 
     if ollama_projector_info:
         for k, v in ollama_projector_info.items():
-            if k == "clip.has_vision_encoder" and v:
-                return True
+            # An explicit encoder boolean decides for itself: mmproj
+            # metadata ships both encoder booleans, so an audio-only
+            # projector carries `clip.has_vision_encoder: False` — the
+            # key name alone must not count as a vision signal.
+            if k == "clip.has_vision_encoder":
+                if v:
+                    return True
+                continue
             if "vision" in k:
                 return True
 
@@ -552,11 +558,11 @@ TASK_FILTERS: dict[str, dict[str, Any]] = {
         "min_active_b": 3,
     },
     "general": {
-        "exclude_names": ["coder"] + ALWAYS_EXCLUDE,
+        "exclude_names": ["coder", "coding"] + ALWAYS_EXCLUDE,
         "min_active_b": 3,
     },
     "reasoning": {
-        "exclude_names": ["coder"] + ALWAYS_EXCLUDE,
+        "exclude_names": ["coder", "coding"] + ALWAYS_EXCLUDE,
         "min_active_b": 10,
     },
     "long_context": {
@@ -564,7 +570,7 @@ TASK_FILTERS: dict[str, dict[str, Any]] = {
         "min_ctx": 64000,
     },
     "translation": {
-        "exclude_names": ["coder"] + ALWAYS_EXCLUDE,
+        "exclude_names": ["coder", "coding"] + ALWAYS_EXCLUDE,
         "min_active_b": 3,
     },
 }

@@ -500,9 +500,13 @@ class TestModelHasVision:
         )
 
     def test_absent_or_non_vision_projector_is_not_vision(self):
-        """Tower-less tags return projector_info: null — the lying
+        """Encoder-less tags return projector_info: null, and detection
+        stays structural regardless of engine improvements — the
         capabilities array still must not win. A non-vision projector
-        (e.g. a future audio mmproj) must not count either."""
+        (a future audio mmproj) must not count either, even when it
+        carries an explicit `clip.has_vision_encoder: False` — llama.cpp
+        mmproj metadata routinely ships both encoder booleans, and the
+        key name alone contains "vision"."""
         from lib.models import model_has_vision
         assert not model_has_vision(
             "qwen3.6:27b-mlx",
@@ -513,6 +517,14 @@ class TestModelHasVision:
             "some-audio:7b",
             ollama_model_info={},
             ollama_projector_info={"clip.has_audio_encoder": True},
+        )
+        assert not model_has_vision(
+            "some-audio:7b",
+            ollama_model_info={},
+            ollama_projector_info={
+                "clip.has_vision_encoder": False,
+                "clip.has_audio_encoder": True,
+            },
         )
 
 
