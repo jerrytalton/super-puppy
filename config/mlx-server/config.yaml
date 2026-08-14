@@ -31,7 +31,7 @@ models:
   # generation path is broken by the mlx 0.31.2 thread-local-stream bug
   # (mlx-lm #1256) — VLM requests hang and RPC-timeout with no output
   # (verified with ui-venus on a clean server). As `lm` this serves text
-  # fine (verified, 4s). 32gb vision routes to GGUF qwen3.6:27b (Ollama).
+  # fine (verified, 4s). 32gb vision routes to GGUF qwen3.8:27b (Ollama).
   - model_path: mlx-community/Qwen3.5-9B-4bit
     model_type: lm
     served_model_name: qwen3.5-small
