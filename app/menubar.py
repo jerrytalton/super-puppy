@@ -1745,6 +1745,11 @@ class LocalModelsApp(rumps.App):
         self.warm_timer = rumps.Timer(self._on_warm_tick, 240)
         self.warm_timer.start()
         self._autopull_failed_at = {}   # model -> time.time() of last failure
+        # Downloads are tens of GB — the user is told when one starts and
+        # how it ended. Once per model per app run: hourly cooldown retries
+        # of a stuck pull (full disk) must not re-notify forever.
+        self._autopull_start_notified = set()
+        self._autopull_fail_notified = set()
         self.heartbeat_timer = rumps.Timer(self._on_heartbeat_tick, 900)
         self.heartbeat_timer.start()
         threading.Timer(30, lambda: self._on_heartbeat_tick(None)).start()
@@ -1805,6 +1810,16 @@ class LocalModelsApp(rumps.App):
             return
         due = autopull_due(profile_ollama_models(profile), set(installed),
                            self._autopull_failed_at, time.time())
+        if not due:
+            return
+        announce = [m for m in due if m not in self._autopull_start_notified]
+        if announce:
+            self._autopull_start_notified.update(announce)
+            rumps.notification(
+                "Super Puppy", "Downloading new models",
+                f"This profile's picks changed — pulling {', '.join(announce)} "
+                "in the background (progress on the Ollama menu row).")
+        pulled, failed = [], []
         for name in due:
             self._autopull_current = (name, 0)
             logging.info("autopull: pulling %s", name)
@@ -1815,9 +1830,22 @@ class LocalModelsApp(rumps.App):
                 ok = False
             if ok:
                 logging.info("autopull: %s complete", name)
+                pulled.append(name)
             else:
                 self._autopull_failed_at[name] = time.time()
+                failed.append(name)
             self._autopull_current = None
+        if pulled:
+            rumps.notification("Super Puppy", "Models ready",
+                               ", ".join(pulled))
+        new_failures = [m for m in failed
+                        if m not in self._autopull_fail_notified]
+        if new_failures:
+            self._autopull_fail_notified.update(new_failures)
+            rumps.notification(
+                "Super Puppy", "Model download failed",
+                f"{', '.join(new_failures)} — retrying hourly; "
+                "see Copy Diagnostics for details.")
 
     def _autopull_stream(self, base_url, name):
         """One streaming /api/pull. Returns True only on Ollama's explicit
