@@ -25,6 +25,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
+from pathlib import Path
 
 import objc
 import requests
@@ -627,7 +628,8 @@ from lib.models import (
     MCP_PREFS_FILE as _MCP_PREFS_PATH, CLAUDE_CONFIG_FILE,
     validate_network_conf, DEFAULT_PROFILES, PROFILES_VERSION, migrate_profiles,
     merge_profile_picks,
-    warm_model_names, profile_ollama_models, set_network_conf_value,
+    warm_model_names, profile_ollama_models, profile_hf_models,
+    set_network_conf_value,
 )
 MCP_PREFS_FILE = str(_MCP_PREFS_PATH)
 
@@ -986,6 +988,22 @@ def ping_warm(targets, ollama_port, mlx_port):
 
 
 AUTOPULL_RETRY_S = 3600
+HF_HUB_DIR = Path("~/.cache/huggingface/hub").expanduser()
+
+
+def hf_repo_cached(repo, hub_dir=None):
+    """True when the repo's snapshot is fully on disk.
+
+    A killed `hf download` leaves blobs/*.incomplete behind (and hf only
+    links snapshot files on completion), so any .incomplete means "not
+    cached" — treating it as cached would skip the re-pull forever and
+    the task would die at dispatch instead.
+    """
+    base = Path(hub_dir) if hub_dir else HF_HUB_DIR
+    d = base / ("models--" + repo.replace("/", "--"))
+    if not (d / "snapshots").is_dir() or not (d / "blobs").is_dir():
+        return False
+    return not any((d / "blobs").glob("*.incomplete"))
 
 
 def autopull_due(needed, installed, failed_at, now, retry_s=AUTOPULL_RETRY_S):
@@ -1824,14 +1842,19 @@ class LocalModelsApp(rumps.App):
         profile = (data.get("profiles") or {}).get(data.get("active"))
         if not profile:
             return
+        now = time.time()
         installed = get_ollama_models(base)
-        if not installed:
-            # Can't distinguish "no models" from "Ollama down/starting";
-            # a live tier always has at least one tag, so wait for a
-            # healthy tick rather than pulling into the void.
-            return
-        due = autopull_due(profile_ollama_models(profile), set(installed),
-                           self._autopull_failed_at, time.time())
+        # An empty tag list can't be told apart from "Ollama down or
+        # starting" (a live tier always has at least one tag), so Ollama
+        # pulls wait for a healthy tick. HF downloads don't need Ollama.
+        ollama_due = autopull_due(
+            profile_ollama_models(profile), set(installed),
+            self._autopull_failed_at, now) if installed else []
+        hf_needed = profile_hf_models(profile)
+        hf_due = autopull_due(
+            hf_needed, {r for r in hf_needed if hf_repo_cached(r)},
+            self._autopull_failed_at, now)
+        due = ollama_due + hf_due
         if not due:
             return
         announce = [m for m in due if m not in self._autopull_start_notified]
@@ -1840,7 +1863,7 @@ class LocalModelsApp(rumps.App):
             rumps.notification(
                 "Super Puppy", "Downloading new models",
                 f"This profile's picks changed — pulling {', '.join(announce)} "
-                "in the background (progress on the Ollama menu row).")
+                "in the background (progress in the menu).")
         pulled, failed = [], []
         for name in due:
             if self._autopull_cancel.is_set():
@@ -1848,10 +1871,12 @@ class LocalModelsApp(rumps.App):
                 # next warm tick doesn't immediately restart it.
                 self._autopull_failed_at[name] = time.time()
                 continue
-            self._autopull_current = (name, 0)
+            is_hf = "/" in name
+            self._autopull_current = (name, None if is_hf else 0)
             logging.info("autopull: pulling %s", name)
             try:
-                ok = self._autopull_stream(base, name)
+                ok = (self._autopull_hf(name) if is_hf
+                      else self._autopull_stream(base, name))
             except Exception as e:
                 logging.warning("autopull: %s failed: %s", name, e)
                 ok = False
@@ -1881,6 +1906,39 @@ class LocalModelsApp(rumps.App):
                 "Super Puppy", "Model download failed",
                 f"{', '.join(new_failures)} — retrying hourly; "
                 "see Copy Diagnostics for details.")
+
+    def _autopull_hf(self, repo):
+        """One `hf download`, with the xet fallback install.sh uses (the
+        xet backend fails on multi-GB files; the plain-HTTP retry resumes
+        from cached blobs). stderr goes to a log file, not a pipe — hf
+        streams progress constantly and a full pipe would deadlock it.
+        Polls the cancel event each second and terminates the download."""
+        log_path = f"/tmp/autopull_hf_{repo.replace('/', '_')}.log"
+        for env_extra in ({}, {"HF_HUB_DISABLE_XET": "1"}):
+            if self._autopull_cancel.is_set():
+                return False
+            with open(log_path, "ab") as log:
+                proc = subprocess.Popen(
+                    ["hf", "download", repo],
+                    stdout=log, stderr=log,
+                    env={**os.environ, **env_extra})
+                while True:
+                    try:
+                        proc.wait(timeout=1)
+                        break
+                    except subprocess.TimeoutExpired:
+                        if self._autopull_cancel.is_set():
+                            proc.terminate()
+                            try:
+                                proc.wait(timeout=10)
+                            except subprocess.TimeoutExpired:
+                                proc.kill()
+                            return False
+            if proc.returncode == 0:
+                return hf_repo_cached(repo)
+            logging.warning("autopull: hf download %s rc=%s (see %s)",
+                            repo, proc.returncode, log_path)
+        return False
 
     def _autopull_stream(self, base_url, name):
         """One streaming /api/pull. Returns True only on Ollama's explicit
@@ -2943,7 +3001,13 @@ class LocalModelsApp(rumps.App):
             else:
                 self.menu_remote_access.title = "\u274c Remote Access"
 
-        self._styled_menu(self.menu_profiles, "", "Models", profile)
+        hf_pull = getattr(self, "_autopull_current", None)
+        if hf_pull and "/" in hf_pull[0]:
+            self._styled_menu(
+                self.menu_profiles, "", "Models",
+                f"{profile} — downloading {hf_pull[0].split('/')[-1]}…")
+        else:
+            self._styled_menu(self.menu_profiles, "", "Models", profile)
         self.menu_autopull_toggle.state = (
             str(self.conf.get("AUTO_PULL", "true")).lower() != "false")
 
@@ -2973,7 +3037,7 @@ class LocalModelsApp(rumps.App):
                 self.menu_ollama_cancel_pull.set_callback(self._cancel_autopull)
             else:
                 self.menu_ollama_cancel_pull.hide()
-            if self.ollama_ok and pulling:
+            if self.ollama_ok and pulling and pulling[1] is not None:
                 self._styled_menu(self.menu_ollama, GRN, "Ollama",
                                   f"pulling {pulling[0]} {pulling[1]}%")
             elif self.ollama_ok:

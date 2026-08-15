@@ -480,6 +480,41 @@ class TestAutopull:
         from lib.models import profile_ollama_models
         assert profile_ollama_models({}) == set()
 
+    def test_profile_hf_models_is_the_install_sh_hf_set(self):
+        """HF repo picks (no ':', has '/') are what install.sh downloads
+        via `hf download` — image gen/edit, video, TTS. Ollama tags,
+        namespaced Ollama tags, and bare MLX/ds4 names must not leak in:
+        `hf download qwen3.8:27b` fails, and a namespaced Ollama tag
+        looks deceptively like a repo id."""
+        from lib.models import DEFAULT_PROFILES, profile_hf_models
+        prof = DEFAULT_PROFILES["profiles"]["128gb"]
+        assert profile_hf_models(prof) == {
+            "black-forest-labs/FLUX.2-klein-9B",
+            "AITRADER/Wan2.2-T2V-A14B-mlx-bf16",
+            "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
+        }
+        assert profile_hf_models({"tasks": {
+            "unfiltered": "huihui_ai/dolphin3-abliterated:8b",
+            "general": "qwen3.5-small",
+        }}) == set()
+
+    def test_hf_repo_cached_detects_partial_downloads(self, tmp_path):
+        """A killed `hf download` leaves *.incomplete blobs while the
+        snapshot tree can look plausible — treating that as 'cached'
+        would skip the pull forever and the task dies at dispatch
+        (seen live: machiabeli/Qwen-Image-2512-4bit-MLX, 79MB of a
+        multi-GB repo, 8 .incomplete blobs)."""
+        import app.menubar as menubar
+        repo = "org/model-9B"
+        d = tmp_path / "models--org--model-9B"
+        assert not menubar.hf_repo_cached(repo, hub_dir=tmp_path)
+        (d / "blobs").mkdir(parents=True)
+        (d / "snapshots" / "abc").mkdir(parents=True)
+        (d / "blobs" / "aaaa").write_bytes(b"x")
+        assert menubar.hf_repo_cached(repo, hub_dir=tmp_path)
+        (d / "blobs" / "bbbb.incomplete").write_bytes(b"x")
+        assert not menubar.hf_repo_cached(repo, hub_dir=tmp_path)
+
     def test_autopull_stream_handles_error_junk_and_success(self):
         """A full-disk error line must return False without raising (it
         feeds the retry cooldown), junk lines must be skipped, and only
