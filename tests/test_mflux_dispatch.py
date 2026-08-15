@@ -118,11 +118,13 @@ def test_mflux_edit_command(model_id, binary, base, image_flag, strength):
     assert "--model" in cmd.extra_args, "resolved model must reach the binary"
 
 
-def test_preset_image_edit_picks_route_to_flux2_edit():
-    """The 2026-08-15 bake-off retired Kontext as the preset: FLUX.2-edit
-    on klein-9B matched its quality at 2.6x the speed and 44% of the RAM,
-    and shares weights with the 128/512gb image_gen pick. A preset pick
-    that resolves back to the kontext fallback undoes that silently."""
+def test_preset_image_edit_picks_route_to_flux2_edit_4b():
+    """The 2026-08-15 bake-off retired Kontext as the preset, and the
+    corrected rerun (the first round's klein-9B runs were silently the
+    4B — see the --base-model-without---model trap in the playbook)
+    settled on klein-4B: quality indistinguishable from true 9B across
+    recolor/remove/add-sign at half the time (56s vs 106s) and RAM
+    (13.6GB vs 24GB), sharing weights with the 64gb gen pick."""
     from lib.models import DEFAULT_PROFILES
     picks = {name: prof["tasks"]["image_edit"]
              for name, prof in DEFAULT_PROFILES["profiles"].items()
@@ -132,6 +134,8 @@ def test_preset_image_edit_picks_route_to_flux2_edit():
         cmd = mflux_edit_command(pick)
         assert cmd.binary == "mflux-generate-flux2-edit", \
             f"{tier}: {pick!r} routes to {cmd.binary}"
+        assert "flux2-klein-4b" in cmd.extra_args, \
+            f"{tier}: {pick!r} resolves base {cmd.extra_args}"
 
 
 def test_edit_dispatch_does_not_reuse_the_generate_table():

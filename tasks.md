@@ -4,7 +4,9 @@
 
 **Last Known Good State:** Bake-off (3 edit tasks × Kontext / FLUX.2-edit klein-9B / Qwen-Image-Edit-2511-8bit, mflux 0.18.1) retired Kontext as the preset: flux2-edit matched its quality at 2.6× the speed and 13.6GB peak vs 31GB; qwen-edit re-synthesizes the whole frame through mflux (details in the model playbook, incl. "VLM judges confabulate edit-artifact grades — verify by eye"). All tiers' image_edit → `black-forest-labs/FLUX.2-klein-9B` (shares weights with 128/512gb image_gen; edit dispatch already existed via `mflux_edit_command`). mflux upgraded 0.17.4→0.18.1 (adds ERNIE, Ideogram 4, Krea-2 — gen-side bake-off NOT yet done). Unit suite 612 passed; live smoke + image-edit correctness green, output verified by eye.
 
-**Next Step:** Release (vX.Y.Z) when ready — fleet picks up PROFILES_VERSION 35; note machines need mflux ≥0.18 for the new gen binaries only (flux2-edit exists in 0.17). Consider a gen-side bake-off (Qwen-Image-2512 quants already in HF cache vs klein) and whether 64gb should use the untested klein-4B edit variant to avoid the extra 9B download.
+**Update (2026-08-15, corrected rerun):** the first edit bake-off's "klein-9B" runs were silently the 4B — mflux `--base-model` without `--model` ignores the variant (playbook entry added; md5-identical outputs proved it). True 9B (explicit `--model`): edit 106s/24GB, quality indistinguishable from 4B on all three cases. **image_edit → FLUX.2-klein-4B on all tiers (PROFILES_VERSION 36)** — the verified quality at half the cost, weight-shared with the 64gb gen pick. Gen-side bake-off done (klein-4B/9B corrected, Qwen-Image-2512-8bit): qwen wins photorealism detail but garbles text via mflux-8bit and costs 4× — **gen picks unchanged**. Auto-pull now covers HF repos too (PR #35).
+
+**Next Step:** Release (vX.Y.Z) — fleet picks up PROFILES_VERSION 36 + HF auto-pull; machines need mflux ≥0.17 for flux2-edit (all have it).
 
 ## Checkpoint (2026-08-14) — qwen3.8 adoption (branch `feat/qwen38-profiles`)
 
