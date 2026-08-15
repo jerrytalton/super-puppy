@@ -38,6 +38,7 @@ _NETWORK_DEFAULTS = {
     "OP_REF": "",
     "IS_SERVER": "false",
     "AUTO_UPDATE": "true",
+    "AUTO_PULL": "true",
 }
 
 _NUMERIC_KEYS = {"OLLAMA_PORT", "MLX_PORT", "DS4_PORT", "SERVER_RAM_GB",
@@ -107,6 +108,28 @@ def validate_network_conf(logger=None) -> list[str]:
             warn(f"{MCP_PREFS_FILE} is not valid JSON: {e}")
 
     return warnings
+
+
+def set_network_conf_value(key: str, value: str) -> None:
+    """Update or append one key in network.conf.
+
+    network.conf is hand-edited — every other line (comments included)
+    is preserved verbatim.
+    """
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    lines = (NETWORK_CONF.read_text().splitlines()
+             if NETWORK_CONF.exists() else [])
+    prefix = f"{key}="
+    out, replaced = [], False
+    for line in lines:
+        if line.strip().startswith(prefix):
+            out.append(f"{key}={value}")
+            replaced = True
+        else:
+            out.append(line)
+    if not replaced:
+        out.append(f"{key}={value}")
+    NETWORK_CONF.write_text("\n".join(out) + "\n")
 
 
 # ── Chat backends & ds4 ──────────────────────────────────────────────
@@ -409,16 +432,23 @@ def model_has_vision(
     name: str,
     *,
     ollama_model_info: dict | None = None,
+    ollama_projector_info: dict | None = None,
     hf_config: dict | None = None,
 ) -> bool:
     """Single source of truth: does this model have a working vision tower?
 
-    Checks four signals in order, any one is sufficient:
+    Checks five signals in order, any one is sufficient:
 
     1. Ollama model_info contains a "vision" architecture key (e.g.
        `qwen35.vision.embedding_length`, `qwen2vl.vision.image_size`).
        These keys are present only when the vision encoder weights are
        actually in the model — they are the reliable signal.
+    1b. Ollama /api/show `projector_info` declares a vision encoder.
+       Ollama ≥0.32 ships some models' vision encoders as a separate
+       projector blob (qwen3.8's is an 888MB mmproj layer), so their
+       model_info carries zero `*.vision.*` keys and the signal moves
+       here (`clip.has_vision_encoder`, `clip.vision.*`). Tower-less
+       tags return projector_info: null, so this stays honest.
     2. HF config.json declares a `vision_config` block, either at the
        top level or nested under `text_config` (Qwen3.5 family).
     3. HF config.json's `architectures` list contains a known
@@ -450,6 +480,19 @@ def model_has_vision(
             if "vision" in k:
                 return True
             if k == "capabilities" and isinstance(v, list) and "vision" in v:
+                return True
+
+    if ollama_projector_info:
+        for k, v in ollama_projector_info.items():
+            # An explicit encoder boolean decides for itself: mmproj
+            # metadata ships both encoder booleans, so an audio-only
+            # projector carries `clip.has_vision_encoder: False` — the
+            # key name alone must not count as a vision signal.
+            if k == "clip.has_vision_encoder":
+                if v:
+                    return True
+                continue
+            if "vision" in k:
                 return True
 
     if hf_config:
@@ -525,20 +568,24 @@ ALWAYS_EXCLUDE: list[str] = [
 
 TASK_FILTERS: dict[str, dict[str, Any]] = {
     "code": {
-        "priority_names": ["coder"],
+        # "coding" catches fine-tune tags like qwen3.6:27b-coding-mxfp8,
+        # which "coder" misses.
+        "priority_names": ["coder", "coding"],
+        # "qwen3" covers the whole line (3.5/3.6/3.8); ALWAYS_EXCLUDE
+        # still drops qwen3-vl / qwen3-embedding.
         "include_names": [
-            "qwen3.5", "deepseek", "cogito", "nemotron",
-            "gpt-oss", "llama3.3", "glm",
+            "qwen3", "deepseek", "cogito", "nemotron",
+            "gpt-oss", "llama3.3", "glm", "muse-glimmer",
         ],
         "exclude_names": ALWAYS_EXCLUDE,
         "min_active_b": 3,
     },
     "general": {
-        "exclude_names": ["coder"] + ALWAYS_EXCLUDE,
+        "exclude_names": ["coder", "coding"] + ALWAYS_EXCLUDE,
         "min_active_b": 3,
     },
     "reasoning": {
-        "exclude_names": ["coder"] + ALWAYS_EXCLUDE,
+        "exclude_names": ["coder", "coding"] + ALWAYS_EXCLUDE,
         "min_active_b": 10,
     },
     "long_context": {
@@ -546,7 +593,7 @@ TASK_FILTERS: dict[str, dict[str, Any]] = {
         "min_ctx": 64000,
     },
     "translation": {
-        "exclude_names": ["coder"] + ALWAYS_EXCLUDE,
+        "exclude_names": ["coder", "coding"] + ALWAYS_EXCLUDE,
         "min_active_b": 3,
     },
 }
@@ -562,7 +609,7 @@ TASK_FILTERS: dict[str, dict[str, Any]] = {
 # max_ram_gb cap gates model-pull validation in install.sh and the profile
 # server. The active default is 64gb (fits M5 / mid GPU class).
 
-PROFILES_VERSION = 33  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 34  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -582,8 +629,10 @@ DEFAULT_PROFILES = {
                 # qwen3.5-small can't serve vision: mlx-openai-server's
                 # multimodal (VLM) path is broken by the mlx 0.31.2 stream
                 # bug (generation hangs, mlx-lm #1256). Vision routes to the
-                # GGUF tag that works. ~17GB, loaded on demand for vision.
-                "vision": "qwen3.6:27b",
+                # GGUF tag that works — qwen3.8:27b ships its encoder as a
+                # separate projector blob (detected via /api/show
+                # projector_info). ~17GB, loaded on demand for vision.
+                "vision": "qwen3.8:27b",
                 "transcription": "whisper-v3-turbo",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
                 "embedding": "embeddinggemma:300m",
@@ -604,11 +653,11 @@ DEFAULT_PROFILES = {
             "warm": ["general", "embedding"],
             "tasks": {
                 "code": "qwen3.6:27b-coding-mxfp8",
-                "general": "qwen3.6:27b-mlx",
-                "reasoning": "qwen3.6:27b-mlx",
-                "long_context": "qwen3.6:27b-mlx",
-                "translation": "qwen3.6:27b-mlx",
-                "vision": "qwen3.6:27b",
+                "general": "qwen3.8:27b-mlx",
+                "reasoning": "qwen3.8:27b-mlx",
+                "long_context": "qwen3.8:27b-mlx",
+                "translation": "qwen3.8:27b-mlx",
+                "vision": "qwen3.8:27b",
                 "transcription": "whisper-v3-turbo",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
                 "embedding": "qwen3-embedding:8b",
@@ -628,17 +677,16 @@ DEFAULT_PROFILES = {
             "warm": ["general", "embedding"],
             "tasks": {
                 "code": "qwen3-coder-next:latest",
-                # Text tasks share qwen3.6:27b-mlx (not -mlx-bf16): the bf16
-                # tag's ~54GB footprint got evicted/reloaded under concurrent
-                # image+video+MLX load, corrupting context (it echoed a prior
-                # request's system prompt). The -mlx quant is ~half the RAM,
-                # relieving that pressure, and avoids the -mlx-bf16 family this
-                # repo already flags as unreliable. Same tag the 64gb tier uses.
-                "general": "qwen3.6:27b-mlx",
-                "reasoning": "qwen3.6:27b-mlx",
-                "long_context": "qwen3.6:27b-mlx",
-                "translation": "qwen3.6:27b-mlx",
-                "vision": "qwen3.6:27b",
+                # Text tasks share the ~18GB -mlx quant, not -mlx-bf16: the
+                # bf16 tag's ~54GB footprint got evicted/reloaded under
+                # concurrent image+video+MLX load, corrupting context (it
+                # echoed a prior request's system prompt, observed on
+                # qwen3.6:27b-mlx-bf16). Same tag the 64gb tier uses.
+                "general": "qwen3.8:27b-mlx",
+                "reasoning": "qwen3.8:27b-mlx",
+                "long_context": "qwen3.8:27b-mlx",
+                "translation": "qwen3.8:27b-mlx",
+                "vision": "qwen3.8:27b",
                 "transcription": "whisper-v3-turbo",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
                 "embedding": "qwen3-embedding:8b",
@@ -660,10 +708,11 @@ DEFAULT_PROFILES = {
                 "reasoning": "glm-5.2",
                 "long_context": "glm-5.2",
                 "translation": "glm-5.2",
-                # Dense qwen3.6:27b beats the 35B-A3B MoE on vision benchmarks
-                # (MMMU 82.9 vs 81.7) and actually serves images end-to-end;
-                # the prior qwen3.5:122b pick wasn't even a served model.
-                "vision": "qwen3.6:27b",
+                # A dense 27B GGUF (formerly qwen3.6:27b, now qwen3.8:27b)
+                # beats the 35B-A3B MoE on vision benchmarks and actually
+                # serves images end-to-end; the prior qwen3.5:122b pick
+                # wasn't even a served model.
+                "vision": "qwen3.8:27b",
                 "transcription": "whisper-v3-turbo",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
                 "embedding": "qwen3-embedding:8b",
@@ -728,6 +777,20 @@ def warm_model_names(data: dict) -> set[str]:
         return set()
     tasks = prof.get("tasks", {})
     return {tasks[k] for k in warm_task_keys(name, prof) if k in tasks}
+
+
+def profile_ollama_models(profile: dict) -> set[str]:
+    """The Ollama tags a profile's task picks need pulled locally.
+
+    Same classification warm_ping_targets and install.sh use: an Ollama
+    tag always carries ':' — including namespaced ones like
+    "x/z-image-turbo:bf16" — while HF repo ids never do (huggingface_hub
+    rejects a colon) and bare names are MLX- or ds4-served.
+    """
+    return {
+        model for model in (profile.get("tasks") or {}).values()
+        if ":" in model
+    }
 
 
 # ── Active param computation ──────────────────────────────────────────

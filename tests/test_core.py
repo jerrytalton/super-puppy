@@ -454,6 +454,130 @@ class TestDs4Menubar:
         assert menubar.DS4_STUCK_LOADING_S > 70
 
 
+class TestAutopull:
+    def test_profile_ollama_models_classifies_like_install_sh(self):
+        """Handing an HF repo id or an MLX/ds4 served-name to `ollama pull`
+        would 500 — ':' tags are Ollama's, colon-less names are not."""
+        from lib.models import DEFAULT_PROFILES, profile_ollama_models
+        prof = DEFAULT_PROFILES["profiles"]["128gb"]
+        assert profile_ollama_models(prof) == {
+            "qwen3-coder-next:latest", "qwen3.8:27b-mlx", "qwen3.8:27b",
+            "qwen3-embedding:8b", "dolphin3:8b",
+        }
+
+    def test_profile_ollama_models_namespaced_tag_is_ollamas(self):
+        """A namespaced Ollama tag ("x/z-image-turbo:bf16") carries both
+        ':' and '/' — install.sh and warm pings treat it as Ollama's, so
+        autopull must too or a namespaced pick never converges."""
+        from lib.models import profile_ollama_models
+        assert profile_ollama_models({"tasks": {
+            "unfiltered": "huihui_ai/dolphin3-abliterated:8b",
+            "image_gen": "black-forest-labs/FLUX.2-klein-4B",
+            "general": "qwen3.5-small",
+        }}) == {"huihui_ai/dolphin3-abliterated:8b"}
+
+    def test_profile_ollama_models_empty_profile(self):
+        from lib.models import profile_ollama_models
+        assert profile_ollama_models({}) == set()
+
+    def test_autopull_stream_handles_error_junk_and_success(self):
+        """A full-disk error line must return False without raising (it
+        feeds the retry cooldown), junk lines must be skipped, and only
+        Ollama's explicit success status may report a completed pull."""
+        import io
+        import threading
+        from unittest.mock import patch
+        import app.menubar as menubar
+
+        class Dummy:
+            _autopull_current = None
+
+            def __init__(self):
+                self._autopull_cancel = threading.Event()
+
+        class FakeResp(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def run(lines, cancel=False):
+            d = Dummy()
+            if cancel:
+                d._autopull_cancel.set()
+            resp = FakeResp(b"".join(l + b"\n" for l in lines))
+            with patch.object(menubar.urllib.request, "urlopen",
+                              return_value=resp):
+                return menubar.LocalModelsApp._autopull_stream(
+                    d, "http://localhost:1", "m:1")
+
+        assert run([
+            b"not json",
+            b'{"total": 100, "completed": 50, "status": "pulling"}',
+            b'{"status": "success"}',
+        ]) is True
+        assert run([b'{"error": "no space left on device"}']) is False
+        assert run([b'{"total": 10, "completed": 10}']) is False
+        # A user cancel must win even over a success line still in flight.
+        assert run([b'{"status": "success"}'], cancel=True) is False
+
+    def test_maybe_autopull_respects_auto_pull_flag(self):
+        """AUTO_PULL=false must mean NO giant background downloads —
+        the user's opt-out, mirroring AUTO_UPDATE."""
+        from unittest.mock import patch
+        import app.menubar as menubar
+        app = object.__new__(menubar.LocalModelsApp)
+        app.conf = {"AUTO_PULL": "false"}
+        with patch.object(menubar.threading, "Thread") as mock_thread:
+            app._maybe_autopull()
+        mock_thread.assert_not_called()
+        app.conf = {}
+        with patch.object(menubar.threading, "Thread") as mock_thread:
+            app._maybe_autopull()
+        mock_thread.assert_called_once()
+
+    def test_set_network_conf_value_preserves_user_content(self, tmp_path, monkeypatch):
+        """network.conf is hand-edited: updating one key must not clobber
+        comments or other keys, and a missing key is appended."""
+        import lib.models as models
+        conf = tmp_path / "network.conf"
+        conf.write_text(
+            "# user comment\n"
+            'TAILSCALE_HOSTNAME="my-box"\n'
+            "AUTO_PULL=true\n"
+        )
+        monkeypatch.setattr(models, "NETWORK_CONF", conf)
+        monkeypatch.setattr(models, "CONFIG_DIR", tmp_path)
+        models.set_network_conf_value("AUTO_PULL", "false")
+        text = conf.read_text()
+        assert "# user comment" in text
+        assert 'TAILSCALE_HOSTNAME="my-box"' in text
+        assert "AUTO_PULL=false" in text
+        assert "AUTO_PULL=true" not in text
+        models.set_network_conf_value("NEW_KEY", "1")
+        assert "NEW_KEY=1" in conf.read_text()
+
+    def test_autopull_due_skips_installed_and_cooling_failures(self):
+        """A full disk or dead network must not retry-storm: a recent
+        failure waits out the cooldown, a stale one is retried, and an
+        installed model is never pulled again."""
+        import app.menubar as menubar
+        now = 100_000.0
+        due = menubar.autopull_due(
+            needed={"a:1", "b:1", "c:1", "d:1"},
+            installed={"b:1"},
+            failed_at={"c:1": now - 60, "d:1": now - 7200},
+            now=now,
+        )
+        assert due == ["a:1", "d:1"]
+
+    def test_autopull_due_nothing_missing(self):
+        import app.menubar as menubar
+        assert menubar.autopull_due(
+            needed={"a:1"}, installed={"a:1"}, failed_at={}, now=0.0) == []
+
+
 class TestModelHasVision:
     def test_model_info_vision_keys_signal_vision(self):
         """GGUF vision models carry the vision tower; Ollama exposes it
@@ -483,6 +607,49 @@ class TestModelHasVision:
         from lib.models import model_has_vision
         assert model_has_vision("qwen3-vl:7b")
         assert not model_has_vision("nemotron:9b")
+
+    def test_projector_info_signals_vision(self):
+        """Ollama ≥0.32 ships some vision encoders as a separate projector
+        blob (qwen3.8): model_info has zero vision keys and the honest
+        signal moves to /api/show's projector_info block (verified live,
+        Ollama 0.32.12 — qwen3.8:27b described a test image correctly)."""
+        from lib.models import model_has_vision
+        assert model_has_vision(
+            "qwen3.8:27b",
+            ollama_model_info={"qwen35.context_length": 262144},
+            ollama_projector_info={
+                "clip.has_vision_encoder": True,
+                "clip.projector_type": "qwen3vl_merger",
+            },
+        )
+
+    def test_absent_or_non_vision_projector_is_not_vision(self):
+        """Encoder-less tags return projector_info: null, and detection
+        stays structural regardless of engine improvements — the
+        capabilities array still must not win. A non-vision projector
+        (a future audio mmproj) must not count either, even when it
+        carries an explicit `clip.has_vision_encoder: False` — llama.cpp
+        mmproj metadata routinely ships both encoder booleans, and the
+        key name alone contains "vision"."""
+        from lib.models import model_has_vision
+        assert not model_has_vision(
+            "qwen3.6:27b-mlx",
+            ollama_model_info={"qwen35.context_length": 262144},
+            ollama_projector_info=None,
+        )
+        assert not model_has_vision(
+            "some-audio:7b",
+            ollama_model_info={},
+            ollama_projector_info={"clip.has_audio_encoder": True},
+        )
+        assert not model_has_vision(
+            "some-audio:7b",
+            ollama_model_info={},
+            ollama_projector_info={
+                "clip.has_vision_encoder": False,
+                "clip.has_audio_encoder": True,
+            },
+        )
 
 
 class TestMlxVlmDispatch:
