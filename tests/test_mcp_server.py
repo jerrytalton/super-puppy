@@ -610,7 +610,7 @@ class TestAuthMiddlewareDispatch:
         call_next.assert_called_once_with(req)
 
     def test_exempt_paths_skip_auth(self):
-        for path in ("/gpu", "/api/mcp-models"):
+        for path in ("/gpu", "/activity", "/api/mcp-models"):
             result, call_next, req = self._call(path, headers={})
             call_next.assert_called_once_with(req)
 

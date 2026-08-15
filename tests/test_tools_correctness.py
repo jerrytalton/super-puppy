@@ -46,10 +46,24 @@ pytestmark = pytest.mark.correctness
 
 
 def _model_for(task: str) -> str:
-    """The model the active profile picks for `task`, or skip."""
+    """The model the active profile picks for `task`.
+
+    Skips only when the active profile doesn't define the task at all.
+    If the profile DOES define it and the picker still returns nothing,
+    that's a capability-gate or discovery regression silently dropping a
+    tool from the release gate — fail loudly, never skip (2026-08-14
+    red-team: a skip here made the gate vacuous for that tool)."""
     name, _backend, _warn = ps()._pick_model_for_task(task)
     if not name:
-        pytest.skip(f"active profile has no usable model for {task!r}")
+        profiles = ps().load_profiles()
+        active = (profiles.get("profiles") or {}).get(profiles.get("active"), {})
+        tasks = active.get("tasks", {})
+        if task in tasks:
+            pytest.fail(
+                f"active profile defines {task!r} -> {tasks[task]!r} but "
+                f"_pick_model_for_task returned nothing — picker/capability "
+                f"regression, not a missing model")
+        pytest.skip(f"active profile has no model for {task!r}")
     return name
 
 
@@ -159,11 +173,6 @@ def test_embedding_is_a_real_vector(client):
     assert all(isinstance(x, (int, float)) for x in vec[:8]), "non-numeric embedding"
     assert any(abs(x) > 1e-6 for x in vec), "all-zero embedding vector"
 
-
-# ── Known-broken tools (tracked, not run) ───────────────────────────
-# These are documented failures with root causes outside our control or
-# pending a separate fix. `run=False` keeps the suite from hanging on
-# them while still flagging (xpass) the day they start working again.
 
 def test_computer_use_grounds_on_screenshot(client, smoke_tmp):
     """Computer_use must return a grounding action, not hang. MLX models

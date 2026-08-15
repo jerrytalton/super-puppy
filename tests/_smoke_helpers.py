@@ -213,33 +213,60 @@ def write_speech_wav(path: Path, text: str) -> Path:
 # ── invocation ──────────────────────────────────────────────────────
 
 # Error substrings that mean "the model isn't pulled" or "the binary isn't
-# installed" — environmental, not a Super Puppy regression.
+# installed" — environmental, not a Super Puppy regression. Deliberately
+# narrow: generic connection errors are NOT here, because
+# require_local_services() already proved the backends up at module start —
+# a mid-suite "connection refused" means a crash or a wrong-URL dispatch
+# bug, exactly what this suite exists to fail on (2026-08-14 red-team).
 SKIP_SUBSTRINGS = (
     "not downloaded",
     "pull it first",
     "no such model",
     "no model available",
     "cannot connect to backend",
-    "connection refused",
-    "connection error",
-    "connectionerror",
     "is ds4-server running",
     "is not installed",
     # Media models that aren't pulled yet — skip, don't fail.
     "still downloading",
     "pull it from",
-    "not downloaded",
-    # Backend Python module not importable in this env — e.g. the test installs
-    # PyPI `mlx-audio` while the servers pin a git commit with a different module
-    # layout. The backend is unavailable here, so skip rather than hard-fail.
-    "no module named",
-    "is not a package",
+    # mlx_audio specifically not importable in this env — e.g. the test
+    # installs PyPI `mlx-audio` while the servers pin a git commit with a
+    # different module layout. Narrowed to mlx_audio so a production
+    # ModuleNotFoundError from a refactor typo still fails loudly.
+    "no module named 'mlx_audio",
+    "'mlx_audio' is not a package",
 )
 
 
 def _is_skippable(err: str) -> bool:
     low = err.lower()
     return any(s in low for s in SKIP_SUBSTRINGS)
+
+
+def _preflight(tool: str, model: str, status: int, data):
+    """Shared skip/fail gate for every /api/test assertion helper.
+
+    /api/test silently substitutes the active profile's default when the
+    requested model isn't installed, stamping only a `warning` — without
+    this gate a smoke case "passes" by testing a different model than the
+    tier map named, defeating the anti-drift purpose of deriving models
+    from DEFAULT_PROFILES. Fallback → skip ("model not pulled here");
+    echoed-model mismatch → fail (dispatch bug)."""
+    err = str(data.get("error", "")) if isinstance(data, dict) else ""
+    if err and _is_skippable(err):
+        pytest.skip(f"{tool}({model}): {err}")
+    warning = str(data.get("warning", "")) if isinstance(data, dict) else ""
+    if "fell back to profile default" in warning:
+        pytest.skip(f"{tool}({model}): not installed here — {warning}")
+    assert status == 200, f"{tool}({model}) HTTP {status}: {data}"
+    assert not err, f"{tool}({model}) error: {err}"
+    if isinstance(data, dict) and "model" in data:
+        echoed = data["model"]
+        # HF-repo-backed handlers (TTS) echo the repo basename; any other
+        # difference means the server ran a different model than asked.
+        assert echoed in (model, model.split("/")[-1]), (
+            f"{tool} asked for {model!r} but the server ran "
+            f"{echoed!r} — dispatch/selection bug")
 
 
 def call_api_test(client, tool: str, model: str, **body) -> tuple[int, dict]:
@@ -260,11 +287,7 @@ def assert_tool_produces_output(
     Skips (not fails) when the error indicates the model isn't available.
     """
     status, data = call_api_test(client, tool, model, **body)
-    err = str(data.get("error", "")) if isinstance(data, dict) else ""
-    if err and _is_skippable(err):
-        pytest.skip(f"{tool}({model}): {err}")
-    assert status == 200, f"{tool}({model}) HTTP {status}: {data}"
-    assert not err, f"{tool}({model}) error: {err}"
+    _preflight(tool, model, status, data)
     value = data.get(expect_key)
     assert value, f"{tool}({model}) returned empty {expect_key!r}: {data}"
     return data
@@ -280,11 +303,7 @@ def assert_media_output(client, *, tool: str, model: str, expect_key: str,
     signal a media tool is actually broken. Returns the output path.
     """
     status, data = call_api_test(client, tool, model, **body)
-    err = str(data.get("error", "")) if isinstance(data, dict) else ""
-    if err and _is_skippable(err):
-        pytest.skip(f"{tool}({model}): {err}")
-    assert status == 200, f"{tool}({model}) HTTP {status}: {data}"
-    assert not err, f"{tool}({model}) error: {err}"
+    _preflight(tool, model, status, data)
     path = data.get(expect_key)
     assert path and Path(path).exists(), \
         f"{tool}({model}) produced no file at {expect_key!r}: {data}"
@@ -323,11 +342,7 @@ def assert_tool_output_contains(
     n = max(1, attempts)
     for i in range(n):
         status, data = call_api_test(client, tool, model, **body)
-        err = str(data.get("error", "")) if isinstance(data, dict) else ""
-        if err and _is_skippable(err):
-            pytest.skip(f"{tool}({model}): {err}")
-        assert status == 200, f"{tool}({model}) HTTP {status}: {data}"
-        assert not err, f"{tool}({model}) error: {err}"
+        _preflight(tool, model, status, data)
         value = str(data.get(expect_key, ""))
         if any(w in value.lower() for w in wanted):
             return data
