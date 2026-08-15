@@ -609,7 +609,7 @@ TASK_FILTERS: dict[str, dict[str, Any]] = {
 # max_ram_gb cap gates model-pull validation in install.sh and the profile
 # server. The active default is 64gb (fits M5 / mid GPU class).
 
-PROFILES_VERSION = 35  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 36  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -664,12 +664,12 @@ DEFAULT_PROFILES = {
                 "unfiltered": "dolphin3:8b",
                 "computer_use": "ui-venus",
                 "image_gen": "black-forest-labs/FLUX.2-klein-4B",
-                # FLUX.2-edit on klein-9B replaced Kontext (2026-08-15
-                # bake-off): equal quality at 2.6x the speed and 13.6GB
-                # peak vs 31GB — the peak that matters on this tier. The
-                # 9B is a separate download from this tier's klein-4B gen
-                # pick; the 4B edit variant exists but wasn't bake-tested.
-                "image_edit": "black-forest-labs/FLUX.2-klein-9B",
+                # FLUX.2-edit on klein-4B replaced Kontext (2026-08-15
+                # bake-off + corrected rerun): quality indistinguishable
+                # from true 9B across recolor/remove/add-sign, at 56s and
+                # 13.6GB peak (9B: 106s/24GB; Kontext: 145s/31GB). Shares
+                # weights with this tier's klein-4B gen pick.
+                "image_edit": "black-forest-labs/FLUX.2-klein-4B",
             },
         },
         "128gb": {
@@ -695,7 +695,7 @@ DEFAULT_PROFILES = {
                 "unfiltered": "dolphin3:8b",
                 "computer_use": "ui-venus",
                 "image_gen": "black-forest-labs/FLUX.2-klein-9B",
-                "image_edit": "black-forest-labs/FLUX.2-klein-9B",
+                "image_edit": "black-forest-labs/FLUX.2-klein-4B",
                 "video": "AITRADER/Wan2.2-T2V-A14B-mlx-bf16",
             },
         },
@@ -721,7 +721,7 @@ DEFAULT_PROFILES = {
                 "unfiltered": "dolphin3:8b",
                 "computer_use": "ui-venus",
                 "image_gen": "black-forest-labs/FLUX.2-klein-9B",
-                "image_edit": "black-forest-labs/FLUX.2-klein-9B",
+                "image_edit": "black-forest-labs/FLUX.2-klein-4B",
                 "video": "AITRADER/Wan2.2-T2V-A14B-mlx-bf16",
             },
         },

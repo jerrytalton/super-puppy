@@ -490,6 +490,7 @@ class TestAutopull:
         prof = DEFAULT_PROFILES["profiles"]["128gb"]
         assert profile_hf_models(prof) == {
             "black-forest-labs/FLUX.2-klein-9B",
+            "black-forest-labs/FLUX.2-klein-4B",
             "AITRADER/Wan2.2-T2V-A14B-mlx-bf16",
             "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
         }
