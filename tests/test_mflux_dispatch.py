@@ -118,6 +118,22 @@ def test_mflux_edit_command(model_id, binary, base, image_flag, strength):
     assert "--model" in cmd.extra_args, "resolved model must reach the binary"
 
 
+def test_preset_image_edit_picks_route_to_flux2_edit():
+    """The 2026-08-15 bake-off retired Kontext as the preset: FLUX.2-edit
+    on klein-9B matched its quality at 2.6x the speed and 44% of the RAM,
+    and shares weights with the 128/512gb image_gen pick. A preset pick
+    that resolves back to the kontext fallback undoes that silently."""
+    from lib.models import DEFAULT_PROFILES
+    picks = {name: prof["tasks"]["image_edit"]
+             for name, prof in DEFAULT_PROFILES["profiles"].items()
+             if "image_edit" in prof.get("tasks", {})}
+    assert picks, "expected at least one tier with an image_edit preset"
+    for tier, pick in picks.items():
+        cmd = mflux_edit_command(pick)
+        assert cmd.binary == "mflux-generate-flux2-edit", \
+            f"{tier}: {pick!r} routes to {cmd.binary}"
+
+
 def test_edit_dispatch_does_not_reuse_the_generate_table():
     """Regression guard for the bug this replaced.
 

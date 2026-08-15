@@ -1,5 +1,11 @@
 # Super Puppy — Tasks
 
+## Checkpoint (2026-08-15) — image_edit → FLUX.2-edit (klein-9B), PROFILES_VERSION 35
+
+**Last Known Good State:** Bake-off (3 edit tasks × Kontext / FLUX.2-edit klein-9B / Qwen-Image-Edit-2511-8bit, mflux 0.18.1) retired Kontext as the preset: flux2-edit matched its quality at 2.6× the speed and 13.6GB peak vs 31GB; qwen-edit re-synthesizes the whole frame through mflux (details in the model playbook, incl. "VLM judges confabulate edit-artifact grades — verify by eye"). All tiers' image_edit → `black-forest-labs/FLUX.2-klein-9B` (shares weights with 128/512gb image_gen; edit dispatch already existed via `mflux_edit_command`). mflux upgraded 0.17.4→0.18.1 (adds ERNIE, Ideogram 4, Krea-2 — gen-side bake-off NOT yet done). Unit suite 612 passed; live smoke + image-edit correctness green, output verified by eye.
+
+**Next Step:** Release (vX.Y.Z) when ready — fleet picks up PROFILES_VERSION 35; note machines need mflux ≥0.18 for the new gen binaries only (flux2-edit exists in 0.17). Consider a gen-side bake-off (Qwen-Image-2512 quants already in HF cache vs klein) and whether 64gb should use the untested klein-4B edit variant to avoid the extra 9B download.
+
 ## Checkpoint (2026-08-14) — qwen3.8 adoption (branch `feat/qwen38-profiles`)
 
 **Last Known Good State:** Two commits on `feat/qwen38-profiles` (off origin/main @ v1.6.2): (1) `model_has_vision()` accepts `ollama_projector_info` — Ollama ≥0.32 ships qwen3.8's vision encoder as a separate 888MB projector blob, zero `model_info` vision keys, honest signal moved to `/api/show`'s `projector_info` (`clip.has_vision_encoder`); `capabilities` still never trusted. Both Ollama discovery call sites wired. (2) PROFILES_VERSION 33→34: vision → `qwen3.8:27b` all tiers, 64gb/128gb text tasks → `qwen3.8:27b-mlx`, code picks unchanged; code TASK_FILTER unstuck (priority `coding`, include `qwen3` + `muse-glimmer`). Verified: 609 unit tests (pre-commit), live smoke + correctness 25 passed on this laptop (three vision color cases through qwen3.8:27b), `qwen3.8:27b-mlx` pulled and serving. Playbook updated (dotfiles): Ollama 0.32.12's MLX engine now passes real vision tests (0.30.10/0.32.7 "-mlx lies" entries are version-bound); split-projector detection entry added.
