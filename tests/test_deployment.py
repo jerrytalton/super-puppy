@@ -957,27 +957,6 @@ class TestStayDown:
         assert Path(marker).read_text() == str(os.getpid())
         mock_rumps.quit_application.assert_called_once()
 
-    def test_stay_down_not_written_on_crash(self, tmp_path):
-        marker = tmp_path / "stay_down"
-        assert not marker.exists()
-
-    def test_sys_exit_caught_at_top_level(self):
-        """Verify that SystemExit from rumps/PyObjC doesn't bypass C launcher."""
-        # The try/except SystemExit in __main__ ensures sys.exit(0) from
-        # rumps.quit_application() doesn't call libc exit(0) directly.
-        # In embedded Python (dlopen), sys.exit(0) would terminate the
-        # entire process, bypassing the C launcher's return 1.
-        caught = False
-        try:
-            try:
-                raise SystemExit(0)  # simulates rumps.quit_application()
-            except SystemExit:
-                caught = True
-                pass  # matches the real __main__ handler
-        except SystemExit:
-            pytest.fail("SystemExit escaped — would bypass C launcher")
-        assert caught
-
 
 # ---------------------------------------------------------------------------
 # Shell wrapper stay_down startup check
@@ -989,27 +968,36 @@ class TestWrapperStayDown:
     The wrapper checks for stay_down BEFORE launching the app.
     If present, it removes the file and exits 0 (launchd stops).
     Otherwise it execs the app (which always exits non-zero via C launcher).
+
+    Runs the real block regex-sliced out of the actual wrapper script
+    (like TestPostUpdateGlm52MigrationGate) — removing or breaking the
+    check in bin/local-models-menubar fails these tests; a hand-copied
+    reimplementation would not.
     """
 
     @pytest.fixture()
     def wrapper_env(self, tmp_path):
+        import re
+
+        wrapper = (Path(__file__).parent.parent
+                   / "bin" / "local-models-menubar").read_text()
+        m = re.search(
+            r'(STAY_DOWN="\$CONFIG_DIR/stay_down"\nif \[ .*?\nfi\n)',
+            wrapper, re.DOTALL)
+        assert m, ("stay_down check not found in bin/local-models-menubar — "
+                   "did the block move or get removed?")
         config_dir = tmp_path / "config"
         config_dir.mkdir()
-        stay_down = config_dir / "stay_down"
-        # Minimal script reproducing just the stay_down check.
-        # Uses 'exit 1' as a stand-in for the exec (which always exits non-zero).
         script = tmp_path / "test_wrapper.sh"
-        script.write_text(f"""#!/bin/bash
-STAY_DOWN="{stay_down}"
-if [ -f "$STAY_DOWN" ]; then
-    rm -f "$STAY_DOWN"
-    exit 0
-fi
-# Stand-in for exec (C launcher always exits non-zero)
-exit 1
-""")
+        script.write_text(
+            "#!/bin/bash\n"
+            f'CONFIG_DIR="{config_dir}"\n'
+            f"{m.group(1)}"
+            "# Stand-in for exec (C launcher always exits non-zero)\n"
+            "exit 1\n")
         script.chmod(0o755)
-        return {"script": str(script), "stay_down": stay_down}
+        return {"script": str(script),
+                "stay_down": config_dir / "stay_down"}
 
     def test_normal_startup_exits_nonzero(self, wrapper_env):
         result = subprocess.run(

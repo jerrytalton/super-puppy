@@ -390,50 +390,11 @@ class TestGpuContentionWarning:
 # ── MCP server: auth middleware logic ───────────────────────────────
 
 class TestAuthMiddleware:
-    """Test auth session tracking via the REAL module-level state."""
-
-    @pytest.fixture(autouse=True)
-    def _reset_sessions(self):
-        with server._session_lock:
-            server._authenticated_sessions.clear()
-        yield
-        with server._session_lock:
-            server._authenticated_sessions.clear()
-
-    def test_session_added_on_auth(self):
-        with server._session_lock:
-            server._authenticated_sessions["session-1"] = None
-        with server._session_lock:
-            assert "session-1" in server._authenticated_sessions
-
-    def test_session_eviction_at_max(self):
-        """Fill to _MAX_SESSIONS, then add one more — should not crash."""
-        with server._session_lock:
-            for i in range(server._MAX_SESSIONS):
-                server._authenticated_sessions[f"s-{i}"] = None
-            assert len(server._authenticated_sessions) == server._MAX_SESSIONS
-            # Simulate what the middleware does (FIFO eviction)
-            if len(server._authenticated_sessions) >= server._MAX_SESSIONS and server._authenticated_sessions:
-                server._authenticated_sessions.popitem(last=False)
-            server._authenticated_sessions["new-session"] = None
-        with server._session_lock:
-            assert "new-session" in server._authenticated_sessions
-            assert len(server._authenticated_sessions) == server._MAX_SESSIONS
-
-    def test_eviction_on_empty_set_does_not_crash(self):
-        """Regression: popitem() on empty dict should not raise KeyError."""
-        with server._session_lock:
-            assert len(server._authenticated_sessions) == 0
-            # Simulate the guard we added
-            if len(server._authenticated_sessions) >= server._MAX_SESSIONS and server._authenticated_sessions:
-                server._authenticated_sessions.popitem(last=False)  # should not execute
-            server._authenticated_sessions["first"] = None
-        with server._session_lock:
-            assert "first" in server._authenticated_sessions
-
-    def test_exempt_paths(self):
-        assert "/gpu" in server._AUTH_EXEMPT_PATHS
-        assert "/api/mcp-models" in server._AUTH_EXEMPT_PATHS
+    """Session tracking, eviction, and exempt paths are covered
+    behaviorally in test_mcp_server.py::TestAuthMiddlewareDispatch, which
+    drives the REAL middleware. Earlier tests here simulated that logic
+    inside the test body — theater — and were removed (2026-08-14
+    test-suite red-team)."""
 
     def test_token_matches_env(self):
         assert server.MCP_AUTH_TOKEN == "test-token-123"
