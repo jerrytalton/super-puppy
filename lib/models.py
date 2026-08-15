@@ -795,6 +795,18 @@ def profile_ollama_models(profile: dict) -> set[str]:
     }
 
 
+def profile_hf_models(profile: dict) -> set[str]:
+    """The HF repo picks a profile needs downloaded locally (image
+    gen/edit, video, TTS) — the same set install.sh fetches via
+    `hf download`. A '/' without ':' means an HF repo id; anything
+    carrying ':' is an Ollama tag (namespaced tags have both).
+    """
+    return {
+        model for model in (profile.get("tasks") or {}).values()
+        if "/" in model and ":" not in model
+    }
+
+
 # ── Active param computation ──────────────────────────────────────────
 
 _AXB_PATTERN = re.compile(r"[_-]A(\d+(?:\.\d+)?)B", re.IGNORECASE)
