@@ -36,6 +36,7 @@ from lib.hf_scanner import (
     read_newest_hf_config,
 )
 from lib.models import (
+    ALWAYS_EXCLUDE,
     DS4_ACTIVE_PARAMS_B,
     DS4_MODEL_NAME,
     DS4_TOTAL_PARAMS_B,
@@ -630,6 +631,11 @@ def pick_model(task: str, override: str | None = None) -> tuple[str, str]:
             if info.get("task") == task and (not is_eligible or is_eligible(name, info["backend"])):
                 return name, info["backend"]
         for name, info in _models.items():
+            # ALWAYS_EXCLUDE names are not general LLMs (embedders,
+            # vision towers, abliterated models) — an uncensored model
+            # must never serve a general task, even as a last resort.
+            if any(p in name.lower() for p in ALWAYS_EXCLUDE):
+                continue
             if info["backend"] in LLM_BACKENDS and (not is_eligible or is_eligible(name, info["backend"])):
                 return name, info["backend"]
 

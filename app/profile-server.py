@@ -54,6 +54,7 @@ from lib.models import (
     LLM_BACKENDS,
     MCP_PREFS_FILE,
     MLX_SERVER_CONFIG,
+    local_model_dir_complete,
     NETWORK_CONF,
     PROFILES_FILE,
     PROFILES_VERSION,
@@ -197,8 +198,10 @@ def _pid_alive(pid: int) -> bool:
 
 def _hf_cache_bytes(name: str) -> int:
     """Sum of real file bytes under the HF cache dir for a repo id.  Counts
-    blobs and in-progress .incomplete partials; skips symlink snapshots."""
-    root = HF_CACHE / f"models--{name.replace('/', '--')}"
+    blobs and in-progress .incomplete partials; skips symlink snapshots.
+    An absolute name is a local serving dir — sum it directly."""
+    root = (Path(name) if Path(name).is_absolute()
+            else HF_CACHE / f"models--{name.replace('/', '--')}")
     if not root.exists():
         return 0
     total = 0
@@ -928,9 +931,15 @@ _HF_CACHE = Path.home() / ".cache" / "huggingface" / "hub"
 def _hf_model_downloaded(model_path):
     """True if the HF snapshot has real weights (safetensors/npz/bin/pth) or at
     minimum a config.json. Also checks one level of subdirectories for
-    component layouts like transformer/."""
+    component layouts like transformer/.
+
+    An absolute model_path is a local serving dir (MLX subfolder repos have
+    no HF-cache snapshot — the cache-name mangling below would never match),
+    gated on checkpoint completeness instead."""
     if not model_path:
         return False
+    if Path(model_path).is_absolute():
+        return local_model_dir_complete(Path(model_path))
     cache_dir = _hf_snapshot_dir(model_path)
     if not cache_dir.exists():
         return False
@@ -1119,14 +1128,21 @@ def _mlx_model_has_vision(model_path):
 
 _QUANT_BYTES_PER_PARAM = (
     # Ordered most-specific-first so "mxfp8" doesn't fall through to "8bit".
+    # Hyphenated spellings cover subfolder-repo local dirs (".../6-bit").
+    ("2-bit", 0.25),
     ("3bit",  0.375),
+    ("3-bit", 0.375),
     ("4bit",  0.5),
+    ("4-bit", 0.5),
     ("nvfp4", 0.5),
     ("fp4",   0.5),
     ("5bit",  0.625),
+    ("5-bit", 0.625),
     ("6bit",  0.75),
+    ("6-bit", 0.75),
     ("mxfp8", 1.0),
     ("8bit",  1.0),
+    ("8-bit", 1.0),
     ("fp8",   1.0),
     ("bf16",  2.0),
     ("fp16",  2.0),
@@ -1181,7 +1197,11 @@ def _fetch_mlx_models(existing):
             "total_params_b": total_b,
             "active_params_b": active_b,
             "context": cfg.get("context_length", 0),
-            "has_vision": _mlx_model_has_vision(model_path),
+            # A checkpoint's vision tower is unreachable when served as
+            # `lm` (text-only handler) — advertising it would route image
+            # requests to a model that silently ignores them.
+            "has_vision": (cfg.get("model_type") != "lm"
+                           and _mlx_model_has_vision(model_path)),
             "family": "mlx",
             "quant": quant,
             "is_loaded": mid in mlx_loaded,
@@ -1317,6 +1337,11 @@ def get_eligible_tasks(name, model_info):
 
     if model_info.get("has_vision") and "vision" not in tasks:
         tasks.append("vision")
+
+    # An abliterated model serves the unfiltered task and nothing else,
+    # whatever other capabilities its checkpoint carries.
+    if "unfiltered" in tasks:
+        return ["unfiltered"]
     return tasks
 
 

@@ -462,7 +462,7 @@ class TestAutopull:
         prof = DEFAULT_PROFILES["profiles"]["128gb"]
         assert profile_ollama_models(prof) == {
             "qwen3-coder-next:latest", "qwen3.8:27b-mlx", "qwen3.8:27b",
-            "qwen3-embedding:8b", "dolphin3:8b",
+            "qwen3-embedding:8b",
         }
 
     def test_profile_ollama_models_namespaced_tag_is_ollamas(self):
@@ -498,6 +498,90 @@ class TestAutopull:
             "unfiltered": "huihui_ai/dolphin3-abliterated:8b",
             "general": "qwen3.5-small",
         }}) == set()
+
+    def test_profile_mlx_subfolder_models_classification(self):
+        """Subfolder served-names must be pulled by the local-dir path —
+        handing one to `ollama pull` or `hf download` fails, and leaving
+        it out means the pick never downloads (mlx-openai-server can't
+        fetch a subfolder repo on demand)."""
+        from lib.models import (DEFAULT_PROFILES,
+                                profile_mlx_subfolder_models)
+        prof = DEFAULT_PROFILES["profiles"]["128gb"]
+        assert profile_mlx_subfolder_models(prof) == {
+            "qwen3.8-uncensored-8bit"}
+        assert profile_mlx_subfolder_models({"tasks": {
+            "general": "qwen3.5-small",
+            "vision": "qwen3.8:27b",
+            "image_gen": "black-forest-labs/FLUX.2-klein-4B",
+        }}) == set()
+        assert profile_mlx_subfolder_models({}) == set()
+
+    def test_mlx_subfolder_present_requires_every_indexed_shard(self, tmp_path):
+        """`hf download --local-dir` materializes files one at a time, so
+        an interrupted pull leaves a plausible-looking dir missing later
+        shards — calling that 'present' would skip the resume forever and
+        the model would die at load instead."""
+        from lib.models import mlx_subfolder_dir, mlx_subfolder_present
+        name = "qwen3.8-uncensored-8bit"
+        assert not mlx_subfolder_present(name, tmp_path)
+        d = mlx_subfolder_dir(name, tmp_path)
+        d.mkdir(parents=True)
+        (d / "config.json").write_text("{}")
+        (d / "tokenizer_config.json").write_text("{}")
+        (d / "model.safetensors.index.json").write_text(json.dumps(
+            {"weight_map": {"a.weight": "model-00001-of-00002.safetensors",
+                            "b.weight": "model-00002-of-00002.safetensors"}}))
+        (d / "model-00001-of-00002.safetensors").write_bytes(b"x")
+        (d / "model-00002-of-00002.safetensors").write_bytes(b"x")
+        # All shards present but tokenizer.json missing — mlx-lm can't
+        # load without it, so this must still read as absent.
+        assert not mlx_subfolder_present(name, tmp_path)
+        (d / "tokenizer.json").write_text("{}")
+        assert mlx_subfolder_present(name, tmp_path)
+        (d / "model-00002-of-00002.safetensors").unlink()
+        assert not mlx_subfolder_present(name, tmp_path)
+
+    def test_mlx_subfolder_present_corrupt_index_is_absent(self, tmp_path):
+        """A truncated index (killed mid-write) must read as absent, not
+        crash the menu bar's 4-minute tick."""
+        from lib.models import mlx_subfolder_dir, mlx_subfolder_present
+        name = "qwen3.8-uncensored-6bit"
+        d = mlx_subfolder_dir(name, tmp_path)
+        d.mkdir(parents=True)
+        (d / "config.json").write_text("{}")
+        (d / "model.safetensors.index.json").write_text('{"weight_map": {')
+        assert not mlx_subfolder_present(name, tmp_path)
+
+    def test_repo_mlx_config_matches_subfolder_mapping(self):
+        """The YAML's $HOME-templated model_path and lib's SP_MODELS_DIR
+        resolution are two hand-maintained sources of truth: if they
+        drift, the auto-puller fills one dir while the server loads from
+        another, and both look correct in isolation."""
+        import yaml
+        from lib.models import (MLX_SUBFOLDER_REPOS, SP_MODELS_DIR,
+                                mlx_subfolder_dir)
+        cfg = yaml.safe_load(
+            (Path(__file__).parent.parent
+             / "config" / "mlx-server" / "config.yaml").read_text())
+        entries = {e.get("served_model_name"): e for e in cfg["models"]}
+        home = str(Path.home())
+        assert str(SP_MODELS_DIR).startswith(home)
+        for name in MLX_SUBFOLDER_REPOS:
+            entry = entries.get(name)
+            assert entry, f"{name} missing from repo MLX config"
+            expected = "$HOME" + str(mlx_subfolder_dir(name))[len(home):]
+            assert entry["model_path"] == expected
+            assert entry["model_type"] == "lm"
+            assert entry["on_demand"] is True
+
+    def test_uncensored_models_stay_out_of_general_pools(self):
+        """ALWAYS_EXCLUDE must keep abliterated models from qualifying
+        for code/general/reasoning — a picker falling back to one would
+        silently serve unaligned output."""
+        from lib.models import TASK_FILTERS, model_matches_filter
+        for task in ("code", "general", "reasoning"):
+            assert not model_matches_filter(
+                "qwen3.8-uncensored-8bit", 27, 131072, TASK_FILTERS[task])
 
     def test_hf_repo_cached_detects_partial_downloads(self, tmp_path):
         """A killed `hf download` leaves *.incomplete blobs while the

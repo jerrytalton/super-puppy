@@ -71,14 +71,20 @@ for conf in config.yaml; do
         # First install or upgrading from old symlink
         [ -L "$user_conf" ] && rm "$user_conf"
         cp "$repo_conf" "$user_conf"
+        # Local-dir model_path entries are $HOME-templated in the repo
+        # config (mlx-openai-server does no ~ or env expansion itself).
+        sed -i '' "s|\$HOME|$HOME|g" "$user_conf"
         log "Installed default $user_conf"
     else
         # Merge: append model entries from repo that user doesn't have yet
-        python3 - "$repo_conf" "$user_conf" <<'PYEOF'
-import re, sys
+        merge_out=$(python3 - "$repo_conf" "$user_conf" <<'PYEOF'
+import os, re, sys
 repo_path, user_path = sys.argv[1], sys.argv[2]
 with open(repo_path) as f:
     repo_text = f.read()
+# Expand $HOME-templated local-dir model_path entries before comparing,
+# so an already-merged (expanded) entry isn't re-appended every update.
+repo_text = repo_text.replace('$HOME', os.path.expanduser('~'))
 with open(user_path) as f:
     user_text = f.read()
 user_models = set(re.findall(r'model_path:\s*(.+)', user_text))
@@ -109,6 +115,17 @@ if new_blocks:
         name = re.search(r'model_path:\s*(.+)', block).group(1).strip()
         print(f'  Added new MLX model: {name}')
 PYEOF
+)
+        [ -n "$merge_out" ] && printf '%s\n' "$merge_out"
+        # mlx-openai-server reads its config at launch only — a running
+        # instance can't serve names merged in above. Stop it; the app's
+        # start_services relaunches it (start-local-models starts MLX
+        # whenever port 8000 is dead) with the merged config.
+        if printf '%s' "$merge_out" | grep -q 'Added new MLX model'; then
+            if pkill -f "mlx-openai-server" 2>/dev/null; then
+                log "Stopped MLX server — will relaunch with merged config"
+            fi
+        fi
     fi
 done
 

@@ -20,7 +20,7 @@ from lib.models import DEFAULT_PROFILES
 from tests._smoke_helpers import (
     CHAT_CASES, FIXTURE_CASES,
     client, require_ds4, require_local_services, run_chat_case,
-    run_fixture_case, smoke_tmp,
+    run_fixture_case, run_stream_case, smoke_tmp,
 )
 
 # Skip the module at collection time if local services aren't up.
@@ -55,3 +55,11 @@ def test_everyday_chat(client, smoke_tmp, tool, profile_task, build_body):
 def test_everyday_tool(client, smoke_tmp, tool, profile_task, build_body, expect_key):
     run_fixture_case(
         client, TIER_512GB, tool, profile_task, build_body, expect_key, smoke_tmp)
+
+
+def test_everyday_unfiltered_stream(client):
+    """unfiltered is stream-only (no /api/test handler), so the chat cases
+    can't cover it — and it's the one task served from a local-dir MLX
+    entry, the path most likely to break discovery."""
+    run_stream_case(client, TIER_512GB, "unfiltered", "unfiltered",
+                    "Reply with the single word OK.")

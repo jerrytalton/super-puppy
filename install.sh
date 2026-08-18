@@ -863,6 +863,7 @@ else
     # a profile never uses. We map only the profile's served-names to their
     # model_path repos.
     HF_MODELS=()
+    MLX_SUB_MODELS=()
 
     # Parse profile tasks into Ollama models (contain ":") and HuggingFace repos
     # (contain "/" but not ":" — distinguishes "org/model" from "ollama/ns:tag").
@@ -926,12 +927,13 @@ for model in profile.get('tasks', {}).values():
         done < <(python3 -c "
 import json, pathlib, sys
 sys.path.insert(0, sys.argv[1])
-from lib.models import DS4_MODEL_NAME
+from lib.models import DS4_MODEL_NAME, MLX_SUBFOLDER_REPOS
 data = json.loads(pathlib.Path('$PROFILES_FILE').read_text())
 profile = data.get('profiles', {}).get('$PROFILE_NAME', {})
 served = {m for m in profile.get('tasks', {}).values()
           if m and ':' not in m and '/' not in m}
 served.discard(DS4_MODEL_NAME)  # ds4-served: provisioned by the ds4 install step, not the MLX config
+served -= MLX_SUBFOLDER_REPOS.keys()  # local-dir model_path, pulled by the subfolder step below
 name_to_path, cur_path = {}, None
 for line in pathlib.Path('$MLX_CONFIG').read_text().splitlines():
     s = line.strip()
@@ -947,6 +949,24 @@ for nm in served:
     elif path not in seen:
         seen.add(path)
         print(path)
+" "$REPO_DIR")
+        # MLX subfolder repos (quant per subfolder, no root config.json):
+        # `hf download <repo>` can't fetch these usably, so each quant is
+        # pulled into the stable local dir its MLX config entry points at.
+        while IFS= read -r spec; do
+            MLX_SUB_MODELS+=("$spec")
+        done < <(python3 -c "
+import json, pathlib, sys
+sys.path.insert(0, sys.argv[1])
+from lib.models import MLX_SUBFOLDER_REPOS, SP_MODELS_DIR, mlx_subfolder_present
+data = json.loads(pathlib.Path('$PROFILES_FILE').read_text())
+profile = data.get('profiles', {}).get('$PROFILE_NAME', {})
+for nm in sorted(m for m in profile.get('tasks', {}).values()
+                 if m in MLX_SUBFOLDER_REPOS):
+    if mlx_subfolder_present(nm):
+        continue
+    repo, sub = MLX_SUBFOLDER_REPOS[nm]
+    print('\t'.join([repo, sub, str(SP_MODELS_DIR / repo.split('/', 1)[1])]))
 " "$REPO_DIR")
     else
         echo "  WARNING: profiles.json not found — no models resolved, skipping pull"
@@ -986,7 +1006,7 @@ for nm in served:
         echo "  Installing hf..."
         brew install hf 2>/dev/null || true
     fi
-    if [ ${#HF_MODELS[@]} -eq 0 ]; then
+    if [ ${#HF_MODELS[@]} -eq 0 ] && [ ${#MLX_SUB_MODELS[@]} -eq 0 ]; then
         echo "  No HuggingFace/MLX models to download for the '$PROFILE_NAME' profile."
     elif command -v hf > /dev/null; then
         # Authenticate to HuggingFace before downloading: some repos are gated
@@ -1016,7 +1036,7 @@ for nm in served:
         fi
         HF_CACHE="$HOME/.cache/huggingface/hub"
         total=${#HF_MODELS[@]}; current=0; pulled=0; hf_failed=0
-        for model in "${HF_MODELS[@]}"; do
+        for model in ${HF_MODELS[@]+"${HF_MODELS[@]}"}; do
             current=$((current + 1))
             cache_name="models--${model//\//--}"
             if [ -d "$HF_CACHE/$cache_name/snapshots" ] && \
@@ -1036,8 +1056,24 @@ for nm in served:
             fi
         done
         echo "  HuggingFace: $pulled downloaded, $hf_failed failed, $((total - pulled - hf_failed)) already present."
+        for spec in ${MLX_SUB_MODELS[@]+"${MLX_SUB_MODELS[@]}"}; do
+            sub_repo=$(printf '%s' "$spec" | cut -f1)
+            sub_dir=$(printf '%s' "$spec" | cut -f2)
+            sub_target=$(printf '%s' "$spec" | cut -f3)
+            echo "  huggingface: $sub_repo ($sub_dir) — downloading to $sub_target"
+            if hf download "$sub_repo" --include "$sub_dir/*" --local-dir "$sub_target" \
+               || { echo "  download failed — retrying without xet..."
+                    HF_HUB_DISABLE_XET=1 hf download "$sub_repo" --include "$sub_dir/*" --local-dir "$sub_target"; }; then
+                :
+            else
+                echo "  WARNING: download failed for $sub_repo ($sub_dir) — the repo is gated:"
+                echo "           accept its terms at https://huggingface.co/$sub_repo, then re-run install.sh."
+            fi
+        done
     else
-        echo "  WARNING: hf install failed. HuggingFace models will download on first use."
+        echo "  WARNING: hf install failed. Most HuggingFace models download on first"
+        echo "           use, but MLX subfolder models (the unfiltered task) need hf —"
+        echo "           install it and re-run install.sh, or let the menu bar pull them."
     fi
 fi
 
