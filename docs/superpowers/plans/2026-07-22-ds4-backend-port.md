@@ -78,7 +78,7 @@ Verified no-ops (do not touch): `lib/activity.py` (backend column is free text),
 - [ ] **Step 0: Create the branch**
 
 ```bash
-cd /Users/jerry/super-puppy && git checkout -b feat/ds4-backend main
+cd ~/super-puppy && git checkout -b feat/ds4-backend main
 ```
 
 - [ ] **Step 1: Write the failing tests**

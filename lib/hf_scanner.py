@@ -114,11 +114,17 @@ def read_newest_hf_config(model_path: str) -> dict | None:
     """Parse config.json from the newest HF snapshot. Returns None when
     nothing is downloaded, the snapshot lacks a config, or the JSON is
     malformed. Centralizes a pattern repeated across discovery, vision
-    detection, and capability probing."""
-    snap = hf_newest_snapshot(model_path)
-    if snap is None:
-        return None
-    cfg = snap / "config.json"
+    detection, and capability probing.
+
+    An absolute model_path is a local serving dir (MLX subfolder repos,
+    which have no HF-cache snapshot) — read its config.json directly."""
+    if Path(model_path).is_absolute():
+        cfg = Path(model_path) / "config.json"
+    else:
+        snap = hf_newest_snapshot(model_path)
+        if snap is None:
+            return None
+        cfg = snap / "config.json"
     if not cfg.exists():
         return None
     try:

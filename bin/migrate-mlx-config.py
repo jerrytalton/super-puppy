@@ -5,7 +5,7 @@ Usage: migrate-mlx-config.py <config.yaml> <served_model_name>
 
 One-shot migration helper called by post-update.sh: its MLX config merge is
 append-only, so retiring a model (glm-5.2 moved to the ds4 backend,
-2026-07-22) needs an explicit removal or updated 512GB boxes double-serve
+2026-07-22) needs an explicit removal or updated 512gb-tier machines double-serve
 it — MLX claims the name first in discovery order and keeps 418GB of dead
 weights pullable. Stdlib-only and text-based (the system python3 that
 post-update.sh uses has no pyyaml): drops the matching model block — its

@@ -220,6 +220,23 @@ class TestPickModel:
             with pytest.raises(ValueError, match="vision"):
                 server.pick_model("vision")
 
+    def test_any_llm_fallback_never_picks_excluded_models(self):
+        """The last-resort any-LLM fallback must skip ALWAYS_EXCLUDE names:
+        with only an abliterated model resident, a general request must
+        error, not silently serve unaligned output."""
+        server._models["qwen3.8-uncensored-8bit"] = {"backend": "mlx"}
+        with patch.object(server, "load_mcp_prefs", return_value={}):
+            with pytest.raises(ValueError, match="general"):
+                server.pick_model("general")
+
+    def test_any_llm_fallback_still_picks_normal_models(self):
+        """The exclusion above must not break the fallback for ordinary
+        models — a bare registry with one real LLM still serves."""
+        server._models["qwen3.8-uncensored-8bit"] = {"backend": "mlx"}
+        server._models["qwen3.5:9b"] = {"backend": "ollama"}
+        with patch.object(server, "load_mcp_prefs", return_value={}):
+            assert server.pick_model("general") == ("qwen3.5:9b", "ollama")
+
     def test_override_miss_raises_not_silent_fallback(self):
         """An override that doesn't resolve must error, not silently
         substitute an arbitrary model. A vision request for an unpulled

@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# sp-add-uncensored-vision — provision the uncensored Qwen3.8-27B vision model
+# on THIS machine, for on-demand use via `local_vision(model="qwen3.8-uncensored:27b")`.
+#
+# This is a deliberately manual, per-machine step: the model is NOT a profile
+# default and is NOT auto-pulled to the fleet (it's a ~17GB occasional-use
+# extra). The unfiltered *text* task uses the faster MLX quants instead; this
+# only adds the GGUF+mmproj build that Ollama needs for uncensored *vision*.
+#
+# Usage:  sp-add-uncensored-vision            # download + create
+#         sp-add-uncensored-vision --quant Q5_K_M   # a different quant
+#
+# Requires: an `hf` login whose account accepted the GGUF repo's gated terms
+# (https://huggingface.co/orcarouter/Qwen3.8-27B-Uncensored-GGUF — click Agree),
+# and Ollama running.
+set -euo pipefail
+
+REPO="orcarouter/Qwen3.8-27B-Uncensored-GGUF"
+MMPROJ="mmproj-Qwen3.8-27B-Uncensored-f16.gguf"
+TAG="qwen3.8-uncensored:27b"
+QUANT="Q4_K_M"
+[ "${1:-}" = "--quant" ] && { QUANT="${2:?--quant needs a value}"; }
+GGUF="Qwen3.8-27B-Uncensored-${QUANT}.gguf"
+DIR="$HOME/.local/share/super-puppy/models/Qwen3.8-27B-Uncensored-GGUF"
+
+command -v hf     >/dev/null || { echo "hf not found — install it first." >&2; exit 1; }
+command -v ollama >/dev/null || { echo "ollama not found — install it first." >&2; exit 1; }
+
+if ollama list 2>/dev/null | awk '{print $1}' | grep -qx "$TAG"; then
+    echo "✓ $TAG already exists in Ollama — nothing to do."
+    exit 0
+fi
+
+echo "Downloading $GGUF + projector to $DIR …"
+mkdir -p "$DIR"
+# One file per invocation: hf download --include with multiple patterns is
+# unreliable (silently fetches only one), so name each file explicitly.
+for f in "$GGUF" "$MMPROJ"; do
+    hf download "$REPO" "$f" --local-dir "$DIR" \
+        || { echo "  retrying without xet…"; HF_HUB_DISABLE_XET=1 hf download "$REPO" "$f" --local-dir "$DIR"; } \
+        || { echo "ERROR: download of $f failed. Accept the gated terms at" >&2
+             echo "       https://huggingface.co/$REPO and check your hf login." >&2; exit 1; }
+done
+
+echo "Building Ollama model '$TAG' (GGUF + vision projector) …"
+# RENDERER/PARSER/params mirror Ollama's native aligned qwen3.8 build; the two
+# FROM lines are the language-model GGUF and its vision projector (mmproj).
+MODELFILE="$DIR/Modelfile"
+cat > "$MODELFILE" <<EOF
+FROM ./$GGUF
+FROM ./$MMPROJ
+TEMPLATE {{ .Prompt }}
+RENDERER qwen3.8
+PARSER qwen3.5
+PARAMETER min_p 0
+PARAMETER presence_penalty 0
+PARAMETER repeat_penalty 1
+PARAMETER temperature 1
+PARAMETER top_k 20
+PARAMETER top_p 0.95
+EOF
+( cd "$DIR" && ollama create "$TAG" -f Modelfile )
+
+echo "✓ Done. Use it via an explicit model override, e.g.:"
+echo "    local_vision(model=\"$TAG\", image_path=…)"
+echo "  Default vision stays on the aligned model; this is on-demand only."

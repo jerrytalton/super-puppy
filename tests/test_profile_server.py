@@ -429,6 +429,53 @@ class TestGetEligibleTasks:
         assert "code" not in tasks
         assert "general" not in tasks
 
+    def test_fetch_mlx_models_sees_local_dir_entries(self, tmp_path):
+        """MLX entries whose model_path is a local dir (subfolder repos)
+        must be discovered once the checkpoint is complete — the HF-cache
+        name mangling can never match an absolute path, and a skipped
+        entry means the Playground's unfiltered tool 400s even with
+        weights on disk."""
+        d = tmp_path / "Qwen3.8-27B-Uncensored-MLX" / "8-bit"
+        d.mkdir(parents=True)
+        for f in ("config.json", "tokenizer_config.json", "tokenizer.json"):
+            (d / f).write_text("{}")
+        (d / "model.safetensors.index.json").write_text(
+            '{"weight_map": {"a.weight": "model-00001-of-00001.safetensors"}}')
+        entry = {"served_model_name": "qwen3.8-uncensored-8bit",
+                 "model_path": str(d), "model_type": "lm",
+                 "context_length": 131072, "on_demand": True}
+        with patch.object(ps, "_load_mlx_config",
+                          return_value={"qwen3.8-uncensored-8bit": entry}), \
+             patch.object(ps, "_mlx_loaded_ids", return_value=set()):
+            # Incomplete checkpoint (shard missing): entry must be absent.
+            assert ps._fetch_mlx_models({}) == {}
+            (d / "model-00001-of-00001.safetensors").write_bytes(b"x" * 64)
+            models = ps._fetch_mlx_models({})
+        info = models["qwen3.8-uncensored-8bit"]
+        assert info["backend"] == "mlx"
+        assert info["quant"] == "8-bit"
+        assert info["disk_bytes"] > 0
+        assert info["has_vision"] is False
+
+    def test_uncensored_lm_entry_is_unfiltered_only(self):
+        """An lm-served uncensored entry has no reachable vision tower
+        (has_vision False), so it qualifies for unfiltered and NOTHING
+        else — never the general LLM pools."""
+        model = {"backend": "mlx", "active_params_b": 27, "context": 131072,
+                 "has_vision": False}
+        tasks = ps.get_eligible_tasks("qwen3.8-uncensored-8bit", model)
+        assert tasks == ["unfiltered"]
+
+    def test_uncensored_vision_model_is_unfiltered_and_vision_only(self):
+        """The GGUF uncensored model (real projector -> has_vision) is
+        eligible for unfiltered AND vision, so it can serve vision on
+        override — but still never code/general/reasoning."""
+        model = {"backend": "ollama", "active_params_b": 27,
+                 "context": 131072, "has_vision": True}
+        tasks = ps.get_eligible_tasks("qwen3.8-uncensored:27b", model)
+        assert set(tasks) == {"unfiltered", "vision"}
+        assert "general" not in tasks and "code" not in tasks
+
 
 class TestPickModelForTask:
     def test_picks_preferred_model(self):
@@ -943,7 +990,7 @@ class TestRoutes:
              patch.object(ps, "load_default_prefs", return_value=prefs):
             resp = client.post("/api/test", json={
                 "tool": "speak", "text": "hello",
-                "ref_audio": "/Users/jerry/.ssh/id_rsa",
+                "ref_audio": "/etc/passwd",
             })
         assert resp.status_code == 403
         assert "restricted" in resp.get_json()["error"].lower()

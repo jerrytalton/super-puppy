@@ -629,6 +629,8 @@ from lib.models import (
     validate_network_conf, DEFAULT_PROFILES, PROFILES_VERSION, migrate_profiles,
     merge_profile_picks,
     warm_model_names, profile_ollama_models, profile_hf_models,
+    MLX_SUBFOLDER_REPOS, SP_MODELS_DIR, mlx_subfolder_present,
+    profile_mlx_subfolder_models,
     set_network_conf_value,
 )
 MCP_PREFS_FILE = str(_MCP_PREFS_PATH)
@@ -1854,7 +1856,11 @@ class LocalModelsApp(rumps.App):
         hf_due = autopull_due(
             hf_needed, {r for r in hf_needed if hf_repo_cached(r)},
             self._autopull_failed_at, now)
-        due = ollama_due + hf_due
+        mlx_needed = profile_mlx_subfolder_models(profile)
+        mlx_due = autopull_due(
+            mlx_needed, {n for n in mlx_needed if mlx_subfolder_present(n)},
+            self._autopull_failed_at, now)
+        due = ollama_due + hf_due + mlx_due
         if not due:
             return
         announce = [m for m in due if m not in self._autopull_start_notified]
@@ -1871,12 +1877,16 @@ class LocalModelsApp(rumps.App):
                 # next warm tick doesn't immediately restart it.
                 self._autopull_failed_at[name] = time.time()
                 continue
-            is_hf = "/" in name
+            is_hf = "/" in name or name in MLX_SUBFOLDER_REPOS
             self._autopull_current = (name, None if is_hf else 0)
             logging.info("autopull: pulling %s", name)
             try:
-                ok = (self._autopull_hf(name) if is_hf
-                      else self._autopull_stream(base, name))
+                if name in MLX_SUBFOLDER_REPOS:
+                    ok = self._autopull_mlx_subfolder(name)
+                elif "/" in name:
+                    ok = self._autopull_hf(name)
+                else:
+                    ok = self._autopull_stream(base, name)
             except Exception as e:
                 logging.warning("autopull: %s failed: %s", name, e)
                 ok = False
@@ -1907,7 +1917,21 @@ class LocalModelsApp(rumps.App):
                 f"{', '.join(new_failures)} — retrying hourly; "
                 "see Copy Diagnostics for details.")
 
-    def _autopull_hf(self, repo):
+    def _autopull_mlx_subfolder(self, served_name):
+        """Pull one MLX subfolder model into its stable local dir.
+
+        mlx-openai-server can't download these itself (the repo keeps
+        each quant in a subfolder, which isn't a valid HF repo id), so
+        the served dir is filled here with an --include-scoped download.
+        """
+        repo, sub = MLX_SUBFOLDER_REPOS[served_name]
+        local_dir = SP_MODELS_DIR / repo.split("/", 1)[1]
+        return self._autopull_hf(
+            repo, extra_args=["--include", f"{sub}/*",
+                              "--local-dir", str(local_dir)],
+            verify=lambda: mlx_subfolder_present(served_name))
+
+    def _autopull_hf(self, repo, extra_args=(), verify=None):
         """One `hf download`, with the xet fallback install.sh uses (the
         xet backend fails on multi-GB files; the plain-HTTP retry resumes
         from cached blobs). stderr goes to a log file, not a pipe — hf
@@ -1919,7 +1943,7 @@ class LocalModelsApp(rumps.App):
                 return False
             with open(log_path, "ab") as log:
                 proc = subprocess.Popen(
-                    ["hf", "download", repo],
+                    ["hf", "download", repo, *extra_args],
                     stdout=log, stderr=log,
                     env={**os.environ, **env_extra})
                 while True:
@@ -1935,7 +1959,7 @@ class LocalModelsApp(rumps.App):
                                 proc.kill()
                             return False
             if proc.returncode == 0:
-                return hf_repo_cached(repo)
+                return verify() if verify else hf_repo_cached(repo)
             logging.warning("autopull: hf download %s rc=%s (see %s)",
                             repo, proc.returncode, log_path)
         return False
@@ -3002,7 +3026,7 @@ class LocalModelsApp(rumps.App):
                 self.menu_remote_access.title = "\u274c Remote Access"
 
         hf_pull = getattr(self, "_autopull_current", None)
-        if hf_pull and "/" in hf_pull[0]:
+        if hf_pull and hf_pull[1] is None:
             self._styled_menu(
                 self.menu_profiles, "", "Models",
                 f"{profile} — downloading {hf_pull[0].split('/')[-1]}…")

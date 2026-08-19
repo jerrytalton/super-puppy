@@ -7,6 +7,7 @@ profile server.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from collections.abc import Callable
@@ -545,7 +546,7 @@ SPECIAL_TASKS: dict[str, dict[str, Any]] = {
     },
     "unfiltered": {
         "label": "Unfiltered",
-        "prefixes": ["wizard-vicuna-uncensored", "dolphin", "nous-hermes"],
+        "prefixes": ["uncensored", "dolphin", "nous-hermes"],
     },
     "computer_use": {
         "label": "Computer Use",
@@ -562,7 +563,7 @@ SPECIAL_TASKS: dict[str, dict[str, Any]] = {
 
 ALWAYS_EXCLUDE: list[str] = [
     "vl", "flux", "z-image", "whisper", "ocr", "embed", "minilm",
-    "tinyllama", "goonsai", "nsfw", "dolphin",
+    "tinyllama", "goonsai", "nsfw", "dolphin", "uncensored",
     "wan2", "ltx",
 ]
 
@@ -609,7 +610,7 @@ TASK_FILTERS: dict[str, dict[str, Any]] = {
 # max_ram_gb cap gates model-pull validation in install.sh and the profile
 # server. The active default is 64gb (fits M5 / mid GPU class).
 
-PROFILES_VERSION = 36  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 37  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -617,7 +618,7 @@ DEFAULT_PROFILES = {
     "profiles": {
         "32gb": {
             "label": "32 GB",
-            "description": "Base M5 / M1 Max class — small, fast models",
+            "description": "Base Apple Silicon (M-series Air/Pro) — small, fast models",
             "max_ram_gb": 32,
             "warm": ["general", "embedding"],
             "tasks": {
@@ -648,7 +649,7 @@ DEFAULT_PROFILES = {
         },
         "64gb": {
             "label": "64 GB",
-            "description": "M5 / mid GPU — dense 27B workhorse",
+            "description": "M-series Pro/Max — dense 27B workhorse",
             "max_ram_gb": 64,
             "warm": ["general", "embedding"],
             "tasks": {
@@ -661,7 +662,11 @@ DEFAULT_PROFILES = {
                 "transcription": "whisper-v3-turbo",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
                 "embedding": "qwen3-embedding:8b",
-                "unfiltered": "dolphin3:8b",
+                # Abliterated Qwen3.8 27B, MLX-served from a local dir
+                # (subfolder repo — see MLX_SUBFOLDER_REPOS). 6-bit
+                # (22.8GB) on this tier; 8-bit is too snug next to the
+                # 18GB general pick on a 64GB box.
+                "unfiltered": "qwen3.8-uncensored-6bit",
                 "computer_use": "ui-venus",
                 "image_gen": "black-forest-labs/FLUX.2-klein-4B",
                 # FLUX.2-edit on klein-4B replaced Kontext (2026-08-15
@@ -674,7 +679,7 @@ DEFAULT_PROFILES = {
         },
         "128gb": {
             "label": "128 GB",
-            "description": "M5 Max class — dense 27B + strong vision",
+            "description": "M5 Max MacBook Pro (max RAM) — dense 27B + strong vision",
             "max_ram_gb": 128,
             "warm": ["general", "embedding"],
             "tasks": {
@@ -692,7 +697,7 @@ DEFAULT_PROFILES = {
                 "transcription": "whisper-v3-turbo",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
                 "embedding": "qwen3-embedding:8b",
-                "unfiltered": "dolphin3:8b",
+                "unfiltered": "qwen3.8-uncensored-8bit",
                 "computer_use": "ui-venus",
                 "image_gen": "black-forest-labs/FLUX.2-klein-9B",
                 "image_edit": "black-forest-labs/FLUX.2-klein-4B",
@@ -701,7 +706,7 @@ DEFAULT_PROFILES = {
         },
         "512gb": {
             "label": "512 GB",
-            "description": "M3 Ultra class — frontier",
+            "description": "M3 Ultra Mac Studio class — frontier models",
             "max_ram_gb": 512,
             "warm": ["general", "embedding"],
             "tasks": {
@@ -718,7 +723,7 @@ DEFAULT_PROFILES = {
                 "transcription": "whisper-v3-turbo",
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
                 "embedding": "qwen3-embedding:8b",
-                "unfiltered": "dolphin3:8b",
+                "unfiltered": "qwen3.8-uncensored-8bit",
                 "computer_use": "ui-venus",
                 "image_gen": "black-forest-labs/FLUX.2-klein-9B",
                 "image_edit": "black-forest-labs/FLUX.2-klein-4B",
@@ -804,6 +809,67 @@ def profile_hf_models(profile: dict) -> set[str]:
     return {
         model for model in (profile.get("tasks") or {}).values()
         if "/" in model and ":" not in model
+    }
+
+
+# ── MLX subfolder repos ───────────────────────────────────────────────
+# Some HF repos keep each quant in a subfolder with no root config.json
+# (e.g. orcarouter's uncensored Qwen3.8). mlx-openai-server accepts only a
+# flat repo id or a local directory as model_path — "org/repo/6-bit" is an
+# invalid repo id — so its download-on-first-use can't fetch these. They
+# are instead downloaded to a stable local dir (`hf download <repo>
+# --include "<sub>/*" --local-dir <SP_MODELS_DIR>/<repo name>`) by the
+# menu bar auto-puller and install.sh, and the MLX config's model_path
+# points at that dir.
+
+SP_MODELS_DIR = Path("~/.local/share/super-puppy/models").expanduser()
+
+MLX_SUBFOLDER_REPOS: dict[str, tuple[str, str]] = {
+    "qwen3.8-uncensored-6bit": ("orcarouter/Qwen3.8-27B-Uncensored-MLX", "6-bit"),
+    "qwen3.8-uncensored-8bit": ("orcarouter/Qwen3.8-27B-Uncensored-MLX", "8-bit"),
+}
+
+
+def mlx_subfolder_dir(served_name: str, base: Path | None = None) -> Path:
+    """Local directory an MLX subfolder model is served from."""
+    repo, subfolder = MLX_SUBFOLDER_REPOS[served_name]
+    return (base or SP_MODELS_DIR) / repo.split("/", 1)[1] / subfolder
+
+
+def local_model_dir_complete(d: Path) -> bool:
+    """True when a local model dir holds a complete, loadable checkpoint.
+
+    `hf download --local-dir` materializes each file only once it is
+    fully downloaded (partials live under .cache/), so any file present
+    is whole — but an interrupted download leaves the *set* incomplete.
+    Verify every shard the safetensors index names actually exists, plus
+    the tokenizer files mlx-lm needs, or the auto-puller would skip the
+    resume forever and the task would die at model-load instead.
+    """
+    required = ("config.json", "tokenizer_config.json", "tokenizer.json")
+    if not all((d / f).is_file() for f in required):
+        return False
+    index = d / "model.safetensors.index.json"
+    if not index.is_file():
+        return False
+    try:
+        weight_map = json.loads(index.read_text()).get("weight_map", {})
+    except (OSError, ValueError):
+        return False
+    shards = set(weight_map.values())
+    return bool(shards) and all((d / s).is_file() for s in shards)
+
+
+def mlx_subfolder_present(served_name: str, base: Path | None = None) -> bool:
+    """True when an MLX subfolder model's local dir is complete."""
+    return local_model_dir_complete(mlx_subfolder_dir(served_name, base))
+
+
+def profile_mlx_subfolder_models(profile: dict) -> set[str]:
+    """The MLX subfolder served-names a profile's task picks need."""
+    return {
+        model for model in (profile.get("tasks") or {}).values()
+        if model in MLX_SUBFOLDER_REPOS
     }
 
 

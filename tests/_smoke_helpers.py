@@ -14,6 +14,7 @@ Skip behavior:
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import struct
 import sys
@@ -452,6 +453,42 @@ def run_chat_case(client, profile: dict, tool: str, profile_task: str, build_bod
     if not model:
         pytest.skip(f"profile has no {profile_task!r} entry")
     assert_tool_produces_output(client, tool=tool, model=model, **build_body(tmp))
+
+
+def run_stream_case(client, profile: dict, tool: str, profile_task: str, prompt: str):
+    """Drive a stream-only tool (e.g. `unfiltered`) through /api/test/stream.
+
+    Same skip/fail contract as _preflight: model-unavailable errors and
+    silent fallback to the profile default skip; an echoed-model mismatch
+    or empty output fails — that's a dispatch or serving bug.
+    """
+    model = profile.get(profile_task)
+    if not model:
+        pytest.skip(f"profile has no {profile_task!r} entry")
+    resp = client.post("/api/test/stream",
+                       json={"tool": tool, "model": model, "prompt": prompt})
+    assert resp.status_code == 200, f"{tool}({model}) HTTP {resp.status_code}"
+    raw = b"".join(resp.response).decode(errors="replace")
+    events = []
+    for line in raw.splitlines():
+        if line.startswith("data: "):
+            try:
+                events.append(json.loads(line[len("data: "):]))
+            except ValueError:
+                pass
+    for ev in events:
+        err = str(ev.get("error", ""))
+        if err and _is_skippable(err):
+            pytest.skip(f"{tool}({model}): {err}")
+        assert not err, f"{tool}({model}) stream error: {err}"
+        warning = str(ev.get("warning", ""))
+        if "fell back to profile default" in warning:
+            pytest.skip(f"{tool}({model}): not installed here — {warning}")
+        if "model" in ev:
+            assert ev["model"] == model, (
+                f"{tool} dispatched to {ev['model']!r}, expected {model!r}")
+    text = "".join(ev.get("token", "") for ev in events)
+    assert text.strip(), f"{tool}({model}) streamed no tokens: {raw[:500]!r}"
 
 
 def run_fixture_case(

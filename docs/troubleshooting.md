@@ -54,7 +54,7 @@ launchctl load   ~/Library/LaunchAgents/com.local-models.menubar.plist
 
 ## Ollama MLX image runner: `libmlxc.dylib not found`
 
-**2026-04-16 — Ollama 0.20.7, M3 Ultra.**
+**2026-04-16 — Ollama 0.20.7, 512gb tier.**
 
 MLX-backed image-gen models (`x/z-image-turbo:bf16`, `x/flux2-klein:*`) spawn a separate `ollama mlx-runner` subprocess that dlopens `libmlxc.dylib` from `/Applications/Ollama.app/Contents/Resources/mlx_metal_v{3,4}/`. Lookup is env-driven via `OLLAMA_LIBRARY_PATH` — if the parent `ollama serve` was launched without it, every image-gen call returns:
 
@@ -99,6 +99,49 @@ caffeinate -i bash -c 'until hf download <ORG>/<REPO> --max-workers 4; do sleep 
 No validated automated recovery yet. An external stall-kill watchdog with a tight threshold (180–600 s) thrashes via `-9`-truncated `.incomplete` files faster than bytes can catch up, producing **negative** net progress. If you need a watchdog, the kill threshold has to be long enough that post-kill re-download can exceed the old high-water mark (likely 30 min+), and the high-water counter must reset on kill.
 
 **Until that's validated, prefer manual restart:** `kill -9` the python process, let the `until` loop resume.
+
+---
+
+## Unfiltered model never downloads / `401` on orcarouter pulls
+
+The unfiltered task's picks (`qwen3.8-uncensored-6bit`/`-8bit`) come from
+`orcarouter/Qwen3.8-27B-Uncensored-MLX`, which is **gated** on Hugging Face.
+Every machine that pulls it needs an HF login whose account has accepted the
+repo's terms — otherwise the auto-puller fails hourly (first failure raises a
+macOS notification; details in `/tmp/autopull_hf_orcarouter_*.log`).
+
+Fix, once per account: open https://huggingface.co/orcarouter/Qwen3.8-27B-Uncensored-MLX
+in a browser, click Agree, then make sure the machine has a non-expiring
+login (`hf auth login` with a fine-grained token — an OAuth browser login
+expires and takes gated pulls down with it).
+
+These quants live in repo *subfolders*, so unlike other MLX models they are
+served from a local dir (`~/.local/share/super-puppy/models/…`), not the HF
+cache — `hf download orcarouter/… ` by hand fetches ~75 GB of all quants;
+use `--include "8-bit/*" --local-dir ~/.local/share/super-puppy/models/Qwen3.8-27B-Uncensored-MLX`
+(or just let the menu bar auto-puller do it).
+
+---
+
+## Uncensored *vision* (as opposed to the text unfiltered task)
+
+The unfiltered task serves the uncensored model as **text-only** via MLX — the
+faster path (~33 tok/s vs ~13 tok/s for the GGUF on 512gb-tier hardware), and the
+model's vision tower isn't reachable through mlx-openai-server's `lm` handler
+anyway (the mlx-vlm/transformers pinned in the serving stack can't build the
+qwen3.8 image processor).
+
+Uncensored **vision** is available separately and on demand, via the GGUF +
+mmproj through Ollama (the same native vision path the aligned `qwen3.8:27b`
+uses). It is deliberately **not** a profile default and **not** fleet
+auto-provisioned — it's a ~17 GB per-machine extra for occasional use, and the
+default `local_vision` stays on the aligned model. To set it up on a machine:
+
+    sp-add-uncensored-vision        # downloads the GGUF+mmproj, ollama-creates the model
+
+Requires accepting the **GGUF repo's** gated terms too (separate from the MLX
+repo): https://huggingface.co/orcarouter/Qwen3.8-27B-Uncensored-GGUF. Then use
+it with an explicit override, e.g. `local_vision(model="qwen3.8-uncensored:27b", …)`.
 
 ---
 
