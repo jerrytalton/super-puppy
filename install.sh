@@ -66,6 +66,7 @@ if $UNINSTALL; then
         ~/.local/bin/post-update.sh \
         ~/.local/bin/sp-session-ping \
         ~/.local/bin/sp-doctor \
+        ~/.local/bin/sp-add-uncensored-vision \
         ~/bin/start-local-models \
         ~/bin/local-models-menubar \
         ~/bin/local-models-mcp-detect \
@@ -75,6 +76,7 @@ if $UNINSTALL; then
         ~/bin/post-update.sh \
         ~/bin/sp-session-ping \
         ~/bin/sp-doctor \
+        ~/bin/sp-add-uncensored-vision \
         ~/Library/LaunchAgents/com.local-models.menubar.plist \
         ~/Library/LaunchAgents/setenv.OLLAMA_HOST.plist; do
         if [ -L "$link" ]; then

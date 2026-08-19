@@ -457,15 +457,24 @@ class TestGetEligibleTasks:
         assert info["disk_bytes"] > 0
         assert info["has_vision"] is False
 
-    def test_uncensored_model_is_unfiltered_only(self):
-        """An abliterated model must qualify for the unfiltered task and
-        for NOTHING else — a picker falling back to it for `general` (or
-        vision, which its checkpoint nominally carries but the lm serving
-        path can't reach) would silently serve unaligned output."""
+    def test_uncensored_lm_entry_is_unfiltered_only(self):
+        """An lm-served uncensored entry has no reachable vision tower
+        (has_vision False), so it qualifies for unfiltered and NOTHING
+        else — never the general LLM pools."""
         model = {"backend": "mlx", "active_params_b": 27, "context": 131072,
-                 "has_vision": True}
+                 "has_vision": False}
         tasks = ps.get_eligible_tasks("qwen3.8-uncensored-8bit", model)
         assert tasks == ["unfiltered"]
+
+    def test_uncensored_vision_model_is_unfiltered_and_vision_only(self):
+        """The GGUF uncensored model (real projector -> has_vision) is
+        eligible for unfiltered AND vision, so it can serve vision on
+        override — but still never code/general/reasoning."""
+        model = {"backend": "ollama", "active_params_b": 27,
+                 "context": 131072, "has_vision": True}
+        tasks = ps.get_eligible_tasks("qwen3.8-uncensored:27b", model)
+        assert set(tasks) == {"unfiltered", "vision"}
+        assert "general" not in tasks and "code" not in tasks
 
 
 class TestPickModelForTask:
@@ -981,7 +990,7 @@ class TestRoutes:
              patch.object(ps, "load_default_prefs", return_value=prefs):
             resp = client.post("/api/test", json={
                 "tool": "speak", "text": "hello",
-                "ref_audio": "/Users/jerry/.ssh/id_rsa",
+                "ref_audio": "/etc/passwd",
             })
         assert resp.status_code == 403
         assert "restricted" in resp.get_json()["error"].lower()

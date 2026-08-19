@@ -1338,10 +1338,15 @@ def get_eligible_tasks(name, model_info):
     if model_info.get("has_vision") and "vision" not in tasks:
         tasks.append("vision")
 
-    # An abliterated model serves the unfiltered task and nothing else,
-    # whatever other capabilities its checkpoint carries.
+    # An abliterated model may serve only unfiltered and vision — never the
+    # general LLM pools (code/general/reasoning), whose filters already drop
+    # it via ALWAYS_EXCLUDE. Vision survives only when the tower is actually
+    # reachable (has_vision, i.e. a real projector) — so an lm-served
+    # uncensored MLX entry stays unfiltered-only while the GGUF (with mmproj)
+    # becomes vision-eligible for on-demand use. It is never a default vision
+    # pick; the profile's vision task keeps pointing at the aligned model.
     if "unfiltered" in tasks:
-        return ["unfiltered"]
+        return [t for t in ("unfiltered", "vision") if t in tasks]
     return tasks
 
 
