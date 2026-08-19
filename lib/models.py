@@ -618,7 +618,7 @@ DEFAULT_PROFILES = {
     "profiles": {
         "32gb": {
             "label": "32 GB",
-            "description": "Base M5 / M1 Max class — small, fast models",
+            "description": "Base Apple Silicon (M-series Air/Pro) — small, fast models",
             "max_ram_gb": 32,
             "warm": ["general", "embedding"],
             "tasks": {
@@ -649,7 +649,7 @@ DEFAULT_PROFILES = {
         },
         "64gb": {
             "label": "64 GB",
-            "description": "M5 / mid GPU — dense 27B workhorse",
+            "description": "M-series Pro/Max — dense 27B workhorse",
             "max_ram_gb": 64,
             "warm": ["general", "embedding"],
             "tasks": {
@@ -679,7 +679,7 @@ DEFAULT_PROFILES = {
         },
         "128gb": {
             "label": "128 GB",
-            "description": "M5 Max class — dense 27B + strong vision",
+            "description": "M5 Max MacBook Pro (max RAM) — dense 27B + strong vision",
             "max_ram_gb": 128,
             "warm": ["general", "embedding"],
             "tasks": {
@@ -706,7 +706,7 @@ DEFAULT_PROFILES = {
         },
         "512gb": {
             "label": "512 GB",
-            "description": "M3 Ultra class — frontier",
+            "description": "M3 Ultra Mac Studio class — frontier models",
             "max_ram_gb": 512,
             "warm": ["general", "embedding"],
             "tasks": {
