@@ -58,13 +58,19 @@ model provisioned via `hf download`").
 2. **Variants:** `laya-multilingual` is the fleet default; English `laya` supported as an override.
 3. **Serving:** a **dedicated persistent service**, model resident. Not in-process (keeps torch out of
    the MCP/profile servers, which stay thin dispatchers) and not subprocess-per-call (24s cold load).
-4. **Topology:** runs **locally on every install, all tiers** (32/64/128/512) — laya is ~0.7–1.3GB
-   resident and universally local-capable, unlike ds4 (server-only because glm-5.2 is 244GB). Port is
-   **internal-only** (never in `tailscale serve`); each machine self-serves, so there is no cross-machine
-   serving to expose.
+4. **Topology:** laya is available on **every install, all tiers** (~0.7–1.3GB, universally
+   local-capable, unlike server-only ds4), on an **internal-only** port (never in `tailscale serve`).
+   **But it is only started *resident* on the machine that actually serves decisions** — i.e. in
+   **server** mode and **offline** mode — not on a client that routes to the desktop (see decision 5).
+   *(Red-team fix: "always resident everywhere" + "route to server" made a client's local laya
+   permanent dead weight — ~1.3GB + a torch/MPS process + a 24s cold load + a status dot for a model it
+   only uses when the desktop is unreachable.)* On a client (desktop reachable), laya is **lazy-started
+   on first offline fallback**, mirroring how the profile server auto-starts only where it's needed. So
+   the 128gb M5 Max still runs laya locally — as a server, or offline — without paying for it while it's
+   a client proxying to the desktop.
 5. **Routing:** **simple** — `local_decide` follows SP's normal client→server MCP routing. In client
    mode a laptop's call executes on the desktop's MCP against the desktop's laya; the laptop's own laya
-   is used only in offline mode. (A local-first exception was considered and declined — least code wins.)
+   runs only in offline mode. (A local-first exception was considered and declined — least code wins.)
 
 ## Components
 
@@ -97,18 +103,40 @@ model provisioned via `hf download`").
 
 - Signature: `local_decide(state: dict, questions: dict, model: str | None = None)`.
 - Validates the typed-question schema (each question has a valid `type` ∈ {choice, score, noul} and the
-  matching `criteria` shape), resolves `model` (default = profile's `decision` pick), dispatches to the
-  laya service `/decide`, returns the typed answers + calibrated probabilities.
-- Discovery: the MCP server's model discovery adds a laya branch querying `LAYA_URL/v1/models`; the
-  served names get `backend="laya"`, `task="decision"`, and hardcoded metadata (params from the known
-  table; no context/vision). Without this the model is invisible to `pick_model`.
+  matching `criteria` shape), resolves `model`, dispatches to the laya service `/decide`, returns the
+  typed answers + calibrated probabilities.
+- **Model resolution must use a laya-only resolver that FAILS LOUD — never the shared `pick_model`
+  cascade.** *(Red-team fix, the single most likely implementation bug):* `pick_model` is invoked with
+  `fallback_to_general=True` and, on a miss, falls through to "any LLM in `LLM_BACKENDS`"
+  (`mcp/local-models-server.py:633-640`). Reusing it for `decision` would silently route a caller's
+  `state`+`questions` to glm-5.2/qwen as a chat prompt — the exact "decision and chat models are not
+  interchangeable" failure this design forbids. Implement `resolve_decision_model(model)`: exact/prefix
+  match against laya-backed registry entries only; if nothing resolves, raise a clear error. No general
+  fallback, ever.
+- Discovery: the MCP server's model discovery adds a laya branch querying `LAYA_URL/v1/models` with a
+  short per-call `timeout` (match ds4's `timeout=5`, `mcp/local-models-server.py:511`, so a cold/loading
+  laya can't stall the whole discovery gather during its ~24s load). Served names get `backend="laya"`,
+  `task="decision"`, and metadata from new `LAYA_*` constants in `lib/models.py` (name, params; no
+  context/vision) — there is no existing table laya fits (`KNOWN_ACTIVE_PARAMS` is MoE-active-params
+  only), so add constants exactly like `DS4_MODEL_NAME`/`DS4_TOTAL_PARAMS_B`/…
 - Logged to the activity DB like every other request (`lib/activity.py`).
 
-### 4. Playground + profile server (`app/profile-server.py`, `app/tools.html`)
+### 4. Profile-server discovery + playground (`app/profile-server.py`, `app/tools.html`)
 
+- **Add `_fetch_laya_models(existing)` to `_fetch_all_models`**, mirroring `_fetch_ds4_models`
+  (`app/profile-server.py:1214`, called at :1297). *(Red-team fix — the spec previously listed only
+  `get_eligible_tasks` and missed the real seam.)* Without this discovery branch: the Profiles UI can't
+  display/assign/validate the `decision` pick, `get_eligible_tasks` is never invoked on a laya model (so
+  the decision-only rule is dead code), **and the pick can't resolve on-demand** — `resolve_pref_candidate`
+  gates HF-repo-id resolution on `task in HF_TASK_BACKENDS` (`lib/models.py:360`) and `decision` is
+  deliberately not in `HF_TASK_BACKENDS`, so a `decision → "convaiinnovations/laya-multilingual"` pref
+  not already in the registry returns `None`. The discovery branch is what puts laya in the registry so
+  the pref resolves by name. Decide behavior when the service is down: the pick should still validate
+  against the profile (surface "decision backend not running") rather than silently vanish.
 - `test_playground_coverage` requires every MCP tool to have a playground UI card **and** an `/api/test`
-  route. Add a `decide` card (state textarea + a small typed-question builder) and a `decide` branch in
-  `/api/test` that dispatches to the laya service and renders the typed answer + probabilities.
+  route (add `local_decide → {"decide"}` to `MCP_TO_PLAYGROUND`). Add a `decide` card (state textarea +
+  a small typed-question builder) and a `decide` branch in `/api/test` that dispatches to the laya
+  service and renders the typed answer + probabilities.
 - `get_eligible_tasks`: a laya-backed model qualifies for `decision` only (its own class), never the LLM
   pools.
 
@@ -121,11 +149,21 @@ model provisioned via `hf download`").
   `hf download` populates, so provisioning composes with autopull rather than laya re-downloading.
 - The English `laya` override is downloaded only when a profile/override names it.
 
-### 6. Modes / remote access (`app/menubar.py`)
+### 6. Modes / remote access / memory (`app/menubar.py`, `bin/start-local-models`)
 
-- Port `8003` is **never** added to the `tailscale serve` tuple (internal-only).
-- No client/server serving logic: every machine runs its own laya; client-mode `local_decide` routes
-  through the desktop's MCP per the "simple" decision above.
+- Port `8003` is **never** added to the `tailscale serve` tuple (`app/menubar.py:2373-2374`) — assert
+  this with a test. localhost-bind + never-served is the trust boundary; **no bearer auth on 8003 is
+  correct and consistent** (ds4:8002 and Ollama/MLX have none either — only the served 8100/8101 carry
+  the token). Input safety for arbitrary `state`/`questions` → torch is handled by the MCP-boundary
+  schema validation in §3, not by transport auth.
+- **Residency is mode-gated** (decision 4): `start-local-models` starts laya resident in **server** and
+  **offline** modes; in **client** mode it is not started (lazy-start on offline fallback).
+- **Memory accounting** *(red-team fix)*: the contention-aware keep-warm math
+  (`app/menubar.py:276-294`, gating ~:976) sizes headroom from the model registry's VRAM accounting,
+  which is **blind to a separate torch process**. Where laya runs resident, subtract a fixed laya
+  reserve (~1.5GB) from available-memory before the warm-budget/headroom decision, or keep-warm will
+  over-commit by laya's footprint on the tighter tiers. (Mode-gating already keeps it off client
+  machines that route away.)
 
 ## Data flow (a decide call)
 
@@ -158,11 +196,34 @@ Claude → MCP local_decide(state, questions, model?)
   skips cleanly when the service is down.
 - **No mocking of the laya wire format in smoke** — same discipline as the other smoke tests.
 
+## ds4-seam checklist (enumerate in the plan, don't leave to discovery)
+
+A new backend on an internal port touches the same seams ds4 did. Grep `ds4`/`DS4_`/`8002` to confirm
+each; the plan must cover:
+
+- `bin/start-local-models`: start laya (mode-gated), and add it to `stop_services()` (`pkill` like
+  `ds4-server`, :113-119) and `show_status` (:163-169).
+- `bin/local-models-mcp-detect`: `export LAYA_URL="http://localhost:${LAYA_PORT:-8003}"` (mirrors the
+  unconditional `DS4_URL` export at :72-73) so the desktop's MCP finds laya.
+- `lib/models.py`: `LAYA_PORT` into `_NETWORK_DEFAULTS` **and** `_NUMERIC_KEYS` (:30-46) and the
+  `config/local-models/network.conf` template; confirm against `validate_network_conf`. Plus `LAYA_*`
+  metadata constants.
+- `app/menubar.py`: a laya service status dot; a laya line in Copy Diagnostics (:2412-2413).
+- MCP + profile-server discovery branches (both), each with a short timeout.
+- Tests: `PROFILES_VERSION` bump trips the release.sh fleet cross-version compat gate and
+  `test_profile_server`/`test_deployment`; the smoke harness is hand-maintained tuples
+  (`tests/_smoke_helpers.py` `CHAT_CASES`/`FIXTURE_CASES`) so add a decision case tuple + a
+  typed-question body builder + a "probabilities sum to ~1" assertion; add the `MCP_TO_PLAYGROUND` entry.
+
 ## Risks
 
-1. **`laya.load()` vs `hf download` cache** — provisioning assumes they share the HF cache. Verify in the
-   first implementation step; if laya uses its own download path, adjust the autopull category (a small
-   dedicated "laya provisioning" step, like the MLX-subfolder one) rather than forcing it.
+1. **`laya.load()` vs `hf download` cache — RESOLVED (verified 2026-09-19).** The spike's
+   `laya.load("convaiinnovations/laya-multilingual")` populated the standard HF hub cache
+   (`~/.cache/huggingface/hub/models--convaiinnovations--laya-multilingual`) — the same cache
+   `hf download` writes — and `laya-multilingual` is a **standalone repo** (`model.safetensors` at root,
+   plus `encoder/` + `tokenizer/` subdirs), **not** an MLX-subfolder-style repo. So `profile_hf_models`
+   autopull composes with `laya.load()` and no dedicated provisioning step is needed. (Confirm the same
+   for the English `laya` repo before referencing it.)
 2. **torch is a heavy dep** (~2GB) — acceptable because it is isolated to the laya service's env and
    pulled once; it never touches the MCP/profile servers or their startup time.
 3. **Resident memory on the 32gb tier** — ~0.7–1.3GB for the multilingual model alongside the other
