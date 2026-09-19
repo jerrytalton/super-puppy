@@ -72,6 +72,12 @@ export MLX_URL
 # localhost DS4_URL on a laptop is correct — it simply discovers nothing.
 export DS4_URL="http://localhost:${DS4_PORT:-8002}"
 
+# laya (typed decisions) is internal-only too (port 8003, never Tailscale-
+# served). Same rule as ds4: in client mode the desktop's MCP serves
+# decisions, so a localhost LAYA_URL on a laptop is correct — it discovers
+# the local laya when this machine is the server/offline, nothing otherwise.
+export LAYA_URL="http://localhost:${LAYA_PORT:-8003}"
+
 # Auth token: use cached file, only hit 1Password if no cache exists
 TOKEN_CACHE="$HOME/.config/local-models/mcp_auth_token"
 

@@ -28,6 +28,7 @@ OLLAMA_PID_FILE="/tmp/ollama-serve.pid"
 OLLAMA_PORT=11434
 MLX_PORT=8000
 DS4_PORT=8002
+LAYA_PORT=8003
 DS4_DIR=""
 PROBE_TIMEOUT=2
 TAILSCALE_HOSTNAME=""
@@ -37,6 +38,10 @@ if [ -f "$NETWORK_CONF" ]; then
     source "$NETWORK_CONF"
 fi
 DS4_DIR="${DS4_DIR:-$HOME/.local/share/super-puppy/ds4}"
+
+# Repo dir — this script is symlinked from ~/.local/bin, so resolve through
+# the symlink to find app/laya-server.py.
+SP_REPO="$(python3 -c "import os;print(os.path.dirname(os.path.dirname(os.path.realpath('$0'))))" 2>/dev/null || true)"
 
 get_ram_gb() {
     sysctl -n hw.memsize | awk '{printf "%d", $1 / 1073741824}'
@@ -118,6 +123,14 @@ stop_services() {
         echo "  ds4-server not running."
     fi
 
+    if pkill -f "laya-server.py" 2>/dev/null; then
+        sleep 1
+        pkill -9 -f "laya-server.py" 2>/dev/null || true
+        echo "  laya-server stopped."
+    else
+        echo "  laya-server not running."
+    fi
+
     echo "  Ollama left running (system service, not Super Puppy's to stop)."
     rm -f "$OLLAMA_PID_FILE"
 
@@ -166,6 +179,14 @@ show_status() {
         else
             echo "  ds4-server:        not running"
         fi
+    fi
+
+    if curl -sf "http://localhost:${LAYA_PORT}/health" > /dev/null 2>&1; then
+        ready=$(curl -sf "http://localhost:${LAYA_PORT}/v1/models" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin).get('data',[]); print('ready' if d else 'loading')" 2>/dev/null || echo '?')
+        echo "  laya-server:       running (http://localhost:${LAYA_PORT}, decisions — $ready)"
+    else
+        echo "  laya-server:       not running"
     fi
     exit 0
 }
@@ -256,6 +277,24 @@ if [ -x "$DS4_DIR/ds4-server" ]; then
     fi
 fi
 
+# --- laya (typed-decision engine) ---
+# Every tier (it's ~1GB), but resident only where it serves: we are past the
+# client-skip early-exit above, so this runs in server / offline / --local
+# mode, never on a client that routes decisions to the desktop. /health binds
+# immediately; the model loads in the background (~24s), so don't block startup.
+if [ -n "$SP_REPO" ] && [ -f "$SP_REPO/app/laya-server.py" ] && command -v uv >/dev/null 2>&1; then
+    if curl -sf "http://localhost:${LAYA_PORT}/health" > /dev/null 2>&1; then
+        echo "laya-server already running."
+    else
+        echo "Starting laya-server (typed decisions; model loads in background)..."
+        LAYA_LOG="/tmp/local-models-laya.log"
+        (cd "$SP_REPO" && exec uv run --python 3.12 app/laya-server.py --port "$LAYA_PORT") > "$LAYA_LOG" 2>&1 &
+        disown
+        wait_for_service "http://localhost:${LAYA_PORT}/health" "laya-server" 30 \
+            || echo "  laya-server slow to bind — see $LAYA_LOG" >&2
+    fi
+fi
+
 # --- Summary ---
 echo ""
 if is_server; then
@@ -268,6 +307,7 @@ echo "  MLX-OpenAI:   http://localhost:${MLX_PORT}"
 if [ -x "$DS4_DIR/ds4-server" ]; then
     echo "  ds4 (glm-5.2): http://localhost:${DS4_PORT}"
 fi
+echo "  laya:         http://localhost:${LAYA_PORT}"
 echo ""
 echo "Commands:"
 echo "  start-local-models --status   Show running models"
