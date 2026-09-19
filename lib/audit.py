@@ -472,8 +472,8 @@ def _check_codex_mcp(home: Path) -> Check:
         return Check("codex-mcp", "codex", "fail", f"{path} missing", True)
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except tomllib.TOMLDecodeError as e:
-        return Check("codex-mcp", "codex", "fail", f"{path} is not valid TOML: {e}", True)
+    except (tomllib.TOMLDecodeError, OSError) as e:
+        return Check("codex-mcp", "codex", "fail", f"{path} is unreadable/not valid TOML: {e}", True)
     entry = data.get("mcp_servers", {}).get("local-models")
     if isinstance(entry, dict) and entry.get("url") and entry.get("headers", {}).get("X-SP-Client"):
         return Check("codex-mcp", "codex", "pass", f"registered in {path} with X-SP-Client attribution", True)
@@ -512,6 +512,71 @@ def _fix_codex_guidance(home: Path, token: Optional[str]) -> str:
     path = codex_dir / "AGENTS.md"
     atomic_write(path, upsert_guidance(path.read_text(encoding="utf-8") if path.exists() else ""))
     return f"codex-guidance: upserted guidance block in {path}"
+
+
+# ── ChatGPT desktop app ─────────────────────────────────────────────────────
+#
+# Since the 2026-07 merger, the Codex desktop app IS the unified ChatGPT
+# desktop app (/Applications/ChatGPT.app, bundle com.openai.codex). Per
+# OpenAI's docs it shares MCP configuration with the Codex CLI —
+# ~/.codex/config.toml — so this check reuses Codex's file, gated on the
+# ChatGPT app being installed, and its fix creates ~/.codex even when the
+# Codex CLI never has (the ChatGPT-desktop-only user). NB: we verify the
+# config is *written correctly*, not that the app is consuming it at runtime
+# (unconfirmed we could reach from here) — the pass wording says so rather
+# than claiming the app is definitely wired up. There is no separate
+# guidance file: ChatGPT desktop takes server guidance from the MCP server's
+# `instructions` field at init, so once MCP is registered guidance follows.
+
+
+def _chatgpt_app_present() -> bool:
+    """True if the unified ChatGPT desktop app is installed (system or
+    user Applications). It shares ~/.codex/config.toml for MCP."""
+    return any(Path(p).expanduser().exists() for p in (
+        "/Applications/ChatGPT.app", "~/Applications/ChatGPT.app"))
+
+
+def _check_chatgpt_mcp(home: Path) -> Check:
+    if not _chatgpt_app_present():
+        return Check("chatgpt-mcp", "chatgpt", "n/a",
+                     "ChatGPT desktop app not installed (/Applications/ChatGPT.app absent)", False)
+    path = home / ".codex" / "config.toml"
+    if not path.exists():
+        return Check("chatgpt-mcp", "chatgpt", "fail",
+                     f"ChatGPT desktop installed but {path} missing — MCP not registered", True)
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, OSError) as e:
+        return Check("chatgpt-mcp", "chatgpt", "fail", f"{path} is unreadable/not valid TOML: {e}", True)
+    entry = data.get("mcp_servers", {}).get("local-models")
+    if isinstance(entry, dict) and entry.get("url") and entry.get("headers", {}).get("X-SP-Client"):
+        return Check("chatgpt-mcp", "chatgpt", "pass",
+                     f"local-models written to {path} (shared with Codex; ChatGPT desktop is "
+                     f"expected to read this)", True)
+    return Check("chatgpt-mcp", "chatgpt", "fail",
+                 f"mcp_servers.local-models missing url/X-SP-Client header in {path}", True)
+
+
+def _fix_chatgpt_mcp(home: Path, token: Optional[str]) -> str:
+    if not _chatgpt_app_present():
+        raise ValueError("ChatGPT desktop app not installed — nothing to fix")
+    # Unlike _require_tool_dir, create ~/.codex if absent: a ChatGPT-desktop-
+    # only machine may never have run the Codex CLI, but the app still reads
+    # this shared config.
+    codex_dir = home / ".codex"
+    codex_dir.mkdir(parents=True, exist_ok=True)
+    path = codex_dir / "config.toml"
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    if existing.strip():
+        try:
+            tomllib.loads(existing)
+        except tomllib.TOMLDecodeError as e:
+            raise ValueError(f"refusing to touch unparseable {path}: {e}") from e
+    new_text = _upsert_marked_text(existing, CODEX_MARKERS, _codex_managed_block())
+    tomllib.loads(new_text)  # our managed section must itself parse
+    atomic_write(path, new_text)
+    return (f"chatgpt-mcp: wrote managed [mcp_servers.local-models] to {path} "
+            f"(shared with Codex; token via ${{{SP_TOKEN_ENV}}}, not inlined)")
 
 
 # ── Gemini ────────────────────────────────────────────────────────────────
@@ -604,6 +669,7 @@ _REGISTRY: dict[str, tuple] = {
     "token-present": (_check_token_present, None),
     "codex-mcp": (_check_codex_mcp, _fix_codex_mcp),
     "codex-guidance": (_check_codex_guidance, _fix_codex_guidance),
+    "chatgpt-mcp": (_check_chatgpt_mcp, _fix_chatgpt_mcp),
     "gemini-mcp": (_check_gemini_mcp, _fix_gemini_mcp),
     "gemini-guidance": (_check_gemini_guidance, _fix_gemini_guidance),
     "other-agents": (_check_other_agents, None),

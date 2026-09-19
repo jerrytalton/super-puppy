@@ -100,10 +100,14 @@ def _validate_questions(questions):
         qtype = q.get("type")
         if qtype not in _VALID_TYPES:
             return f"question {name!r} has invalid type {qtype!r} (expected one of {sorted(_VALID_TYPES)})"
-        if qtype == "choice" and not isinstance(q.get("criteria"), dict):
-            return f"choice question {name!r} needs a 'criteria' object (option -> description)"
-        if qtype == "score" and not isinstance(q.get("criteria"), list):
-            return f"score question {name!r} needs a 'criteria' list (ordinal labels)"
+        if qtype == "choice":
+            crit = q.get("criteria")
+            if not isinstance(crit, dict) or not crit:
+                return f"choice question {name!r} needs a non-empty 'criteria' object (option -> description)"
+        if qtype == "score":
+            crit = q.get("criteria")
+            if not isinstance(crit, list) or not crit:
+                return f"score question {name!r} needs a non-empty 'criteria' list (ordinal labels)"
     return None
 
 

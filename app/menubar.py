@@ -1715,7 +1715,7 @@ class LocalModelsApp(rumps.App):
         self.menu_ds4_restart = rumps.MenuItem(
             "Restart ds4", callback=self._restart_ds4)
         self.menu_ds4.add(self.menu_ds4_restart)
-        self.menu_laya = rumps.MenuItem("laya …")
+        self.menu_laya = rumps.MenuItem("Laya …")
         self.menu_mcp = rumps.MenuItem("MCP …")
         self.menu_mcp_restart = rumps.MenuItem(
             "Restart MCP", callback=self._restart_mcp)
@@ -3136,11 +3136,11 @@ class LocalModelsApp(rumps.App):
 
             self.menu_laya.show()
             if self.laya_ready:
-                self._styled_menu(self.menu_laya, GRN, "laya", "decisions")
+                self._styled_menu(self.menu_laya, GRN, "Laya", "ready")
             elif self.laya_ok:
-                self._styled_menu(self.menu_laya, YEL, "laya", "loading…")
+                self._styled_menu(self.menu_laya, YEL, "Laya", "loading…")
             else:
-                self._styled_menu(self.menu_laya, RED, "laya", down_detail)
+                self._styled_menu(self.menu_laya, RED, "Laya", down_detail)
 
         mcp_proc = getattr(self, '_mcp_proc', None)
         mcp_proc_alive = mcp_proc is not None and mcp_proc.poll() is None

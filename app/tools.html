@@ -72,6 +72,17 @@ h2 { font-size: 13px; font-weight: 600; color: var(--text2); text-transform: upp
 .field textarea { height: 80px; resize: vertical; }
 .field input:focus, .field textarea:focus { outline: none; border-color: var(--accent); }
 
+/* Decision builder */
+.decide-row { display: flex; gap: 6px; margin-bottom: 6px; align-items: center; }
+.decide-row input, .decide-row select { flex: 1; min-width: 0; }
+.decide-q { border: 1px solid var(--border); border-radius: 8px; padding: 8px; margin-bottom: 8px; }
+.decide-q .dq-instr, .decide-q .dq-crit { width: 100%; margin-top: 6px; }
+.mini-btn {
+  flex: 0 0 auto; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); font: inherit; font-size: 12.5px; cursor: pointer;
+}
+.mini-btn:hover { border-color: var(--accent); }
+
 .run-row { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
 .run-btn {
   padding: 8px 24px; border-radius: 8px; border: none;
@@ -312,10 +323,7 @@ const TOOLS = {
     {id:'prompt', label:'Prompt', type:'textarea', placeholder:'Ask anything...'},
   ]},
   decide:      { label: 'Decision', task: 'decision', fields: [
-    {id:'state', label:'State (JSON)', type:'textarea',
-     value:'{\n  "subject": "Duplicate charge on invoice 4411",\n  "body": "We were billed twice for March. Please refund the duplicate."\n}'},
-    {id:'questions', label:'Questions (JSON)', type:'textarea',
-     value:'{\n  "department": {"type": "choice", "instructions": "Which team should handle this?",\n    "criteria": {"billing": "invoices, refunds", "technical": "bugs", "sales": "pricing"}},\n  "urgency": {"type": "score", "instructions": "How urgent?", "criteria": ["low", "medium", "high"]},\n  "churn_risk": {"type": "noul", "instructions": "Is the user threatening to cancel?"}\n}'},
+    {id:'decide', label:'', type:'decision_builder'},
   ]},
 };
 
@@ -328,7 +336,28 @@ let selectedModel = null;
 let pickerOpen = false;
 let thinkEnabled = true;
 let taskThinkDefaults = {};
-const toolState = {};  // per-tool saved state: {fields, model, think, output, outputClass, log}
+const toolState = {};  // per-tool saved state: {fields, model, think, decision, output, outputClass, log}
+const _PERSIST_KEY = 'sp_playground_v1';
+
+// Reload-durable input: mirror the *input* parts of toolState (never the
+// rendered output/log, and never the auth token) to localStorage so a page
+// reload restores what you typed. Best-effort — quota/serialize errors and
+// corrupt payloads are swallowed rather than breaking the Playground.
+function persistToolState() {
+  try {
+    const slim = {};
+    for (const [k, v] of Object.entries(toolState)) {
+      slim[k] = {fields: v.fields, model: v.model, think: v.think, decision: v.decision};
+    }
+    localStorage.setItem(_PERSIST_KEY, JSON.stringify(slim));
+  } catch (e) { /* non-fatal */ }
+}
+function loadPersistedState() {
+  try {
+    const raw = localStorage.getItem(_PERSIST_KEY);
+    if (raw) Object.assign(toolState, JSON.parse(raw));
+  } catch (e) { /* corrupt — ignore */ }
+}
 
 const fmtP = (t,a) => t===a||!a ? t+'B' : t+'B/'+a+'B';
 const fmtC = c => c>=1e6?Math.round(c/1e6)+'M':c>=1024?Math.floor(c/1024)+'K':c>0?''+c:'';
@@ -439,6 +468,7 @@ async function init() {
     b.onclick = () => selectTool(key);
     grid.appendChild(b);
   }
+  loadPersistedState();  // restore input from a prior page load, if any
   selectTool('code');
 }
 
@@ -450,12 +480,20 @@ function saveToolState() {
     if (el && (f.type === 'text' || f.type === 'textarea' || f.type === 'select')) fields[f.id] = el.value;
   }
   const out = document.getElementById('output');
-  toolState[selected] = {
+  const state = {
     fields, model: selectedModel, think: thinkEnabled,
     output: out.innerHTML, outputClass: out.className,
     log: document.getElementById('log').textContent,
     status: document.getElementById('status').innerHTML,
   };
+  // The decision builder isn't a plain field — capture its rows so edits
+  // survive a tool switch (they used to, when it was JSON textareas).
+  if (TOOLS[selected].fields.some(f => f.type === 'decision_builder')
+      && document.getElementById('decide-state')) {
+    state.decision = collectDecision();
+  }
+  toolState[selected] = state;
+  persistToolState();  // mirror input to localStorage for reload durability
 }
 
 function selectTool(key) {
@@ -513,6 +551,8 @@ function selectTool(key) {
         `<option value="${o}">${o.replace(/_/g, ' ')}</option>`).join('');
       div.innerHTML = `<label>${f.label}</label>` +
         `<select id="f_${f.id}">${opts}</select>`;
+    } else if (f.type === 'decision_builder') {
+      div.innerHTML = renderDecisionBuilder();
     } else if (f.type === 'textarea') {
       div.innerHTML = `<label>${f.label}</label>` +
         `<textarea id="f_${f.id}" placeholder="${f.placeholder || ''}"></textarea>`;
@@ -529,6 +569,7 @@ function selectTool(key) {
       if (el) el.value = val;
     }
   }
+  if (key === 'decide') restoreOrSeedDecision(saved);  // restore edits, else example
   // Populate model card picker
   const task = TOOLS[key].task;
   const defaultModel = taskDefaults[task] || '';
@@ -686,6 +727,125 @@ function stopTimer(tool, t0, status, model) {
   }
 }
 
+function _escAttr(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+function renderDecisionBuilder() {
+  return `
+    <label>State — the text to decide over</label>
+    <div id="decide-state"></div>
+    <button type="button" class="mini-btn" onclick="addStateRow()">+ field</button>
+    <label style="margin-top:14px;display:block">Questions</label>
+    <div id="decide-questions"></div>
+    <button type="button" class="mini-btn" onclick="addQuestionRow()">+ question</button>`;
+}
+
+function addStateRow(key = '', val = '') {
+  const wrap = document.getElementById('decide-state');
+  const row = document.createElement('div');
+  row.className = 'decide-row';
+  row.innerHTML =
+    `<input class="ds-key" placeholder="field (e.g. subject)" value="${_escAttr(key)}">` +
+    `<input class="ds-val" placeholder="value" value="${_escAttr(val)}">` +
+    `<button type="button" class="mini-btn" title="remove" onclick="this.parentElement.remove()">×</button>`;
+  wrap.appendChild(row);
+}
+
+function onQType(sel) {
+  const crit = sel.closest('.decide-q').querySelector('.dq-crit');
+  if (sel.value === 'choice') {
+    crit.style.display = '';
+    crit.placeholder = 'options: name:description, comma-separated (e.g. billing:refunds, tech:bugs)';
+  } else if (sel.value === 'score') {
+    crit.style.display = '';
+    crit.placeholder = 'levels low→high, comma-separated (e.g. low, medium, high)';
+  } else {
+    crit.style.display = 'none';  // noul (yes/no) needs no criteria
+  }
+}
+
+function addQuestionRow(q) {
+  q = q || {};
+  const wrap = document.getElementById('decide-questions');
+  const row = document.createElement('div');
+  row.className = 'decide-q';
+  row.innerHTML =
+    `<div class="decide-row">` +
+      `<input class="dq-name" placeholder="name (e.g. urgency)" value="${_escAttr(q.name || '')}">` +
+      `<select class="dq-type" onchange="onQType(this)">` +
+        `<option value="choice">choice</option>` +
+        `<option value="score">score</option>` +
+        `<option value="noul">yes/no</option>` +
+      `</select>` +
+      `<button type="button" class="mini-btn" title="remove" onclick="this.closest('.decide-q').remove()">×</button>` +
+    `</div>` +
+    `<input class="dq-instr" placeholder="instructions (the question to ask)" value="${_escAttr(q.instructions || '')}">` +
+    `<input class="dq-crit" value="${_escAttr(q.criteria || '')}">`;
+  wrap.appendChild(row);
+  const sel = row.querySelector('.dq-type');
+  sel.value = q.type || 'choice';
+  onQType(sel);
+}
+
+function restoreOrSeedDecision(saved) {
+  const d = saved && saved.decision;
+  const hasData = d && (Object.keys(d.state || {}).length || Object.keys(d.questions || {}).length);
+  if (!hasData) { seedDecisionBuilder(); return; }
+  for (const [k, v] of Object.entries(d.state || {})) addStateRow(k, v);
+  for (const [name, q] of Object.entries(d.questions || {})) {
+    let crit = '';
+    if (q.type === 'choice' && q.criteria) {
+      crit = Object.entries(q.criteria).map(([k, v]) => k === v ? k : `${k}:${v}`).join(', ');
+    } else if (q.type === 'score' && Array.isArray(q.criteria)) {
+      crit = q.criteria.join(', ');
+    }
+    addQuestionRow({name, type: q.type, instructions: q.instructions || '', criteria: crit});
+  }
+}
+
+function seedDecisionBuilder() {
+  if (document.querySelector('#decide-state .decide-row')) return;  // already populated
+  addStateRow('subject', 'Duplicate charge on invoice 4411');
+  addStateRow('body', 'We were billed twice for March. Please refund the duplicate.');
+  addQuestionRow({name: 'department', type: 'choice',
+    instructions: 'Which team should handle this?',
+    criteria: 'billing:invoices and refunds, technical:bugs and outages, sales:pricing'});
+  addQuestionRow({name: 'urgency', type: 'score',
+    instructions: 'How urgent is this?', criteria: 'not urgent, soon, blocking'});
+  addQuestionRow({name: 'churn_risk', type: 'noul',
+    instructions: 'Is the user threatening to cancel?'});
+}
+
+function collectDecision() {
+  const state = {};
+  document.querySelectorAll('#decide-state .decide-row').forEach(r => {
+    const k = r.querySelector('.ds-key').value.trim();
+    if (k) state[k] = r.querySelector('.ds-val').value;
+  });
+  const questions = {};
+  document.querySelectorAll('#decide-questions .decide-q').forEach(r => {
+    const name = r.querySelector('.dq-name').value.trim();
+    if (!name) return;
+    const type = r.querySelector('.dq-type').value;
+    const q = {type, instructions: r.querySelector('.dq-instr').value};
+    const critRaw = r.querySelector('.dq-crit').value.trim();
+    if (type === 'choice') {
+      const crit = {};
+      critRaw.split(',').map(s => s.trim()).filter(Boolean).forEach(tok => {
+        const i = tok.indexOf(':');
+        if (i >= 0) crit[tok.slice(0, i).trim()] = tok.slice(i + 1).trim();
+        else crit[tok] = tok;
+      });
+      q.criteria = crit;
+    } else if (type === 'score') {
+      q.criteria = critRaw.split(',').map(s => s.trim()).filter(Boolean);
+    }
+    questions[name] = q;
+  });
+  return {state, questions};
+}
+
 async function buildBody() {
   const body = {tool: selected, model: selectedModel, think: thinkEnabled};
   for (const f of TOOLS[selected].fields) {
@@ -714,6 +874,10 @@ async function buildBody() {
         if (upData.error) throw new Error(upData.error);
         body[companion.id] = upData.path;
       }
+    } else if (f.type === 'decision_builder') {
+      const {state, questions} = collectDecision();
+      body.state = state;
+      body.questions = questions;
     } else {
       body[f.id] = getField(f.id);
     }

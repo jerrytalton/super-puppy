@@ -1,6 +1,7 @@
 import json
 import os
 import stat
+from unittest.mock import patch
 
 import pytest
 
@@ -283,6 +284,76 @@ def test_codex_gemini_fail_not_na_when_dirs_present(tmp_path):
     assert results["gemini-guidance"]["status"] == "fail"
     assert results["codex-mcp"]["fixable"] is True
     assert results["gemini-mcp"]["fixable"] is True
+
+
+def test_chatgpt_mcp_na_when_app_absent(tmp_path):
+    home = _fake_home(tmp_path)
+    with patch.object(audit, "_chatgpt_app_present", return_value=False):
+        results = {c["id"]: c for c in audit.run_all(home=home)}
+    assert results["chatgpt-mcp"]["status"] == "n/a"
+    assert results["chatgpt-mcp"]["fixable"] is False
+
+
+def test_chatgpt_mcp_fail_when_app_present_no_config(tmp_path):
+    """The ChatGPT-desktop-only gap: app installed, Codex CLI never was, so
+    ~/.codex is absent — must be a fixable FAIL, not n/a."""
+    home = _fake_home(tmp_path)
+    assert not (home / ".codex").exists()
+    with patch.object(audit, "_chatgpt_app_present", return_value=True):
+        results = {c["id"]: c for c in audit.run_all(home=home)}
+    assert results["chatgpt-mcp"]["status"] == "fail"
+    assert results["chatgpt-mcp"]["fixable"] is True
+
+
+def test_fix_chatgpt_mcp_creates_codex_dir_and_passes(tmp_path):
+    """Fix must create ~/.codex even without the Codex CLI, then pass."""
+    home = _fake_home(tmp_path)
+    with patch.object(audit, "_chatgpt_app_present", return_value=True):
+        audit.fix("chatgpt-mcp", home=home, token="secret")
+        assert (home / ".codex" / "config.toml").exists()
+        results = {c["id"]: c for c in audit.run_all(home=home)}
+    assert results["chatgpt-mcp"]["status"] == "pass"
+
+
+def test_chatgpt_and_codex_share_one_config(tmp_path):
+    """Both read/write the same ~/.codex/config.toml — fixing one satisfies
+    the other's MCP check (shared surface, no double-write conflict)."""
+    home = _fake_home(tmp_path)
+    (home / ".codex").mkdir()
+    audit.fix("codex-mcp", home=home, token="secret")
+    with patch.object(audit, "_chatgpt_app_present", return_value=True):
+        results = {c["id"]: c for c in audit.run_all(home=home)}
+    assert results["codex-mcp"]["status"] == "pass"
+    assert results["chatgpt-mcp"]["status"] == "pass"
+
+
+def test_fix_chatgpt_mcp_raises_when_app_absent(tmp_path):
+    home = _fake_home(tmp_path)
+    with patch.object(audit, "_chatgpt_app_present", return_value=False):
+        with pytest.raises(ValueError, match="not installed"):
+            audit.fix("chatgpt-mcp", home=home, token="secret")
+
+
+def test_fix_chatgpt_mcp_refuses_unparseable_toml(tmp_path):
+    home = _fake_home(tmp_path)
+    (home / ".codex").mkdir()
+    (home / ".codex" / "config.toml").write_text("not [ valid toml =")
+    with patch.object(audit, "_chatgpt_app_present", return_value=True):
+        with pytest.raises(Exception):
+            audit.fix("chatgpt-mcp", home=home, token="secret")
+    assert (home / ".codex" / "config.toml").read_text() == "not [ valid toml ="
+
+
+def test_config_toml_as_directory_does_not_blank_the_audit(tmp_path):
+    """A directory at config.toml must yield one fixable-fail row, not an
+    IsADirectoryError that propagates out of run_all and blanks everything."""
+    home = _fake_home(tmp_path)
+    (home / ".codex").mkdir()
+    (home / ".codex" / "config.toml").mkdir()  # pathological but real
+    with patch.object(audit, "_chatgpt_app_present", return_value=True):
+        results = {c["id"]: c for c in audit.run_all(home=home)}  # must not raise
+    assert results["codex-mcp"]["status"] == "fail"
+    assert results["chatgpt-mcp"]["status"] == "fail"
 
 
 def test_fix_codex_mcp_then_passes_and_preserves_user_toml(tmp_path):
