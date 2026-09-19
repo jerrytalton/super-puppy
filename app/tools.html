@@ -336,7 +336,28 @@ let selectedModel = null;
 let pickerOpen = false;
 let thinkEnabled = true;
 let taskThinkDefaults = {};
-const toolState = {};  // per-tool saved state: {fields, model, think, output, outputClass, log}
+const toolState = {};  // per-tool saved state: {fields, model, think, decision, output, outputClass, log}
+const _PERSIST_KEY = 'sp_playground_v1';
+
+// Reload-durable input: mirror the *input* parts of toolState (never the
+// rendered output/log, and never the auth token) to localStorage so a page
+// reload restores what you typed. Best-effort — quota/serialize errors and
+// corrupt payloads are swallowed rather than breaking the Playground.
+function persistToolState() {
+  try {
+    const slim = {};
+    for (const [k, v] of Object.entries(toolState)) {
+      slim[k] = {fields: v.fields, model: v.model, think: v.think, decision: v.decision};
+    }
+    localStorage.setItem(_PERSIST_KEY, JSON.stringify(slim));
+  } catch (e) { /* non-fatal */ }
+}
+function loadPersistedState() {
+  try {
+    const raw = localStorage.getItem(_PERSIST_KEY);
+    if (raw) Object.assign(toolState, JSON.parse(raw));
+  } catch (e) { /* corrupt — ignore */ }
+}
 
 const fmtP = (t,a) => t===a||!a ? t+'B' : t+'B/'+a+'B';
 const fmtC = c => c>=1e6?Math.round(c/1e6)+'M':c>=1024?Math.floor(c/1024)+'K':c>0?''+c:'';
@@ -447,6 +468,7 @@ async function init() {
     b.onclick = () => selectTool(key);
     grid.appendChild(b);
   }
+  loadPersistedState();  // restore input from a prior page load, if any
   selectTool('code');
 }
 
@@ -458,12 +480,20 @@ function saveToolState() {
     if (el && (f.type === 'text' || f.type === 'textarea' || f.type === 'select')) fields[f.id] = el.value;
   }
   const out = document.getElementById('output');
-  toolState[selected] = {
+  const state = {
     fields, model: selectedModel, think: thinkEnabled,
     output: out.innerHTML, outputClass: out.className,
     log: document.getElementById('log').textContent,
     status: document.getElementById('status').innerHTML,
   };
+  // The decision builder isn't a plain field — capture its rows so edits
+  // survive a tool switch (they used to, when it was JSON textareas).
+  if (TOOLS[selected].fields.some(f => f.type === 'decision_builder')
+      && document.getElementById('decide-state')) {
+    state.decision = collectDecision();
+  }
+  toolState[selected] = state;
+  persistToolState();  // mirror input to localStorage for reload durability
 }
 
 function selectTool(key) {
@@ -539,7 +569,7 @@ function selectTool(key) {
       if (el) el.value = val;
     }
   }
-  if (key === 'decide') seedDecisionBuilder();  // pre-fill a runnable example
+  if (key === 'decide') restoreOrSeedDecision(saved);  // restore edits, else example
   // Populate model card picker
   const task = TOOLS[key].task;
   const defaultModel = taskDefaults[task] || '';
@@ -756,6 +786,22 @@ function addQuestionRow(q) {
   const sel = row.querySelector('.dq-type');
   sel.value = q.type || 'choice';
   onQType(sel);
+}
+
+function restoreOrSeedDecision(saved) {
+  const d = saved && saved.decision;
+  const hasData = d && (Object.keys(d.state || {}).length || Object.keys(d.questions || {}).length);
+  if (!hasData) { seedDecisionBuilder(); return; }
+  for (const [k, v] of Object.entries(d.state || {})) addStateRow(k, v);
+  for (const [name, q] of Object.entries(d.questions || {})) {
+    let crit = '';
+    if (q.type === 'choice' && q.criteria) {
+      crit = Object.entries(q.criteria).map(([k, v]) => k === v ? k : `${k}:${v}`).join(', ');
+    } else if (q.type === 'score' && Array.isArray(q.criteria)) {
+      crit = q.criteria.join(', ');
+    }
+    addQuestionRow({name, type: q.type, instructions: q.instructions || '', criteria: crit});
+  }
 }
 
 function seedDecisionBuilder() {
