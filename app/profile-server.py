@@ -55,6 +55,7 @@ from lib.models import (
     LAYA_CONTEXT,
     laya_params_b,
     LLM_BACKENDS,
+    ollama_sampling,
     MCP_PREFS_FILE,
     MLX_SERVER_CONFIG,
     local_model_dir_complete,
@@ -2356,6 +2357,9 @@ def _chat(model, backend, messages, timeout=600, tool="chat", image_b64=None, th
             else:
                 body = {"model": model, "messages": messages, "stream": False,
                         "keep_alive": keep_alive_for(model)}
+                sampling = ollama_sampling(model)
+                if sampling:
+                    body["options"] = sampling
                 if not think:
                     body["think"] = False
                 resp = requests.post(f"{OLLAMA_URL}/api/chat", json=body,
@@ -2451,6 +2455,9 @@ def _chat_stream(model, backend, messages, think=True, tool="chat"):
         else:
             body = {"model": model, "messages": messages, "stream": True,
                     "keep_alive": keep_alive_for(model)}
+            sampling = ollama_sampling(model)
+            if sampling:
+                body["options"] = sampling
             if not think:
                 body["think"] = False
             try:

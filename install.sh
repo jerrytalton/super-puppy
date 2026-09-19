@@ -631,7 +631,7 @@ fi
 
 if ! command -v mlx-openai-server > /dev/null; then
     echo "  Installing mlx-openai-server..."
-    uv tool install --python 3.12 mlx-openai-server \
+    uv tool install --python 3.12 mlx-openai-server==1.7.0 \
         || echo "  Warning: mlx-openai-server install failed (MLX models will be unavailable)"
 fi
 
@@ -787,7 +787,7 @@ fi
 remediation_for() {
     case "$1" in
         ollama)            echo "brew install ollama" ;;
-        mlx-openai-server) echo "uv tool install --python 3.12 mlx-openai-server" ;;
+        mlx-openai-server) echo "uv tool install --python 3.12 mlx-openai-server==1.7.0" ;;
         uv)                echo "curl -LsSf https://astral.sh/uv/install.sh | sh" ;;
         ds4-server)        echo "re-run install.sh (clones antirez/ds4@bd89932 and runs make ds4-server)" ;;
         *)                 echo "(see https://github.com/jerrytalton/super-puppy)" ;;
