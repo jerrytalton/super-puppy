@@ -488,6 +488,43 @@ class TestGetEligibleTasks:
                           side_effect=ps.requests.ConnectionError("down")):
             assert ps._fetch_laya_models(existing={}) == {}
 
+    def test_api_test_decide_parses_json_string_body(self, client):
+        """The playground sends state/questions as JSON strings (textareas);
+        the handler must parse them and dispatch to the laya service."""
+        captured = {}
+        def fake_post(url, json=None, timeout=None):
+            captured["url"] = url
+            captured["body"] = json
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.headers = {"content-type": "application/json"}
+            resp.json.return_value = {"answers": {"u": {"choice": "high"}}}
+            return resp
+        with patch.object(ps, "_pick_model_for_task",
+                          return_value=("convaiinnovations/laya-multilingual", "laya", None)), \
+             patch.object(ps.requests, "post", side_effect=fake_post):
+            r = client.post("/api/test", json={
+                "tool": "decide",
+                "state": '{"body": "prod down"}',            # JSON string
+                "questions": '{"u": {"type": "choice", "instructions": "?", "criteria": {"low": "a", "high": "b"}}}',
+            })
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["answers"]["u"]["choice"] == "high"
+        assert data["model"] == "convaiinnovations/laya-multilingual"
+        # the handler parsed the JSON strings into dicts before dispatch
+        assert isinstance(captured["body"]["state"], dict)
+        assert captured["url"].endswith("/decide")
+
+    def test_api_test_decide_bad_json_400(self, client):
+        with patch.object(ps, "_pick_model_for_task",
+                          return_value=("convaiinnovations/laya-multilingual", "laya", None)):
+            r = client.post("/api/test", json={
+                "tool": "decide", "state": "{not valid json",
+                "questions": '{"u": {"type": "noul", "instructions": "?"}}'})
+        assert r.status_code == 400
+        assert "not valid JSON" in r.get_json()["error"]
+
     def test_uncensored_lm_entry_is_unfiltered_only(self):
         """An lm-served uncensored entry has no reachable vision tower
         (has_vision False), so it qualifies for unfiltered and NOTHING

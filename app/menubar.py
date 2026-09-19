@@ -1632,6 +1632,12 @@ class LocalModelsApp(rumps.App):
         self.ds4_present = ds4_installed()
         self.laya_port = self.conf.get("LAYA_PORT", "8003")
         self.laya_url = f"http://localhost:{self.laya_port}"
+        # Can this machine actually run laya? (uv on PATH + the service script
+        # present). Gates auto-restart so a box where laya can't be launched
+        # doesn't re-spawn it every 2 minutes forever — mirrors ds4_present.
+        import shutil
+        self.laya_present = bool(shutil.which("uv")) and (
+            Path(__file__).resolve().parent / "laya-server.py").exists()
         self.probe_timeout = int(self.conf["PROBE_TIMEOUT"])
         self._profile_fixed_port = int(self.conf.get("PROFILE_PORT", "8101"))
         self.ts_hostname = self.conf.get("TAILSCALE_HOSTNAME", "")
@@ -2800,6 +2806,22 @@ class LocalModelsApp(rumps.App):
             wv = self.profile_window.contentView().subviews()[0]
             wv.loadRequest_(req)
 
+    def _probe_laya(self):
+        """Set laya_ok / laya_ready. /v1/models answers 200 even mid-load (it
+        just lists nothing), so laya_ok = service up; laya_ready = a model is
+        actually loaded. Called wherever laya serves locally — server mode AND
+        offline mode on a laptop — so the status dot isn't stale-RED while a
+        laptop's own laya is serving decisions offline."""
+        self.laya_ok = probe_service(self.laya_url, 2)
+        if self.laya_ok:
+            try:
+                with urllib.request.urlopen(f"{self.laya_url}/v1/models", timeout=2) as r:
+                    self.laya_ready = bool(json.loads(r.read()).get("data"))
+            except Exception:
+                self.laya_ready = False
+        else:
+            self.laya_ready = False
+
     def _refresh_server_mode(self):
         self.ollama_ok = probe_service(OLLAMA_LOCAL, 2)
         self.mlx_ok = probe_service(MLX_LOCAL, 2)
@@ -2839,19 +2861,7 @@ class LocalModelsApp(rumps.App):
                 if hasattr(self, '_ds4_loading_since'):
                     del self._ds4_loading_since
 
-        # laya (typed decisions) — /v1/models answers 200 even mid-load (it
-        # just lists nothing), so laya_ok = service up; laya_ready = a model
-        # is actually loaded. Runs on every serving machine; in client mode
-        # it's absent locally and the row is hidden (like ollama/mlx/ds4).
-        self.laya_ok = probe_service(self.laya_url, 2)
-        if self.laya_ok:
-            try:
-                with urllib.request.urlopen(f"{self.laya_url}/v1/models", timeout=2) as r:
-                    self.laya_ready = bool(json.loads(r.read()).get("data"))
-            except Exception:
-                self.laya_ready = False
-        else:
-            self.laya_ready = False
+        self._probe_laya()
 
         # Auto-restart downed services on desktop (at most once per 2 minutes)
         if (self.servers_started
@@ -2859,7 +2869,7 @@ class LocalModelsApp(rumps.App):
                      or (not self.mlx_ok and not self.mlx_loading)
                      or (self.ds4_present and not self.ds4_ok
                          and not self.ds4_loading)
-                     or not self.laya_ok)):
+                     or (self.laya_present and not self.laya_ok))):
             now = time.time()
             if now - getattr(self, '_last_restart_attempt', 0) > 120:
                 self._last_restart_attempt = now
@@ -2915,6 +2925,10 @@ class LocalModelsApp(rumps.App):
             self.ollama_models = []
             self.mlx_models = []
             self.mcp_models = mcp_models
+            # Client mode: decisions route to the desktop's laya; the local
+            # row is hidden, so keep the flags clean rather than stale.
+            self.laya_ok = False
+            self.laya_ready = False
             if not was_remote:
                 self._notify_connection("Connected to desktop",
                                         f"via Tailscale ({self.desktop_ip})")
@@ -2953,6 +2967,10 @@ class LocalModelsApp(rumps.App):
             self.mode = "offline"
             self.ollama_models = []
             self.mlx_models = []
+
+        # Offline: this machine serves its own laya (start-local-models
+        # launches it past the client-skip), so probe it for an accurate dot.
+        self._probe_laya()
 
         self.mcp_models = get_mcp_models()
 

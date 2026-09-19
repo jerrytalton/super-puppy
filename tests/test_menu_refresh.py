@@ -59,6 +59,7 @@ def _bare_app(**overrides):
     inst.ds4_loading = False
     inst.laya_ok = False
     inst.laya_ready = False
+    inst.laya_present = False
     inst.remote_reachable = False
     inst._mcp_proc = None
     inst._last_restart_attempt = 0
@@ -156,6 +157,7 @@ class TestRemoteReachabilityRequiresLiveBackend:
         """probe_port=True + get_mcp_models=[] → remote_reachable=False."""
         app = object.__new__(menubar.LocalModelsApp)
         app.ts_hostname = "super-puppy"
+        app.laya_url = "http://localhost:8003"
         app.force_local = False
         app.remote_reachable = True  # was previously connected
         app.servers_started = True
@@ -185,6 +187,7 @@ class TestRemoteReachabilityRequiresLiveBackend:
         """Healthy backend → remote_reachable stays True."""
         app = object.__new__(menubar.LocalModelsApp)
         app.ts_hostname = "super-puppy"
+        app.laya_url = "http://localhost:8003"
         app.force_local = False
         app.remote_reachable = False
         app.servers_started = True
@@ -227,6 +230,7 @@ class TestForceLocalDoesNotTrapTheUser:
         """force_local=True + healthy desktop → remote_reachable=True, mode≠client."""
         app = object.__new__(menubar.LocalModelsApp)
         app.ts_hostname = "super-puppy"
+        app.laya_url = "http://localhost:8003"
         app.force_local = True  # the trap
         app.remote_reachable = False
         app.servers_started = True
@@ -258,6 +262,7 @@ class TestForceLocalDoesNotTrapTheUser:
         """force_local=True + dead desktop → remote_reachable=False (no false positive)."""
         app = object.__new__(menubar.LocalModelsApp)
         app.ts_hostname = "super-puppy"
+        app.laya_url = "http://localhost:8003"
         app.force_local = True
         app.remote_reachable = False
         app.servers_started = True
@@ -279,3 +284,32 @@ class TestForceLocalDoesNotTrapTheUser:
             app._refresh_client_mode()
 
         assert app.remote_reachable is False
+
+
+class TestTailscaleServeExcludesInternalPorts:
+    """The internal-only backends (ds4:8002, laya:8003) must NEVER be exposed
+    via `tailscale serve` — the design's security invariant. A future edit
+    adding one to the serve tuple should fail this."""
+
+    def test_laya_and_ds4_ports_never_served(self):
+        app = _bare_app()
+        app._profile_fixed_port = 8101
+        app.ollama_port = "11434"
+        app.mlx_port = "8000"
+        served = []
+
+        def fake_run(argv, **kwargs):
+            # argv: ["tailscale","serve","--bg","--https","<port>", "http://..."]
+            if "serve" in argv:
+                served.append(argv[argv.index("--https") + 1])
+            m = MagicMock()
+            m.returncode = 0
+            return m
+
+        with patch("app.menubar.subprocess.run", side_effect=fake_run):
+            app._start_tailscale_serve()
+
+        assert "8003" not in served, "laya (8003) must never be tailscale-served"
+        assert "8002" not in served, "ds4 (8002) must never be tailscale-served"
+        # sanity: the public ports ARE served
+        assert {"8100", "8101", "11434", "8000"} <= set(served)
