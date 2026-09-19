@@ -197,9 +197,9 @@ function _authHeaders(opts = {}) {
 // not by the check id.
 const GROUP_LABEL = {
   shared: 'Super Puppy', claude: 'Claude Code', codex: 'Codex',
-  gemini: 'Gemini', other: 'Other agents',
+  chatgpt: 'ChatGPT', gemini: 'Gemini', other: 'Other agents',
 };
-const GROUP_ORDER = ['claude', 'codex', 'gemini', 'shared', 'other'];
+const GROUP_ORDER = ['claude', 'codex', 'chatgpt', 'gemini', 'shared', 'other'];
 const CHECK_LABEL = {
   'token-present': 'Auth token', 'other-agents': 'Other agents',
   'claude-mcp': 'MCP server registered', 'claude-guidance': 'Usage guidance',
