@@ -454,6 +454,46 @@ class TestDs4Menubar:
         assert menubar.DS4_STUCK_LOADING_S > 70
 
 
+class TestLayaFoundation:
+    def test_decision_is_a_special_task_matched_by_laya(self):
+        from lib.models import SPECIAL_TASKS
+        assert "decision" in SPECIAL_TASKS
+        assert "laya" in SPECIAL_TASKS["decision"]["prefixes"]
+
+    def test_decision_not_an_llm_task(self):
+        """decision must not go through the LLM task filters or backends —
+        a typed-decision model and a chat model are not interchangeable."""
+        from lib.models import TASK_FILTERS, LLM_BACKENDS
+        assert "decision" not in TASK_FILTERS
+        assert "laya" not in LLM_BACKENDS
+
+    def test_laya_port_plumbed_into_network_conf(self):
+        from lib.models import _NETWORK_DEFAULTS, _NUMERIC_KEYS
+        assert _NETWORK_DEFAULTS.get("LAYA_PORT") == "8003"
+        assert "LAYA_PORT" in _NUMERIC_KEYS
+
+    def test_all_tiers_pick_laya_multilingual_for_decision(self):
+        from lib.models import DEFAULT_PROFILES, LAYA_MULTILINGUAL_REPO
+        for tier, prof in DEFAULT_PROFILES["profiles"].items():
+            assert prof["tasks"].get("decision") == LAYA_MULTILINGUAL_REPO, tier
+
+    def test_laya_repo_is_in_the_hf_autopull_set(self):
+        """The decision pick is an HF repo (/ , no :), so profile_hf_models
+        must fetch it via `hf download` — verified to populate the same
+        cache laya.load() reads."""
+        from lib.models import (DEFAULT_PROFILES, profile_hf_models,
+                                LAYA_MULTILINGUAL_REPO)
+        prof = DEFAULT_PROFILES["profiles"]["128gb"]
+        assert LAYA_MULTILINGUAL_REPO in profile_hf_models(prof)
+
+    def test_laya_is_not_an_ollama_pull(self):
+        """The laya repo id must never be handed to `ollama pull`."""
+        from lib.models import (DEFAULT_PROFILES, profile_ollama_models,
+                                LAYA_MULTILINGUAL_REPO)
+        prof = DEFAULT_PROFILES["profiles"]["128gb"]
+        assert LAYA_MULTILINGUAL_REPO not in profile_ollama_models(prof)
+
+
 class TestAutopull:
     def test_profile_ollama_models_classifies_like_install_sh(self):
         """Handing an HF repo id or an MLX/ds4 served-name to `ollama pull`
@@ -493,6 +533,7 @@ class TestAutopull:
             "black-forest-labs/FLUX.2-klein-4B",
             "AITRADER/Wan2.2-T2V-A14B-mlx-bf16",
             "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
+            "convaiinnovations/laya-multilingual",
         }
         assert profile_hf_models({"tasks": {
             "unfiltered": "huihui_ai/dolphin3-abliterated:8b",

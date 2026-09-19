@@ -220,6 +220,34 @@ class TestPickModel:
             with pytest.raises(ValueError, match="vision"):
                 server.pick_model("vision")
 
+    def test_decision_resolver_returns_laya_model(self):
+        server._models["convaiinnovations/laya-multilingual"] = {"backend": "laya", "task": "decision"}
+        with patch.object(server, "load_mcp_prefs",
+                          return_value={"decision": ["convaiinnovations/laya-multilingual"]}):
+            assert server.resolve_decision_model() == "convaiinnovations/laya-multilingual"
+
+    def test_decision_resolver_fails_loud_never_falls_back_to_llm(self):
+        """THE red-team #1 guardrail: with laya absent (service down/loading)
+        but chat models present, a decision must ERROR — never silently
+        route state+questions to glm-5.2/qwen as a chat prompt."""
+        server._models["glm-5.2"] = {"backend": "ds4"}
+        server._models["qwen3.8:27b-mlx"] = {"backend": "ollama"}
+        with patch.object(server, "load_mcp_prefs",
+                          return_value={"decision": ["convaiinnovations/laya-multilingual"]}):
+            with pytest.raises(ValueError, match="decision"):
+                server.resolve_decision_model()
+
+    def test_decision_resolver_bad_override_raises(self):
+        server._models["convaiinnovations/laya-multilingual"] = {"backend": "laya"}
+        with patch.object(server, "load_mcp_prefs", return_value={}):
+            with pytest.raises(ValueError, match="not a loaded laya model"):
+                server.resolve_decision_model("glm-5.2")
+
+    def test_decision_resolver_default_when_no_pref(self):
+        server._models["convaiinnovations/laya-multilingual"] = {"backend": "laya"}
+        with patch.object(server, "load_mcp_prefs", return_value={}):
+            assert server.resolve_decision_model() == "convaiinnovations/laya-multilingual"
+
     def test_any_llm_fallback_never_picks_excluded_models(self):
         """The last-resort any-LLM fallback must skip ALWAYS_EXCLUDE names:
         with only an abliterated model resident, a general request must

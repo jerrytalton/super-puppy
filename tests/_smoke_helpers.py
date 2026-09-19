@@ -455,6 +455,31 @@ def run_chat_case(client, profile: dict, tool: str, profile_task: str, build_bod
     assert_tool_produces_output(client, tool=tool, model=model, **build_body(tmp))
 
 
+def run_decision_case(client, profile: dict):
+    """Drive a real typed decision through /api/test -> the laya service.
+
+    Asserts a well-formed calibrated answer (a chosen option whose per-option
+    probabilities sum to ~1). Skips cleanly when laya isn't running / its model
+    isn't loaded, or the tier has no decision pick.
+    """
+    model = profile.get("decision")
+    if not model:
+        pytest.skip("profile has no 'decision' entry")
+    state = {"subject": "Server is on fire", "body": "prod is down, customers affected"}
+    questions = {"urgency": {"type": "choice", "instructions": "How urgent?",
+                            "criteria": {"low": "whenever", "high": "now"}}}
+    status, data = call_api_test(client, "decide", model, state=state, questions=questions)
+    _preflight("decide", model, status, data)
+    answers = data.get("answers")
+    assert answers and "urgency" in answers, f"decide({model}) malformed: {data}"
+    u = answers["urgency"]
+    assert u.get("choice") in ("low", "high"), f"decide({model}) no choice: {u}"
+    probs = u.get("probabilities", {})
+    assert probs and abs(sum(probs.values()) - 1.0) < 0.05, \
+        f"decide({model}) probabilities don't sum to ~1: {probs}"
+    return data
+
+
 def run_stream_case(client, profile: dict, tool: str, profile_task: str, prompt: str):
     """Drive a stream-only tool (e.g. `unfiltered`) through /api/test/stream.
 

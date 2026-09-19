@@ -17,8 +17,8 @@ import pytest
 from lib.models import DEFAULT_PROFILES
 from tests._smoke_helpers import (
     CHAT_CASES, FIXTURE_CASES,
-    client, require_local_services, run_chat_case, run_fixture_case,
-    run_stream_case, smoke_tmp,
+    client, require_local_services, run_chat_case, run_decision_case,
+    run_fixture_case, run_stream_case, smoke_tmp,
 )
 
 # Skip the module at collection time if local services aren't up.
@@ -62,6 +62,12 @@ def test_laptop_unfiltered_stream(client):
     without an unfiltered pick."""
     run_stream_case(client, TIER_32GB, "unfiltered", "unfiltered",
                     "Reply with the single word OK.")
+
+
+def test_laptop_decision(client):
+    """The decision task drives the laya backend end-to-end (its own
+    dedicated service + typed-answer wire format). Skips if laya isn't up."""
+    run_decision_case(client, TIER_32GB)
 
 
 @pytest.mark.smoke

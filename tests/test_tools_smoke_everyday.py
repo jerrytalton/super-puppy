@@ -20,7 +20,7 @@ from lib.models import DEFAULT_PROFILES
 from tests._smoke_helpers import (
     CHAT_CASES, FIXTURE_CASES,
     client, require_ds4, require_local_services, run_chat_case,
-    run_fixture_case, run_stream_case, smoke_tmp,
+    run_decision_case, run_fixture_case, run_stream_case, smoke_tmp,
 )
 
 # Skip the module at collection time if local services aren't up.
@@ -63,3 +63,9 @@ def test_everyday_unfiltered_stream(client):
     entry, the path most likely to break discovery."""
     run_stream_case(client, TIER_512GB, "unfiltered", "unfiltered",
                     "Reply with the single word OK.")
+
+
+def test_everyday_decision(client):
+    """The decision task drives the laya backend end-to-end. Skips if laya
+    isn't up."""
+    run_decision_case(client, TIER_512GB)

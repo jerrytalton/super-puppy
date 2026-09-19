@@ -51,6 +51,9 @@ from lib.models import (
     DS4_TOTAL_PARAMS_B,
     HF_TASK_BACKENDS as _HF_TASK_BACKENDS,
     KNOWN_ACTIVE_PARAMS,
+    LAYA_BACKEND,
+    LAYA_CONTEXT,
+    laya_params_b,
     LLM_BACKENDS,
     MCP_PREFS_FILE,
     MLX_SERVER_CONFIG,
@@ -94,6 +97,7 @@ MLX_URL = os.environ.get("MLX_URL", "http://localhost:8000")
 # ds4 is internal-only (port 8002 is never tailscale-served); the menubar
 # injects DS4_URL with the configured DS4_PORT.
 DS4_URL = os.environ.get("DS4_URL", "http://localhost:8002")
+LAYA_URL = os.environ.get("LAYA_URL", "http://localhost:8003")
 # Default Ollama keep_alive for every chat/generate/embed request from this
 # server. Ollama's built-in default is 5 minutes, which causes cold reloads
 # between Playground turns and kills the "model feels warm" illusion. 30m is
@@ -1248,6 +1252,46 @@ def _fetch_ds4_models(existing):
     }}
 
 
+def _fetch_laya_models(existing):
+    """laya typed-decision models (the `laya` backend). /v1/models lists only
+    loaded+ready models, so a cold/loading laya shows none (transient).
+    Metadata is hardcoded — laya's /v1/models carries none — and `decision`
+    has no TASK_FILTERS gate, but the Profiles UI and memory bar still want
+    the numbers. This discovery branch is also what puts the laya repo id in
+    the registry so a `decision -> convaiinnovations/laya-multilingual` pref
+    resolves by exact match (decision is deliberately absent from
+    HF_TASK_BACKENDS, so on-demand HF-repo resolution doesn't apply)."""
+    models = {}
+    try:
+        resp = requests.get(f"{LAYA_URL}/v1/models", timeout=2)
+        if not resp.ok:
+            return {}
+        entries = resp.json().get("data", [])
+    except Exception:
+        return {}
+    for entry in entries:
+        name = entry.get("id")
+        if not name or name in existing:
+            continue
+        params = laya_params_b(name)
+        models[name] = {
+            "name": name,
+            "backend": LAYA_BACKEND,
+            "disk_bytes": 0,
+            "vram_bytes": int(params * 1e9 * 2),  # fp16-ish resident estimate
+            "total_params_b": params,
+            "active_params_b": params,
+            "context": LAYA_CONTEXT,
+            "has_vision": False,
+            "family": LAYA_BACKEND,
+            "quant": "fp16",
+            "is_loaded": True,
+            "expires_at": None,
+            "on_demand": False,
+        }
+    return models
+
+
 def _fetch_hf_cache_models(existing):
     """TTS / transcription / image / video models discovered via the HF cache
     scanner (not served by Ollama or MLX-OpenAI-Server)."""
@@ -1297,6 +1341,7 @@ def _fetch_all_models():
         models.update(_fetch_ds4_models(existing=models))
     models.update(_fetch_mlx_models(existing=models))
     if not remote_mode:
+        models.update(_fetch_laya_models(existing=models))
         models.update(_fetch_hf_cache_models(existing=models))
     return models
 
@@ -2933,6 +2978,41 @@ def _handle_test_embed(body, pick):
     })
 
 
+def _handle_test_decide(body, pick):
+    """Typed-decision playground handler. Dispatches to the laya service and
+    returns the calibrated typed answers."""
+    model, backend = pick("decision")
+    # The playground sends state/questions as JSON strings (textareas); the
+    # MCP tool sends dicts. Accept both.
+    def _as_obj(v, name):
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except ValueError:
+                raise ValueError(f"{name} is not valid JSON")
+        return v
+    try:
+        state = _as_obj(body.get("state"), "state")
+        questions = _as_obj(body.get("questions"), "questions")
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    if not isinstance(state, dict) or not state:
+        return jsonify({"error": "state must be a non-empty object of text fields"}), 400
+    if not isinstance(questions, dict) or not questions:
+        return jsonify({"error": "questions must be a non-empty object"}), 400
+    with _track_playground("decide", model, backend):
+        resp = requests.post(f"{LAYA_URL}/decide", json={
+            "model": model, "state": state, "questions": questions,
+        }, timeout=60)
+    if resp.status_code != 200:
+        detail = resp.json().get("error", resp.text) if resp.headers.get(
+            "content-type", "").startswith("application/json") else resp.text
+        return jsonify({"error": f"decide: {detail}"}), resp.status_code
+    result = resp.json()
+    result["model"] = model
+    return jsonify(result)
+
+
 _TEST_HANDLERS = {
     "code": _handle_test_code,
     "general": _handle_test_code,
@@ -2947,6 +3027,7 @@ _TEST_HANDLERS = {
     "translate": _handle_test_translate,
     "summarize": _handle_test_summarize,
     "embed": _handle_test_embed,
+    "decide": _handle_test_decide,
 }
 
 

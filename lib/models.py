@@ -32,6 +32,7 @@ _NETWORK_DEFAULTS = {
     "OLLAMA_PORT": "11434",
     "MLX_PORT": "8000",
     "DS4_PORT": "8002",
+    "LAYA_PORT": "8003",
     "DS4_DIR": "",
     "SERVER_RAM_GB": "0",
     "PROBE_TIMEOUT": "2",
@@ -42,8 +43,8 @@ _NETWORK_DEFAULTS = {
     "AUTO_PULL": "true",
 }
 
-_NUMERIC_KEYS = {"OLLAMA_PORT", "MLX_PORT", "DS4_PORT", "SERVER_RAM_GB",
-                 "PROBE_TIMEOUT", "PROFILE_PORT"}
+_NUMERIC_KEYS = {"OLLAMA_PORT", "MLX_PORT", "DS4_PORT", "LAYA_PORT",
+                 "SERVER_RAM_GB", "PROBE_TIMEOUT", "PROFILE_PORT"}
 
 
 def validate_network_conf(logger=None) -> list[str]:
@@ -210,6 +211,35 @@ def ds4_installed() -> bool:
     service on machines that never run it.
     """
     return (ds4_dir() / "ds4-server").exists()
+
+
+# ── Laya (typed-decision backend) ────────────────────────────────────
+# laya (convaiinnovations) is the open-weight implementation of the "Jev"
+# System-One typed-decision model class: state + typed questions ->
+# calibrated probabilities, non-autoregressive, no text generation. It is
+# NOT a chat backend (deliberately absent from LLM_BACKENDS) and NOT an
+# HF-subprocess media model — it runs as a dedicated persistent Flask
+# service (app/laya-server.py) on LAYA_PORT, resident only where it serves
+# (server/offline mode). Its /v1/models returns no params/context metadata,
+# so those stay hardcoded here (like the ds4 constants) — decision has no
+# TASK_FILTERS gate, but discovery/UI still want the numbers.
+LAYA_BACKEND = "laya"
+LAYA_MULTILINGUAL_REPO = "convaiinnovations/laya-multilingual"  # fleet default, 100+ languages
+LAYA_ENGLISH_REPO = "convaiinnovations/laya"                    # English override, best accuracy
+LAYA_MULTILINGUAL_PARAMS_B = 0.322   # mmBERT-base backbone + decision head
+LAYA_ENGLISH_PARAMS_B = 0.421        # ModernBERT-large backbone + decision head
+LAYA_CONTEXT = 1024                  # 512 base / 1024 typed-decisions variant
+# Served under their HF repo ids so a profile's `decision` pick
+# (LAYA_MULTILINGUAL_REPO) resolves by exact match against discovery.
+LAYA_SERVED_MODELS = (LAYA_MULTILINGUAL_REPO, LAYA_ENGLISH_REPO)
+
+
+def laya_params_b(served_name: str) -> float:
+    """Total params (billions) for a laya served model; 0 if unknown."""
+    return {
+        LAYA_MULTILINGUAL_REPO: LAYA_MULTILINGUAL_PARAMS_B,
+        LAYA_ENGLISH_REPO: LAYA_ENGLISH_PARAMS_B,
+    }.get(served_name, 0.0)
 
 
 # ── MoE active parameter table ───────────────────────────────────────
@@ -548,6 +578,10 @@ SPECIAL_TASKS: dict[str, dict[str, Any]] = {
         "label": "Unfiltered",
         "prefixes": ["uncensored", "dolphin", "nous-hermes"],
     },
+    "decision": {
+        "label": "Decision",
+        "prefixes": ["laya"],
+    },
     "computer_use": {
         "label": "Computer Use",
         "prefixes": ["ui-tars", "fara", "holo"],
@@ -610,7 +644,7 @@ TASK_FILTERS: dict[str, dict[str, Any]] = {
 # max_ram_gb cap gates model-pull validation in install.sh and the profile
 # server. The active default is 64gb (fits M5 / mid GPU class).
 
-PROFILES_VERSION = 37  # bump to force-refresh preset profiles on all machines
+PROFILES_VERSION = 38  # bump to force-refresh preset profiles on all machines
 
 DEFAULT_PROFILES = {
     "version": PROFILES_VERSION,
@@ -635,6 +669,7 @@ DEFAULT_PROFILES = {
                 # projector_info). ~17GB, loaded on demand for vision.
                 "vision": "qwen3.8:27b",
                 "transcription": "whisper-v3-turbo",
+                "decision": LAYA_MULTILINGUAL_REPO,
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
                 "embedding": "embeddinggemma:300m",
                 # image_gen runs on mflux, not Ollama. Ollama 0.32 rejects
@@ -660,6 +695,7 @@ DEFAULT_PROFILES = {
                 "translation": "qwen3.8:27b-mlx",
                 "vision": "qwen3.8:27b",
                 "transcription": "whisper-v3-turbo",
+                "decision": LAYA_MULTILINGUAL_REPO,
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
                 "embedding": "qwen3-embedding:8b",
                 # Abliterated Qwen3.8 27B, MLX-served from a local dir
@@ -695,6 +731,7 @@ DEFAULT_PROFILES = {
                 "translation": "qwen3.8:27b-mlx",
                 "vision": "qwen3.8:27b",
                 "transcription": "whisper-v3-turbo",
+                "decision": LAYA_MULTILINGUAL_REPO,
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
                 "embedding": "qwen3-embedding:8b",
                 "unfiltered": "qwen3.8-uncensored-8bit",
@@ -721,6 +758,7 @@ DEFAULT_PROFILES = {
                 # wasn't even a served model.
                 "vision": "qwen3.8:27b",
                 "transcription": "whisper-v3-turbo",
+                "decision": LAYA_MULTILINGUAL_REPO,
                 "tts": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
                 "embedding": "qwen3-embedding:8b",
                 "unfiltered": "qwen3.8-uncensored-8bit",

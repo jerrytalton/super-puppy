@@ -40,6 +40,7 @@ MCP_TO_PLAYGROUND = {
     "local_summarize": {"summarize"},
     "local_embed": {"embed"},
     "local_video": {"video"},
+    "local_decide": {"decide"},
 }
 
 
