@@ -457,6 +457,24 @@ class TestGetEligibleTasks:
         assert info["disk_bytes"] > 0
         assert info["has_vision"] is False
 
+    def test_chat_sends_qwen_temperature_override_to_ollama(self):
+        """A qwen Ollama chat request carries the temperature override in
+        options; a non-qwen model sends no options (unchanged behavior)."""
+        captured = {}
+        def fake_post(url, json=None, **kw):
+            captured["body"] = json
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.raise_for_status = lambda: None
+            resp.json.return_value = {"message": {"content": "ok"}}
+            return resp
+        with patch.object(ps.requests, "post", side_effect=fake_post):
+            ps._chat("qwen3.8:27b-mlx", "ollama", [{"role": "user", "content": "hi"}])
+            assert captured["body"]["options"] == {"temperature": 0.7}
+            captured.clear()
+            ps._chat("glm-5.2", "ollama", [{"role": "user", "content": "hi"}])
+            assert "options" not in captured["body"]
+
     def test_laya_model_is_decision_only(self):
         """A laya-backed model qualifies for `decision` and NOTHING else —
         it is not an LLM and must never enter the chat/vision pools."""

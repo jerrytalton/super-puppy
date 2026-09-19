@@ -824,6 +824,33 @@ def warm_model_names(data: dict) -> set[str]:
     return {tasks[k] for k in warm_task_keys(name, prof) if k in tasks}
 
 
+# ── Ollama request-time sampling overrides ────────────────────────────
+# Ollama applies a model's Modelfile PARAMETER bakes automatically and merges
+# request `options` over them per-key. The official qwen3.x chat tags bake
+# temperature 1.0 (verified via `ollama show --modelfile` on qwen3.8:27b,
+# qwen3.8:27b-mlx, qwen3-coder-next), hotter than Qwen's documented ~0.7. We
+# send a light temperature-only override to bring them into range — top_p 0.95
+# / top_k 20 are already correct in the Modelfile, and we deliberately never
+# touch presence_penalty (the playbook documents a 1.5 bake truncating
+# structured output). Additive: a family with no entry gets {} and is
+# unchanged. mlx-openai-server models are NOT here — that path already
+# defaults to temp 0.7 (verified from the live server env).
+OLLAMA_SAMPLING_OVERRIDES: dict[str, dict[str, float]] = {
+    "qwen3": {"temperature": 0.7},
+}
+
+
+def ollama_sampling(model: str) -> dict:
+    """Request-time sampling `options` for an Ollama chat model; {} if none."""
+    ml = model.lower()
+    if "embed" in ml:  # embedders don't sample and never hit the chat path
+        return {}
+    for prefix, params in OLLAMA_SAMPLING_OVERRIDES.items():
+        if ml.startswith(prefix):
+            return dict(params)
+    return {}
+
+
 def profile_ollama_models(profile: dict) -> set[str]:
     """The Ollama tags a profile's task picks need pulled locally.
 

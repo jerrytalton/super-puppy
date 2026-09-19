@@ -46,6 +46,7 @@ from lib.models import (
     LAYA_MULTILINGUAL_REPO,
     laya_params_b,
     LLM_BACKENDS,
+    ollama_sampling,
     MCP_PREFS_FILE,
     MLX_SERVER_CONFIG,
     NETWORK_CONF,
@@ -746,7 +747,7 @@ def _http_error_detail(e: httpx.HTTPStatusError, action: str) -> str:
 async def chat_ollama(model: str, messages: list[dict],
                       max_tokens: int = 4096, think: bool = True) -> str:
     body = {"model": model, "messages": messages, "stream": False,
-            "options": {"num_predict": max_tokens}}
+            "options": {"num_predict": max_tokens, **ollama_sampling(model)}}
     if not think:
         body["think"] = False
     try:

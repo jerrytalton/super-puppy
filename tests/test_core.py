@@ -494,6 +494,32 @@ class TestLayaFoundation:
         assert LAYA_MULTILINGUAL_REPO not in profile_ollama_models(prof)
 
 
+class TestOllamaSampling:
+    def test_qwen_tags_get_temperature_override(self):
+        """Ollama's official qwen3.x tags bake temperature 1.0 (verified via
+        `ollama show --modelfile`), hotter than Qwen's recommended ~0.7. The
+        override brings them down; Ollama merges request options over the
+        Modelfile, and top_p/top_k there are already correct so we leave them."""
+        from lib.models import ollama_sampling
+        for tag in ("qwen3.8:27b-mlx", "qwen3.8:27b",
+                    "qwen3-coder-next:latest", "qwen3.8-uncensored:27b"):
+            assert ollama_sampling(tag) == {"temperature": 0.7}, tag
+
+    def test_non_qwen_models_untouched(self):
+        """Only families with a known too-hot bake are overridden — everything
+        else keeps its own defaults (empty dict = send nothing)."""
+        from lib.models import ollama_sampling
+        for tag in ("glm-5.2", "muse-glimmer:30b-mlx", "dolphin3:8b",
+                    "qwen3-embedding:8b"):
+            assert ollama_sampling(tag) == {}, tag
+
+    def test_only_temperature_no_penalty(self):
+        """Never inject presence_penalty — the playbook documents Qwen tags
+        shipping 1.5 that truncates structured output; we only touch temp."""
+        from lib.models import ollama_sampling
+        assert set(ollama_sampling("qwen3.8:27b")) == {"temperature"}
+
+
 class TestAutopull:
     def test_profile_ollama_models_classifies_like_install_sh(self):
         """Handing an HF repo id or an MLX/ds4 served-name to `ollama pull`
