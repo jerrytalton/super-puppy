@@ -1630,6 +1630,8 @@ class LocalModelsApp(rumps.App):
         self.ds4_port = self.conf.get("DS4_PORT", "8002")
         self.ds4_url = f"http://localhost:{self.ds4_port}"
         self.ds4_present = ds4_installed()
+        self.laya_port = self.conf.get("LAYA_PORT", "8003")
+        self.laya_url = f"http://localhost:{self.laya_port}"
         self.probe_timeout = int(self.conf["PROBE_TIMEOUT"])
         self._profile_fixed_port = int(self.conf.get("PROFILE_PORT", "8101"))
         self.ts_hostname = self.conf.get("TAILSCALE_HOSTNAME", "")
@@ -1656,6 +1658,8 @@ class LocalModelsApp(rumps.App):
         self.mlx_loading = False
         self.ds4_ok = False
         self.ds4_loading = False
+        self.laya_ok = False       # /health reachable
+        self.laya_ready = False    # a model is loaded (not mid-24s cold load)
         self.ollama_models = []
         self.mlx_models = []
         self.servers_started = False
@@ -1705,6 +1709,7 @@ class LocalModelsApp(rumps.App):
         self.menu_ds4_restart = rumps.MenuItem(
             "Restart ds4", callback=self._restart_ds4)
         self.menu_ds4.add(self.menu_ds4_restart)
+        self.menu_laya = rumps.MenuItem("laya …")
         self.menu_mcp = rumps.MenuItem("MCP …")
         self.menu_mcp_restart = rumps.MenuItem(
             "Restart MCP", callback=self._restart_mcp)
@@ -1747,6 +1752,7 @@ class LocalModelsApp(rumps.App):
         ]
         if self.ds4_present:
             menu_items.append(self.menu_ds4)
+        menu_items.append(self.menu_laya)
         menu_items += [
             self.menu_mcp,
             None,
@@ -2411,6 +2417,8 @@ class LocalModelsApp(rumps.App):
         ]
         if self.ds4_present:
             lines.append(f"ds4: {'up' if self.ds4_ok else 'down'}")
+        lines.append(
+            f"laya: {'ready' if self.laya_ready else 'loading' if self.laya_ok else 'down'}")
         lines += [
             f"MCP process: {'alive' if mcp_alive else 'dead'}",
             f"MCP models: {len(self.mcp_models)}",
@@ -2831,12 +2839,27 @@ class LocalModelsApp(rumps.App):
                 if hasattr(self, '_ds4_loading_since'):
                     del self._ds4_loading_since
 
+        # laya (typed decisions) — /v1/models answers 200 even mid-load (it
+        # just lists nothing), so laya_ok = service up; laya_ready = a model
+        # is actually loaded. Runs on every serving machine; in client mode
+        # it's absent locally and the row is hidden (like ollama/mlx/ds4).
+        self.laya_ok = probe_service(self.laya_url, 2)
+        if self.laya_ok:
+            try:
+                with urllib.request.urlopen(f"{self.laya_url}/v1/models", timeout=2) as r:
+                    self.laya_ready = bool(json.loads(r.read()).get("data"))
+            except Exception:
+                self.laya_ready = False
+        else:
+            self.laya_ready = False
+
         # Auto-restart downed services on desktop (at most once per 2 minutes)
         if (self.servers_started
                 and ((not self.ollama_ok and not self.ollama_loading)
                      or (not self.mlx_ok and not self.mlx_loading)
                      or (self.ds4_present and not self.ds4_ok
-                         and not self.ds4_loading))):
+                         and not self.ds4_loading)
+                     or not self.laya_ok)):
             now = time.time()
             if now - getattr(self, '_last_restart_attempt', 0) > 120:
                 self._last_restart_attempt = now
@@ -3045,6 +3068,7 @@ class LocalModelsApp(rumps.App):
             self.menu_ollama.hide()
             self.menu_mlx.hide()
             self.menu_ds4.hide()
+            self.menu_laya.hide()
             self.menu_mcp_restart.set_callback(None)
         else:
             self.menu_ollama.show()
@@ -3091,6 +3115,14 @@ class LocalModelsApp(rumps.App):
                 else:
                     self._styled_menu(self.menu_ds4, RED, "ds4", down_detail)
                 self.menu_ds4_restart.set_callback(self._restart_ds4)
+
+            self.menu_laya.show()
+            if self.laya_ready:
+                self._styled_menu(self.menu_laya, GRN, "laya", "decisions")
+            elif self.laya_ok:
+                self._styled_menu(self.menu_laya, YEL, "laya", "loading…")
+            else:
+                self._styled_menu(self.menu_laya, RED, "laya", down_detail)
 
         mcp_proc = getattr(self, '_mcp_proc', None)
         mcp_proc_alive = mcp_proc is not None and mcp_proc.poll() is None

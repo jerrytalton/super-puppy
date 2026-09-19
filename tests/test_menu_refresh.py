@@ -57,6 +57,8 @@ def _bare_app(**overrides):
     inst.ds4_present = False
     inst.ds4_ok = False
     inst.ds4_loading = False
+    inst.laya_ok = False
+    inst.laya_ready = False
     inst.remote_reachable = False
     inst._mcp_proc = None
     inst._last_restart_attempt = 0
@@ -64,7 +66,7 @@ def _bare_app(**overrides):
     inst.desktop_fqdn = ""
     inst.conf = {}
     for attr in ("menu_status", "menu_remote_access", "menu_profiles",
-                 "menu_ollama", "menu_mlx", "menu_ds4", "menu_mcp",
+                 "menu_ollama", "menu_mlx", "menu_ds4", "menu_laya", "menu_mcp",
                  "menu_ollama_restart", "menu_mlx_restart",
                  "menu_ds4_restart", "menu_mcp_restart",
                  "menu_ollama_cancel_pull", "menu_autopull_toggle",
