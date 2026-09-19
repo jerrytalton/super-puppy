@@ -41,6 +41,10 @@ from lib.models import (
     DS4_MODEL_NAME,
     DS4_TOTAL_PARAMS_B,
     HF_TASK_BACKENDS,
+    LAYA_BACKEND,
+    LAYA_CONTEXT,
+    LAYA_MULTILINGUAL_REPO,
+    laya_params_b,
     LLM_BACKENDS,
     MCP_PREFS_FILE,
     MLX_SERVER_CONFIG,
@@ -71,6 +75,7 @@ MLX_URL = os.environ.get("MLX_URL", "http://localhost:8000")
 # ds4 is internal-only (never tailscale-served) so this is always localhost;
 # bin/local-models-mcp-detect exports it with the configured DS4_PORT.
 DS4_URL = os.environ.get("DS4_URL", "http://localhost:8002")
+LAYA_URL = os.environ.get("LAYA_URL", "http://localhost:8003")
 MCP_HOST = os.environ.get("MCP_HOST", "127.0.0.1")
 MCP_PORT = int(os.environ.get("MCP_PORT", "8100"))
 
@@ -520,6 +525,30 @@ async def discover_models():
         except Exception as e:
             logging.info("ds4 discovery skipped: %s", e)
 
+        # laya (typed-decision backend). Its /v1/models lists only models
+        # that are loaded and ready, so a cold/loading laya simply shows no
+        # decision model (transient). Short timeout so the ~24s load can't
+        # stall the whole discovery gather. Metadata is hardcoded (laya's
+        # /v1/models carries none) — decision has no TASK_FILTERS gate, but
+        # status/UI still want the numbers.
+        try:
+            resp = await client.get(f"{LAYA_URL}/v1/models", timeout=5)
+            if resp.status_code == 200:
+                for entry in resp.json().get("data", []):
+                    mid = entry.get("id")
+                    if not mid:
+                        continue
+                    models[mid] = {
+                        "backend": LAYA_BACKEND,
+                        "task": "decision",
+                        "total_params_b": laya_params_b(mid),
+                        "active_params_b": laya_params_b(mid),
+                        "context": LAYA_CONTEXT,
+                        "vision": False,
+                    }
+        except Exception as e:
+            logging.info("laya discovery skipped: %s", e)
+
         # HuggingFace cache: TTS, transcription, image_edit, image_gen
         from lib.hf_scanner import scan_hf_cache
         for hf_model in scan_hf_cache(HF_TASK_BACKENDS.keys()):
@@ -657,6 +686,56 @@ def pick_model(task: str, override: str | None = None) -> tuple[str, str]:
         parts.append("No models loaded — is Ollama/MLX running?")
     parts.append("Check ~/.config/local-models/mcp_preferences.json or pull a model with 'ollama pull'.")
     raise ValueError(" ".join(parts))
+
+
+def resolve_decision_model(override: str | None = None) -> str:
+    """Resolve the laya served-model for a decision request — FAIL LOUD.
+
+    Deliberately NOT `pick_model`: that cascades to "any LLM" on a miss,
+    which would silently route a caller's state+questions to a chat model.
+    A typed-decision model and a chat model are not interchangeable, so
+    this resolves against laya-backed registry entries only and raises if
+    none matches (service down, model still loading, or a bad override).
+    """
+    prefs = load_mcp_prefs()
+    if override:
+        candidates = [override]
+    else:
+        pref = prefs.get("decision", [])
+        candidates = ([pref] if isinstance(pref, str) else list(pref)) or [LAYA_MULTILINGUAL_REPO]
+
+    laya_models = {n for n, m in _models.items() if m.get("backend") == LAYA_BACKEND}
+    for c in candidates:
+        if c in laya_models:
+            return c
+        hit = next((n for n in laya_models if n == c or n.startswith(c + ":")), None)
+        if hit:
+            return hit
+
+    parts = ["No decision (laya) model available."]
+    if override:
+        parts.append(f"Requested model '{override}' is not a loaded laya model.")
+    if laya_models:
+        parts.append(f"Loaded laya models: {', '.join(sorted(laya_models))}.")
+    else:
+        parts.append("The laya decision service is not running or its model is still "
+                     f"loading (~24s cold). Checked {LAYA_URL}.")
+    raise ValueError(" ".join(parts))
+
+
+async def decide_request(model: str, state: dict, questions: dict) -> dict:
+    """POST a typed-decision request to the laya service. Raises on error."""
+    body = {"model": model, "state": state, "questions": questions}
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.post(f"{LAYA_URL}/decide", json=body, timeout=60)
+        except httpx.ConnectError:
+            raise RuntimeError(
+                f"decision ({model}): cannot connect to {LAYA_URL} — is the laya service running?")
+    if resp.status_code != 200:
+        detail = resp.json().get("error", resp.text) if resp.headers.get("content-type", "").startswith("application/json") else resp.text
+        raise RuntimeError(f"decision ({model}): {resp.status_code} — {detail}")
+    return resp.json()
 
 
 def _http_error_detail(e: httpx.HTTPStatusError, action: str) -> str:
@@ -842,6 +921,57 @@ async def local_generate(
     result = await chat(model_name, backend, messages, max_tokens,
                         think=thinking_enabled(task))
     return f"[{model_name} via {backend}]\n\n{result}"
+
+
+@mcp.tool()
+async def local_decide(
+    state: dict,
+    questions: dict,
+    model: str | None = None,
+) -> str:
+    """Make fast, calibrated typed decisions over a state — no text generation.
+
+    Backed by laya (the open-weight "System One" / Jev-style model): given a
+    state (dict of text fields — an email, ticket, JSON blob, conversation) and
+    a set of typed questions, it returns typed answers with calibrated
+    probabilities in ~15ms, and cannot hallucinate (outputs are predefined).
+    Use it for the control layer of an agent — route, rank, score, retry,
+    escalate, or a yes/no gate — instead of asking an LLM to emit a label.
+
+    Each question is `{"type": ..., "instructions": ..., ["criteria": ...]}`:
+      - "choice": pick one option. criteria = {option: description}. Returns the
+        chosen option, per-option probabilities, and confidence.
+      - "score": ordinal rating. criteria = [label0, label1, ...]. Returns the
+        expected level, the distribution, and confidence.
+      - "noul": calibrated yes/no. No criteria. Returns P(true).
+
+    Args:
+        state: Non-empty dict of text fields describing what to decide over.
+        questions: Non-empty dict of {name: typed-question-spec} (see above).
+        model: Optional laya model override (default: the profile's decision
+            pick, laya-multilingual). Never falls back to a chat model.
+
+    Example:
+        local_decide(
+            {"subject": "Duplicate charge", "body": "billed twice, refund please"},
+            {"team": {"type": "choice", "instructions": "route to?",
+                      "criteria": {"billing": "refunds", "eng": "bugs"}},
+             "urgent": {"type": "noul", "instructions": "time-sensitive?"}})
+    """
+    if not isinstance(state, dict) or not state:
+        return "Error: state must be a non-empty object of text fields."
+    if not isinstance(questions, dict) or not questions:
+        return "Error: questions must be a non-empty object of typed questions."
+    try:
+        model_name = resolve_decision_model(model)
+    except ValueError as e:
+        return f"Error: {e}"
+    try:
+        with _gpu_request(LAYA_BACKEND, f"decide:{model_name}"):
+            result = await decide_request(model_name, state, questions)
+    except RuntimeError as e:
+        return f"Error: {e}"
+    return f"[{model_name} via {LAYA_BACKEND}]\n\n{json.dumps(result, indent=2, default=str)}"
 
 
 @mcp.tool()

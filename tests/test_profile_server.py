@@ -457,6 +457,37 @@ class TestGetEligibleTasks:
         assert info["disk_bytes"] > 0
         assert info["has_vision"] is False
 
+    def test_laya_model_is_decision_only(self):
+        """A laya-backed model qualifies for `decision` and NOTHING else —
+        it is not an LLM and must never enter the chat/vision pools."""
+        model = {"backend": "laya", "total_params_b": 0.322, "context": 1024,
+                 "has_vision": False}
+        tasks = ps.get_eligible_tasks("convaiinnovations/laya-multilingual", model)
+        assert tasks == ["decision"]
+
+    def test_fetch_laya_models_registers_ready_models(self):
+        """Discovery must put the laya repo id in the registry (backend=laya,
+        decision-eligible) so the profile's `decision` pref resolves — decision
+        isn't in HF_TASK_BACKENDS, so on-demand HF resolution won't cover it."""
+        def fake_get(url, timeout=None):
+            resp = MagicMock()
+            resp.ok = True
+            resp.status_code = 200
+            resp.json.return_value = {"data": [
+                {"id": "convaiinnovations/laya-multilingual", "object": "model"}]}
+            return resp
+        with patch.object(ps.requests, "get", side_effect=fake_get):
+            got = ps._fetch_laya_models(existing={})
+        assert "convaiinnovations/laya-multilingual" in got
+        entry = got["convaiinnovations/laya-multilingual"]
+        assert entry["backend"] == "laya"
+        assert ps.get_eligible_tasks("convaiinnovations/laya-multilingual", entry) == ["decision"]
+
+    def test_fetch_laya_models_empty_when_service_down(self):
+        with patch.object(ps.requests, "get",
+                          side_effect=ps.requests.ConnectionError("down")):
+            assert ps._fetch_laya_models(existing={}) == {}
+
     def test_uncensored_lm_entry_is_unfiltered_only(self):
         """An lm-served uncensored entry has no reachable vision tower
         (has_vision False), so it qualifies for unfiltered and NOTHING
