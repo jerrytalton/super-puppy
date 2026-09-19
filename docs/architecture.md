@@ -13,6 +13,7 @@ Super Puppy is a local AI model server for Apple Silicon, managed from the macOS
 │      ├── Ollama          localhost:11434             │
 │      ├── MLX server      localhost:8000              │
 │      ├── ds4-server      localhost:8002 (512GB tier)  │
+│      ├── laya-server     localhost:8003 (decisions)   │
 │      └── MCP server      localhost:8100              │
 └─────────────────────────────────────────────────────┘
          │ tailscale serve (optional)
@@ -22,11 +23,11 @@ Super Puppy is a local AI model server for Apple Silicon, managed from the macOS
 
 ### Menu bar app (`app/menubar.py`)
 
-The central coordinator. Launches via a native macOS app bundle (`SuperPuppy.app`) so it appears in Cmd-Tab. Manages the lifecycle of Ollama, MLX, ds4 (512GB tier), MCP, and profile server processes. Handles auto-update, mode detection (server/client/offline), service health monitoring, and Tailscale remote access toggling.
+The central coordinator. Launches via a native macOS app bundle (`SuperPuppy.app`) so it appears in Cmd-Tab. Manages the lifecycle of Ollama, MLX, ds4 (512GB tier), laya (typed decisions, every tier), MCP, and profile server processes. Handles auto-update, mode detection (server/client/offline), service health monitoring, and Tailscale remote access toggling.
 
 ### MCP server (`mcp/local-models-server.py`)
 
-Persistent streamable-HTTP service on port 8100. Discovers models from Ollama, MLX, and ds4 at startup. Exposes 17 tools (generation, vision, image, audio, video, embeddings, etc.) as MCP resources. Requires bearer token auth — fails closed without a token. Session IDs are tracked per-connection.
+Persistent streamable-HTTP service on port 8100. Discovers models from Ollama, MLX, ds4, and laya at startup. Exposes 18 tools (generation, vision, image, audio, video, embeddings, typed decisions via `local_decide`, etc.) as MCP resources. Requires bearer token auth — fails closed without a token. Session IDs are tracked per-connection.
 
 ### Profile server (`app/profile-server.py`)
 
@@ -47,7 +48,7 @@ All services bind to `127.0.0.1`. Remote access uses Tailscale exclusively — n
 | 11434 | Ollama |
 | 8000 | MLX |
 
-ds4-server (8002, glm-5.2 on the 512GB tier) is internal-only and never added to `tailscale serve`; remote clients reach glm-5.2 through the MCP server (8100) and profile server (8101).
+ds4-server (8002, glm-5.2 on the 512GB tier) is internal-only and never added to `tailscale serve`; remote clients reach glm-5.2 through the MCP server (8100) and profile server (8101). laya-server (8003, typed decisions) is likewise internal-only — but unlike ds4 it runs on every tier (it's ~1GB), resident only where it serves (server/offline mode, not on a client that routes decisions to the desktop).
 
 Both the MCP server and profile server enforce bearer token auth on **every** request. There is no localhost shortcut: `tailscale serve` proxies remote requests as if they originated from `127.0.0.1`, so trusting the loopback address would silently bypass auth for any tailnet peer. Native `<img>`/`<audio>`/`<video>` elements that can't set headers may pass `?token=` on GETs only.
 
@@ -113,7 +114,7 @@ Crash rollback: if the app dies within 90 seconds of an update (`UPDATE_CRASH_WI
 Profiles map task types to models. Defined in `lib/models.py`:
 
 - **Standard tasks**: `code`, `general`, `reasoning`, `long_context`, `translation`
-- **Special tasks** (matched by model capability): `vision`, `computer_use`, `image_gen`, `image_edit`, `video`, `transcription`, `tts`, `embedding`, `unfiltered`
+- **Special tasks** (matched by model capability): `vision`, `computer_use`, `image_gen`, `image_edit`, `video`, `transcription`, `tts`, `embedding`, `unfiltered`, `decision`
 
 Task filters and the `model_matches_filter()` function are shared across all three Python consumers.
 

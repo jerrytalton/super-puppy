@@ -30,14 +30,15 @@ The menu bar app (`app/menubar.py`) launches via `app/SuperPuppy.app` and spawns
 - **Ollama** — `http://localhost:11434` (localhost-only; Tailscale serve proxies for remote access)
 - **MLX-OpenAI-Server** — `http://localhost:8000`, config at `~/.config/mlx-server/config.yaml`
 - **ds4-server** — `http://localhost:8002` (512GB tier only), serving glm-5.2 from a Q2K GGUF under `DS4_DIR` (default `~/.local/share/super-puppy/ds4`, override in network.conf). Launched by `start-local-models` with `cwd=$DS4_DIR` (it resolves `metal/flash_attn.metal` relative to cwd). Always-resident: loads once (~70s), never unloads. Port 8002 is **internal-only** — never added to `tailscale serve`; client-mode traffic reaches glm-5.2 through the desktop's MCP (8100) and profile server (8101).
+- **laya-server** (`app/laya-server.py`) — `http://localhost:8003`, the `laya` typed-decision backend. laya (convaiinnovations) is the open-weight implementation of the "Jev" System-One model class: state + typed questions → calibrated probabilities (choice / ordinal score / noul=yes-no), non-autoregressive, no text generation, no hallucination. Its own Flask process (PEP 723 pins `laya`, which pulls torch/transformers — isolated from the MCP/profile servers, which stay thin dispatchers). Runs on **every tier** (~1GB resident) but is launched only where it *serves* — `start-local-models` starts it after the client-skip early-exit, so it's resident in server/offline/`--local` mode, never on a client that routes decisions to the desktop. Multilingual (`convaiinnovations/laya-multilingual`) loads resident at startup (~24s, in a background thread so the port binds immediately and `/decide` 503s until ready); English (`convaiinnovations/laya`) lazy-loads on first request. Port 8003 is **internal-only** — never `tailscale serve`d; client-mode decisions reach it through the desktop's MCP. `local_decide` resolves models via a **laya-only fail-loud resolver** (never `pick_model`'s any-LLM cascade — a decision model and a chat model are not interchangeable).
 
 ### Modes
 
 | Mode | When | What happens |
 |------|------|------|
-| **Server** | `IS_SERVER=true` in network.conf | Runs Ollama, MLX, ds4 (512GB tier), MCP locally. Tailscale exposes ports when Remote Access is on. |
+| **Server** | `IS_SERVER=true` in network.conf | Runs Ollama, MLX, ds4 (512GB tier), laya, MCP locally. Tailscale exposes ports when Remote Access is on. |
 | **Client** | Server reachable via Tailscale | Routes to server's MCP. Falls back to local if unreachable. |
-| **Offline** | Laptop, desktop unreachable | Runs local Ollama/MLX as fallback. |
+| **Offline** | Laptop, desktop unreachable | Runs local Ollama/MLX/laya as fallback. |
 
 ### Remote access (Tailscale)
 
@@ -50,7 +51,7 @@ All services bind to localhost. The "Remote Access" toggle in the menu bar manag
 | 11434 | Ollama | `https://{fqdn}:11434` |
 | 8000 | MLX | `https://{fqdn}:8000` |
 
-ds4 (8002) is deliberately absent from this table — internal-only, never served.
+ds4 (8002) and laya (8003) are deliberately absent from this table — internal-only, never served.
 
 **All remote URLs must use `https://{tailscale_fqdn}:{port}`**, not `http://{ip}`. Tailscale serve rejects plain HTTP.
 
@@ -105,13 +106,16 @@ The menu bar app POSTs each machine's 7-day usage summary (`local_usage_summary`
 | Config audit script | `bin/sp-doctor` (symlinked to `~/.local/bin/`) |
 | Menu bar log | `/tmp/local-models-menubar.log` |
 | ds4 logs | `/tmp/local-models-ds4.log` (launch), `/tmp/local-models-ds4-restart.log` (menu restart) |
+| laya log | `/tmp/local-models-laya.log` (launch) |
 | Instance lock | `~/.config/local-models/menubar.lock` |
 
 ### Task types
 
 Profiles map these task types to models. Defined in `lib/models.py`:
 - **Standard tasks:** `code`, `general`, `reasoning`, `long_context`, `translation`
-- **Special tasks** (matched by model capability): `vision`, `computer_use`, `image_gen`, `image_edit`, `video`, `transcription`, `tts`, `embedding`, `unfiltered`
+- **Special tasks** (matched by model capability): `vision`, `computer_use`, `image_gen`, `image_edit`, `video`, `transcription`, `tts`, `embedding`, `unfiltered`, `decision`
+
+`decision` is the odd one out: not generative and not an encoder, but a typed-decision task served by the `laya` backend (state + typed questions → calibrated probabilities). It is deliberately absent from `TASK_FILTERS` and `LLM_BACKENDS` so a decision model never leaks into the chat pools and no chat model is ever picked for a decision.
 
 Task filters (`TASK_FILTERS`) and the `model_matches_filter()` function are shared across all three Python consumers via `lib/models.py`.
 
@@ -129,12 +133,13 @@ Single source of truth for constants and logic used by menubar, MCP server, and 
 - `DEFAULT_PROFILES`, `PROFILES_VERSION` — preset profile definitions (task→model maps). Seeded by the menu bar app on startup (`seed_profiles_if_missing()`), migrated/served by the profile server, and read by `install.sh` to know which models to pull. Bump `PROFILES_VERSION` to force-refresh presets on all machines.
 - `active_params_b()` — 4-strategy MoE active parameter computation (AXB parse → known table → FFN subtraction → ratio fallback)
 - `LLM_BACKENDS` — the three chat backends (`ollama`, `mlx`, `ds4`); `DS4_MODEL_NAME`/`DS4_MODEL_BYTES`/`DS4_TOTAL_PARAMS_B`/`DS4_ACTIVE_PARAMS_B`/`DS4_CONTEXT` — glm-5.2 metadata for ds4 discovery (fallbacks; the live `/v1/models` `context_length` is preferred when reachable); `ds4_dir()`/`ds4_installed()` — DS4_DIR resolution and presence gate
+- `LAYA_BACKEND` (`"laya"`, deliberately NOT in `LLM_BACKENDS`); `LAYA_MULTILINGUAL_REPO`/`LAYA_ENGLISH_REPO`/`LAYA_SERVED_MODELS` — the served repo ids; `LAYA_*_PARAMS_B`/`LAYA_CONTEXT`/`laya_params_b()` — decision-model metadata for laya discovery (laya's `/v1/models` carries none). The `decision` task pick is an HF repo id, so the existing `hf download` autopull fetches it (verified: `laya.load()` reads the standard HF cache; `laya-multilingual` is a standalone repo).
 - `model_matches_filter()` — check if a model qualifies for a task
 - Config path constants (`PROFILES_FILE`, `MCP_PREFS_FILE`, `CLAUDE_CONFIG_FILE`, etc.)
 
 ## Local Model Tools (MCP)
 
-The `mcp/local-models-server.py` MCP server runs as a persistent streamable-HTTP service on port 8100, managed by the menu bar app. It exposes Ollama, MLX, ds4 (glm-5.2 on the 512GB tier), and local tool models (TTS via mlx-audio, image editing via mflux) as MCP tools. Claude connects via `type: "http"` to `http://127.0.0.1:8100/mcp` (local) or `https://{fqdn}:8100/mcp` (remote). Wrapper script is `bin/local-models-mcp-detect`.
+The `mcp/local-models-server.py` MCP server runs as a persistent streamable-HTTP service on port 8100, managed by the menu bar app. It exposes Ollama, MLX, ds4 (glm-5.2 on the 512GB tier), laya (typed decisions via `local_decide`), and local tool models (TTS via mlx-audio, image editing via mflux) as MCP tools. Claude connects via `type: "http"` to `http://127.0.0.1:8100/mcp` (local) or `https://{fqdn}:8100/mcp` (remote). Wrapper script is `bin/local-models-mcp-detect`.
 
 Dependencies are pinned to exact versions in PEP 723 inline metadata.
 
