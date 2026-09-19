@@ -472,8 +472,8 @@ def _check_codex_mcp(home: Path) -> Check:
         return Check("codex-mcp", "codex", "fail", f"{path} missing", True)
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except tomllib.TOMLDecodeError as e:
-        return Check("codex-mcp", "codex", "fail", f"{path} is not valid TOML: {e}", True)
+    except (tomllib.TOMLDecodeError, OSError) as e:
+        return Check("codex-mcp", "codex", "fail", f"{path} is unreadable/not valid TOML: {e}", True)
     entry = data.get("mcp_servers", {}).get("local-models")
     if isinstance(entry, dict) and entry.get("url") and entry.get("headers", {}).get("X-SP-Client"):
         return Check("codex-mcp", "codex", "pass", f"registered in {path} with X-SP-Client attribution", True)
@@ -517,13 +517,16 @@ def _fix_codex_guidance(home: Path, token: Optional[str]) -> str:
 # ── ChatGPT desktop app ─────────────────────────────────────────────────────
 #
 # Since the 2026-07 merger, the Codex desktop app IS the unified ChatGPT
-# desktop app (/Applications/ChatGPT.app, bundle com.openai.codex), and it
-# reads the SAME MCP config as the Codex CLI — ~/.codex/config.toml. So the
-# MCP check is Codex's, but gated on the ChatGPT app being installed and
-# willing to create ~/.codex even when the Codex CLI never has (the
-# ChatGPT-desktop-only user). There is NO separate guidance file: ChatGPT
-# desktop takes server guidance from the MCP server's `instructions` field
-# at init, so once MCP is registered, guidance is inherent.
+# desktop app (/Applications/ChatGPT.app, bundle com.openai.codex). Per
+# OpenAI's docs it shares MCP configuration with the Codex CLI —
+# ~/.codex/config.toml — so this check reuses Codex's file, gated on the
+# ChatGPT app being installed, and its fix creates ~/.codex even when the
+# Codex CLI never has (the ChatGPT-desktop-only user). NB: we verify the
+# config is *written correctly*, not that the app is consuming it at runtime
+# (unconfirmed we could reach from here) — the pass wording says so rather
+# than claiming the app is definitely wired up. There is no separate
+# guidance file: ChatGPT desktop takes server guidance from the MCP server's
+# `instructions` field at init, so once MCP is registered guidance follows.
 
 
 def _chatgpt_app_present() -> bool:
@@ -543,12 +546,13 @@ def _check_chatgpt_mcp(home: Path) -> Check:
                      f"ChatGPT desktop installed but {path} missing — MCP not registered", True)
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except tomllib.TOMLDecodeError as e:
-        return Check("chatgpt-mcp", "chatgpt", "fail", f"{path} is not valid TOML: {e}", True)
+    except (tomllib.TOMLDecodeError, OSError) as e:
+        return Check("chatgpt-mcp", "chatgpt", "fail", f"{path} is unreadable/not valid TOML: {e}", True)
     entry = data.get("mcp_servers", {}).get("local-models")
     if isinstance(entry, dict) and entry.get("url") and entry.get("headers", {}).get("X-SP-Client"):
         return Check("chatgpt-mcp", "chatgpt", "pass",
-                     f"registered in {path} (shared with Codex); guidance via MCP instructions", True)
+                     f"local-models written to {path} (shared with Codex; ChatGPT desktop is "
+                     f"expected to read this)", True)
     return Check("chatgpt-mcp", "chatgpt", "fail",
                  f"mcp_servers.local-models missing url/X-SP-Client header in {path}", True)
 

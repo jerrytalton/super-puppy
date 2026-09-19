@@ -334,6 +334,28 @@ def test_fix_chatgpt_mcp_raises_when_app_absent(tmp_path):
             audit.fix("chatgpt-mcp", home=home, token="secret")
 
 
+def test_fix_chatgpt_mcp_refuses_unparseable_toml(tmp_path):
+    home = _fake_home(tmp_path)
+    (home / ".codex").mkdir()
+    (home / ".codex" / "config.toml").write_text("not [ valid toml =")
+    with patch.object(audit, "_chatgpt_app_present", return_value=True):
+        with pytest.raises(Exception):
+            audit.fix("chatgpt-mcp", home=home, token="secret")
+    assert (home / ".codex" / "config.toml").read_text() == "not [ valid toml ="
+
+
+def test_config_toml_as_directory_does_not_blank_the_audit(tmp_path):
+    """A directory at config.toml must yield one fixable-fail row, not an
+    IsADirectoryError that propagates out of run_all and blanks everything."""
+    home = _fake_home(tmp_path)
+    (home / ".codex").mkdir()
+    (home / ".codex" / "config.toml").mkdir()  # pathological but real
+    with patch.object(audit, "_chatgpt_app_present", return_value=True):
+        results = {c["id"]: c for c in audit.run_all(home=home)}  # must not raise
+    assert results["codex-mcp"]["status"] == "fail"
+    assert results["chatgpt-mcp"]["status"] == "fail"
+
+
 def test_fix_codex_mcp_then_passes_and_preserves_user_toml(tmp_path):
     home = _fake_home(tmp_path)
     (home / ".codex").mkdir()
